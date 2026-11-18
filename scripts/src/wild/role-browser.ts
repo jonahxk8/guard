@@ -8,7 +8,7 @@ import {
   Role,
   ChatInputCommandInteraction,
 } from "discord.js";
-import { WILD_PURPLE } from "./embeds.js";
+import { BOT_WHITE } from "./embeds.js";
 
 const PAGE_SIZE = 10;
 const COMPONENT_PREFIX = "wild-roles";
@@ -40,7 +40,7 @@ function createRoleEmbed(
   );
 
   return new EmbedBuilder()
-    .setColor(WILD_PURPLE)
+    .setColor(BOT_WHITE)
     .setTitle("Roles")
     .setDescription(lines.length > 0 ? lines.join("\n") : "No roles to show.")
     .setFooter({
@@ -73,7 +73,7 @@ function createButtons(
     new ButtonBuilder()
       .setCustomId(`${COMPONENT_PREFIX}:close`)
       .setLabel("Close")
-      .setStyle(ButtonStyle.Danger)
+      .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
   );
 }

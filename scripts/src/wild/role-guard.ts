@@ -7,7 +7,8 @@ import {
   TextChannel,
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
-import { WILD_PURPLE } from "./embeds.js";
+import { BOT_WHITE } from "./embeds.js";
+import { canAssignFgRole, memberMatchesWhitelist } from "./authorization.js";
 
 const handledAuditEntryIds = new Set<string>();
 const MAX_HANDLED_AUDIT_ENTRIES = 500;
@@ -44,6 +45,39 @@ async function sendLog(
     .catch(() => undefined);
 }
 
+async function isAllowedForRole(
+  actorId: string | null,
+  guild: Guild,
+  settings: GuildSettings,
+  roleId: string,
+): Promise<boolean> {
+  if (!actorId) return false;
+  if (actorId === guild.client.user?.id) return true;
+
+  const fgAccess = settings.fgRoles[roleId];
+  if (fgAccess) {
+    if (
+      settings.fgStaffUserIds.includes(actorId) ||
+      fgAccess.assignUserIds.includes(actorId)
+    ) {
+      return true;
+    }
+  } else if (settings.allowedUserIds.includes(actorId)) {
+    return true;
+  }
+
+  const relevantRoleIds = fgAccess
+    ? [...settings.fgStaffRoleIds, ...fgAccess.assignRoleIds]
+    : settings.allowedRoleIds;
+  if (relevantRoleIds.length === 0) return false;
+  const actor = await guild.members.fetch(actorId).catch(() => null);
+  if (!actor) return false;
+
+  return fgAccess
+    ? canAssignFgRole(actor, roleId, settings)
+    : memberMatchesWhitelist(actor, [], settings.allowedRoleIds);
+}
+
 function createBlockedAssignmentEmbed(
   memberId: string,
   roleIds: string[],
@@ -56,17 +90,17 @@ function createBlockedAssignmentEmbed(
     : "Unknown (audit log has no assigner)";
 
   const embed = new EmbedBuilder()
-    .setColor(actionNeeded ? 0xed4245 : WILD_PURPLE)
+    .setColor(BOT_WHITE)
     .setTitle("Unauthorized role assignment")
-    .setDescription(`Wild removed watched role(s) from <@${memberId}>.`)
+    .setDescription(`Bot removed watched role(s) from <@${memberId}>.`)
     .addFields(
       { name: "Role(s)", value: roleMentions, inline: false },
       { name: "Assigned by", value: actor, inline: true },
       {
         name: "Reason",
         value: actorId
-          ? "The assigner is not on Wild's allowlist."
-          : "Wild could not verify the assigner.",
+          ? "The assigner is not on the allowlist."
+          : "Bot could not verify the assigner.",
         inline: true,
       },
     )
@@ -96,8 +130,8 @@ export async function guardAuditLogEntry(
   if (settings.protectedRoleIds.length === 0) return;
 
   const protectedIds = new Set(settings.protectedRoleIds);
-  const watchedRoleIds = getAddedRoleIds(entry).filter((id) => protectedIds.has(id));
-  if (watchedRoleIds.length === 0) return;
+  const addedRoleIds = getAddedRoleIds(entry).filter((id) => protectedIds.has(id));
+  if (addedRoleIds.length === 0) return;
 
   handledAuditEntryIds.add(entry.id);
   if (handledAuditEntryIds.size > MAX_HANDLED_AUDIT_ENTRIES) {
@@ -106,7 +140,13 @@ export async function guardAuditLogEntry(
   }
 
   const actorId = entry.executorId;
-  if (actorId && settings.allowedUserIds.includes(actorId)) return;
+  const watchedRoleIds: string[] = [];
+  for (const roleId of addedRoleIds) {
+    if (!(await isAllowedForRole(actorId, guild, settings, roleId))) {
+      watchedRoleIds.push(roleId);
+    }
+  }
+  if (watchedRoleIds.length === 0) return;
 
   const member = await guild.members.fetch(entry.targetId).catch(() => null);
   if (!member) {
@@ -117,7 +157,7 @@ export async function guardAuditLogEntry(
         entry.targetId,
         watchedRoleIds,
         actorId,
-        "Wild could not fetch the member to remove the role. Check its server permissions.",
+        "Bot could not fetch the member to remove the role. Check its server permissions.",
       ),
     );
     return;
@@ -139,15 +179,15 @@ export async function guardAuditLogEntry(
     try {
       await member.roles.remove(
         removableRoleIds,
-        "Wild: role assigner is not allowlisted",
+        "Bot: role assigner is not allowlisted",
       );
     } catch {
-      actionNeeded = "Wild could not remove the role. Check Manage Roles and role order.";
+      actionNeeded = "Bot could not remove the role. Check Manage Roles and role order.";
     }
   }
   if (removableRoleIds.length !== watchedRoleIds.length) {
     actionNeeded ??=
-      "Wild cannot manage one or more watched roles. Check Manage Roles and role order.";
+      "Bot cannot manage one or more watched roles. Check Manage Roles and role order.";
   }
 
   await sendLog(

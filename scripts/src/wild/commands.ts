@@ -11,12 +11,12 @@ import { showRoleBrowser } from "./role-browser.js";
 
 export const wildCommand = new SlashCommandBuilder()
   .setName("wild")
-  .setDescription("Browse roles and protect important server roles")
+  .setDescription("Browse roles and manage role protection")
   .addSubcommand((command) =>
     command.setName("roles").setDescription("Browse every role in this server"),
   )
   .addSubcommand((command) =>
-    command.setName("status").setDescription("View Wild's protection settings"),
+    command.setName("status").setDescription("View role protection settings"),
   )
   .addSubcommandGroup((group) =>
     group
@@ -36,7 +36,7 @@ export const wildCommand = new SlashCommandBuilder()
   .addSubcommandGroup((group) =>
     group
       .setName("watch")
-      .setDescription("Choose which roles Wild protects")
+      .setDescription("Choose which roles are protected")
       .addSubcommand((command) =>
         command
           .setName("add")
@@ -64,31 +64,37 @@ export const wildCommand = new SlashCommandBuilder()
       .addSubcommand((command) =>
         command
           .setName("add")
-          .setDescription("Allow a server member to assign protected roles")
+          .setDescription("Allow a member or role to assign protected roles")
           .addUserOption((option) =>
-            option.setName("user").setDescription("Member to allow").setRequired(true),
+            option.setName("user").setDescription("Member to allow"),
+          )
+          .addRoleOption((option) =>
+            option.setName("role").setDescription("Role to allow"),
           ),
       )
       .addSubcommand((command) =>
         command
           .setName("remove")
-          .setDescription("Remove a member from the allowlist")
+          .setDescription("Remove a member or role from the allowlist")
           .addUserOption((option) =>
-            option.setName("user").setDescription("Member to remove").setRequired(true),
+            option.setName("user").setDescription("Member to remove"),
+          )
+          .addRoleOption((option) =>
+            option.setName("role").setDescription("Role to remove"),
           ),
       )
       .addSubcommand((command) =>
-        command.setName("list").setDescription("List everyone allowed to assign protected roles"),
+        command.setName("list").setDescription("List members and roles allowed to assign protected roles"),
       ),
   )
   .addSubcommandGroup((group) =>
     group
       .setName("logs")
-      .setDescription("Choose where Wild sends role guard alerts")
+      .setDescription("Choose where guard alerts are sent")
       .addSubcommand((command) =>
         command
           .setName("set")
-          .setDescription("Set the channel for role guard alerts")
+          .setDescription("Set the channel for guard alerts")
           .addChannelOption((option) =>
             option
               .setName("channel")
@@ -98,9 +104,34 @@ export const wildCommand = new SlashCommandBuilder()
           ),
       )
       .addSubcommand((command) =>
-        command.setName("clear").setDescription("Turn off role guard alerts"),
+        command.setName("clear").setDescription("Turn off guard alerts"),
       ),
   );
+
+export const commandsHelpCommand = new SlashCommandBuilder()
+  .setName("commands")
+  .setDescription("Show the available command names");
+
+export async function handleCommandsHelp(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const lines = [
+    "`/wild roles` — browse server roles",
+    "`/wild watch add|remove|list` — manage protected roles",
+    "`/wild allow add|remove|list` — allow members or roles to assign protected roles",
+    "`/wild enforcement pause|resume` — pause or resume automatic removal",
+    "`/wild logs set|clear` — configure guard alerts",
+    "`/wild status` — view protection status",
+    "`/fg roles create|assign|list` — manage FG roles",
+    "`/fg staff add|remove|list` — manage FG staff",
+    "`/fg access add|remove|list` — manage FG assignment and sharing access",
+    "`,fg share @member` — send an FG role offer",
+  ];
+  await interaction.reply({
+    embeds: [wildEmbed("Commands", lines.join("\n\n"))],
+    ephemeral: true,
+  });
+}
 
 const ADMIN_PERMISSION = PermissionFlagsBits.ManageGuild;
 const MAX_LIST_LINES = 80;
@@ -128,10 +159,10 @@ async function saveSettings(
 ): Promise<void> {
   try {
     await store.set(interaction.guildId!, settings);
-    await interaction.reply({ embeds: [wildEmbed("Wild updated", successMessage)], ephemeral: true });
+    await interaction.reply({ embeds: [wildEmbed("Bot updated", successMessage)], ephemeral: true });
   } catch {
     await interaction.reply({
-      content: "Wild couldn't save this change. Check its local settings storage and try again.",
+      content: "Bot couldn't save this change. Check its settings storage and try again.",
       ephemeral: true,
     });
   }
@@ -162,16 +193,37 @@ function makeRoleList(
 
 function makeAllowList(
   userIds: string[],
+  roleIds: string[],
+  interaction: ChatInputCommandInteraction,
 ): EmbedBuilder {
-  const lines = userIds
+  const memberLines = userIds
     .slice(0, MAX_LIST_LINES)
     .map((id, index) => `\`${index + 1}.\` <@${id}>`);
-  const hiddenCount = Math.max(0, userIds.length - lines.length);
-  if (hiddenCount > 0) lines.push(`…and ${hiddenCount} more.`);
-  return wildEmbed(
-    "Allowed members",
-    lines.length > 0 ? lines.join("\n") : "No one is allowlisted yet.",
-  );
+  const hiddenMembers = Math.max(0, userIds.length - memberLines.length);
+  if (hiddenMembers > 0) memberLines.push(`…and ${hiddenMembers} more.`);
+
+  const roleLines = roleIds
+    .slice(0, MAX_LIST_LINES)
+    .map((id, index) => {
+      const role = interaction.guild?.roles.cache.get(id);
+      return `\`${index + 1}.\` ${role ? `<@&${id}>` : `Deleted role \`${id}\``}`;
+    });
+  const hiddenRoles = Math.max(0, roleIds.length - roleLines.length);
+  if (hiddenRoles > 0) roleLines.push(`…and ${hiddenRoles} more.`);
+
+  return wildEmbed("Allowed assigners", "Members and roles that may assign protected roles.")
+    .addFields(
+      {
+        name: `Members (${userIds.length})`,
+        value: memberLines.length > 0 ? memberLines.join("\n") : "None",
+        inline: true,
+      },
+      {
+        name: `Roles (${roleIds.length})`,
+        value: roleLines.length > 0 ? roleLines.join("\n") : "None",
+        inline: true,
+      },
+    );
 }
 
 async function handleWatchCommand(
@@ -273,57 +325,99 @@ async function handleAllowCommand(
 
   if (action === "list") {
     await interaction.reply({
-      embeds: [makeAllowList(settings.allowedUserIds)],
+      embeds: [
+        makeAllowList(settings.allowedUserIds, settings.allowedRoleIds, interaction),
+      ],
       ephemeral: true,
       allowedMentions: { parse: [] },
     });
     return;
   }
 
-  const user = interaction.options.getUser("user", true);
+  const user = interaction.options.getUser("user");
+  const selectedRole = interaction.options.getRole("role");
+  if (Boolean(user) === Boolean(selectedRole)) {
+    await interaction.reply({
+      content: "Choose exactly one member or role.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  let targetId: string;
+  let targetLabel: string;
+  let isRole = false;
+  if (user) {
+    targetId = user.id;
+    targetLabel = `${user}`;
+    if (action === "add") {
+      const member = await guild.members.fetch(user.id).catch(() => null);
+      if (!member) {
+        await interaction.reply({
+          content: "That person must be a member of this server before they can be allowlisted.",
+          ephemeral: true,
+        });
+        return;
+      }
+    }
+  } else {
+    const role = guild.roles.cache.get(selectedRole!.id);
+    if (!role || role.id === guild.id) {
+      await interaction.reply({
+        content: "Choose a server role other than @everyone.",
+        ephemeral: true,
+      });
+      return;
+    }
+    targetId = role.id;
+    targetLabel = `${role}`;
+    isRole = true;
+  }
+
+  const currentIds = isRole ? settings.allowedRoleIds : settings.allowedUserIds;
+  const isPresent = currentIds.includes(targetId);
+  if (action === "add" && isPresent) {
+    await interaction.reply({
+      content: `${targetLabel} is already allowlisted.`,
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+  if (action === "remove" && !isPresent) {
+    await interaction.reply({
+      content: `${targetLabel} isn't currently allowlisted.`,
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
   if (action === "add") {
-    const member = await guild.members.fetch(user.id).catch(() => null);
-    if (!member) {
-      await interaction.reply({
-        content: "That person must be a member of this server before they can be allowlisted.",
-        ephemeral: true,
-      });
-      return;
-    }
-    if (settings.allowedUserIds.includes(user.id)) {
-      await interaction.reply({
-        content: `${user} is already allowlisted.`,
-        ephemeral: true,
-        allowedMentions: { parse: [] },
-      });
-      return;
-    }
     await saveSettings(
       interaction,
       store,
-      { ...settings, allowedUserIds: [...settings.allowedUserIds, user.id] },
-      `${user} can now assign protected roles.`,
+      isRole
+        ? { ...settings, allowedRoleIds: [...settings.allowedRoleIds, targetId] }
+        : { ...settings, allowedUserIds: [...settings.allowedUserIds, targetId] },
+      `${targetLabel} can now assign protected roles.`,
     );
-    return;
-  }
-
-  if (!settings.allowedUserIds.includes(user.id)) {
-    await interaction.reply({
-      content: `${user} isn't currently allowlisted.`,
-      ephemeral: true,
-      allowedMentions: { parse: [] },
-    });
     return;
   }
 
   await saveSettings(
     interaction,
     store,
-    {
-      ...settings,
-      allowedUserIds: settings.allowedUserIds.filter((id) => id !== user.id),
-    },
-    `${user} can no longer assign protected roles.`,
+    isRole
+      ? {
+          ...settings,
+          allowedRoleIds: settings.allowedRoleIds.filter((id) => id !== targetId),
+        }
+      : {
+          ...settings,
+          allowedUserIds: settings.allowedUserIds.filter((id) => id !== targetId),
+        },
+    `${targetLabel} can no longer assign protected roles.`,
   );
 }
 

@@ -4,8 +4,19 @@ import path from "node:path";
 export interface GuildSettings {
   protectedRoleIds: string[];
   allowedUserIds: string[];
+  allowedRoleIds: string[];
+  fgStaffUserIds: string[];
+  fgStaffRoleIds: string[];
+  fgRoles: Record<string, FgRoleAccess>;
   logChannelId: string | null;
   enforcementEnabled: boolean;
+}
+
+export interface FgRoleAccess {
+  assignUserIds: string[];
+  assignRoleIds: string[];
+  shareUserIds: string[];
+  shareRoleIds: string[];
 }
 
 interface PersistedConfig {
@@ -16,12 +27,70 @@ interface PersistedConfig {
 const emptySettings = (): GuildSettings => ({
   protectedRoleIds: [],
   allowedUserIds: [],
+  allowedRoleIds: [],
+  fgStaffUserIds: [],
+  fgStaffRoleIds: [],
+  fgRoles: {},
   logChannelId: null,
   enforcementEnabled: true,
 });
 
 function isSnowflake(value: unknown): value is string {
   return typeof value === "string" && /^\d{5,25}$/.test(value);
+}
+
+function isSnowflakeArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(isSnowflake);
+}
+
+function parseOptionalSnowflakeArray(
+  value: unknown,
+  fieldName: string,
+  guildId: string,
+): string[] {
+  if (value === undefined) return [];
+  if (!isSnowflakeArray(value)) {
+    throw new Error(`Wild settings field ${fieldName} for server ${guildId} is invalid.`);
+  }
+  return [...value];
+}
+
+function parseFgRoles(value: unknown, guildId: string): Record<string, FgRoleAccess> {
+  if (value === undefined) return {};
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`FG role settings for server ${guildId} are invalid.`);
+  }
+
+  const roles: Record<string, FgRoleAccess> = {};
+  for (const [roleId, rawAccess] of Object.entries(value)) {
+    if (!isSnowflake(roleId) || typeof rawAccess !== "object" || rawAccess === null) {
+      throw new Error(`FG role settings for server ${guildId} are invalid.`);
+    }
+    const access = rawAccess as Record<string, unknown>;
+    roles[roleId] = {
+      assignUserIds: parseOptionalSnowflakeArray(
+        access.assignUserIds,
+        "assignUserIds",
+        guildId,
+      ),
+      assignRoleIds: parseOptionalSnowflakeArray(
+        access.assignRoleIds,
+        "assignRoleIds",
+        guildId,
+      ),
+      shareUserIds: parseOptionalSnowflakeArray(
+        access.shareUserIds,
+        "shareUserIds",
+        guildId,
+      ),
+      shareRoleIds: parseOptionalSnowflakeArray(
+        access.shareRoleIds,
+        "shareRoleIds",
+        guildId,
+      ),
+    };
+  }
+  return roles;
 }
 
 function parseSettings(value: unknown, guildId: string): GuildSettings {
@@ -47,6 +116,22 @@ function parseSettings(value: unknown, guildId: string): GuildSettings {
   return {
     protectedRoleIds: [...candidate.protectedRoleIds],
     allowedUserIds: [...candidate.allowedUserIds],
+    allowedRoleIds: parseOptionalSnowflakeArray(
+      candidate.allowedRoleIds,
+      "allowedRoleIds",
+      guildId,
+    ),
+    fgStaffUserIds: parseOptionalSnowflakeArray(
+      candidate.fgStaffUserIds,
+      "fgStaffUserIds",
+      guildId,
+    ),
+    fgStaffRoleIds: parseOptionalSnowflakeArray(
+      candidate.fgStaffRoleIds,
+      "fgStaffRoleIds",
+      guildId,
+    ),
+    fgRoles: parseFgRoles(candidate.fgRoles, guildId),
     logChannelId: candidate.logChannelId,
     enforcementEnabled: candidate.enforcementEnabled ?? true,
   };
@@ -104,6 +189,20 @@ export class ConfigStore {
       ? {
           protectedRoleIds: [...current.protectedRoleIds],
           allowedUserIds: [...current.allowedUserIds],
+          allowedRoleIds: [...current.allowedRoleIds],
+          fgStaffUserIds: [...current.fgStaffUserIds],
+          fgStaffRoleIds: [...current.fgStaffRoleIds],
+          fgRoles: Object.fromEntries(
+            Object.entries(current.fgRoles).map(([roleId, access]) => [
+              roleId,
+              {
+                assignUserIds: [...access.assignUserIds],
+                assignRoleIds: [...access.assignRoleIds],
+                shareUserIds: [...access.shareUserIds],
+                shareRoleIds: [...access.shareRoleIds],
+              },
+            ]),
+          ),
           logChannelId: current.logChannelId,
           enforcementEnabled: current.enforcementEnabled,
         }
@@ -115,6 +214,20 @@ export class ConfigStore {
     this.settings.set(guildId, {
       protectedRoleIds: [...next.protectedRoleIds],
       allowedUserIds: [...next.allowedUserIds],
+      allowedRoleIds: [...next.allowedRoleIds],
+      fgStaffUserIds: [...next.fgStaffUserIds],
+      fgStaffRoleIds: [...next.fgStaffRoleIds],
+      fgRoles: Object.fromEntries(
+        Object.entries(next.fgRoles).map(([roleId, access]) => [
+          roleId,
+          {
+            assignUserIds: [...access.assignUserIds],
+            assignRoleIds: [...access.assignRoleIds],
+            shareUserIds: [...access.shareUserIds],
+            shareRoleIds: [...access.shareRoleIds],
+          },
+        ]),
+      ),
       logChannelId: next.logChannelId,
       enforcementEnabled: next.enforcementEnabled,
     });

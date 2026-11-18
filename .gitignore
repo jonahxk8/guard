@@ -38,6 +38,7 @@ node_modules
 /connect.lock
 /coverage
 /data/wild-config.json
+/scripts/data/wild-config.json
 /libpeerconnection.log
 npm-debug.log
 yarn-error.log

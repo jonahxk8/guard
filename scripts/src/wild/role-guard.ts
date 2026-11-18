@@ -92,6 +92,7 @@ export async function guardAuditLogEntry(
   }
 
   const settings = store.get(guild.id);
+  if (!settings.enforcementEnabled) return;
   if (settings.protectedRoleIds.length === 0) return;
 
   const protectedIds = new Set(settings.protectedRoleIds);

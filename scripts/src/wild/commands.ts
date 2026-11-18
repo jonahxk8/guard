@@ -20,6 +20,21 @@ export const wildCommand = new SlashCommandBuilder()
   )
   .addSubcommandGroup((group) =>
     group
+      .setName("enforcement")
+      .setDescription("Pause or resume automatic role removal")
+      .addSubcommand((command) =>
+        command
+          .setName("pause")
+          .setDescription("Pause role removal for this server"),
+      )
+      .addSubcommand((command) =>
+        command
+          .setName("resume")
+          .setDescription("Resume role removal for this server"),
+      ),
+  )
+  .addSubcommandGroup((group) =>
+    group
       .setName("watch")
       .setDescription("Choose which roles Wild protects")
       .addSubcommand((command) =>
@@ -373,6 +388,35 @@ async function handleLogsCommand(
   );
 }
 
+async function handleEnforcementCommand(
+  interaction: ChatInputCommandInteraction,
+  store: ConfigStore,
+  action: string,
+): Promise<void> {
+  const guild = interaction.guild!;
+  const settings = store.get(guild.id);
+  const enforcementEnabled = action === "resume";
+
+  if (settings.enforcementEnabled === enforcementEnabled) {
+    await interaction.reply({
+      content: enforcementEnabled
+        ? "Role removal enforcement is already active."
+        : "Role removal enforcement is already paused.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await saveSettings(
+    interaction,
+    store,
+    { ...settings, enforcementEnabled },
+    enforcementEnabled
+      ? "Role removal enforcement is active again."
+      : "Role removal enforcement is paused. Wild will not remove protected roles until it is resumed.",
+  );
+}
+
 async function handleStatusCommand(
   interaction: ChatInputCommandInteraction,
   store: ConfigStore,
@@ -394,6 +438,7 @@ async function handleStatusCommand(
     `**Protected roles**  ${protectedCount}`,
     `**Allowed members**  ${allowCount}`,
     `**Alert channel**  ${channel}`,
+    `**Enforcement**  ${settings.enforcementEnabled ? "Active" : "Paused"}`,
     `**Role guard**  ${missingPermissions.length === 0 ? "Ready" : "Needs setup"}`,
     missingPermissions.length > 0
       ? `\nMissing permissions: ${missingPermissions.join(", ")}`
@@ -442,6 +487,10 @@ export async function handleWildCommand(
   }
   if (group === "logs") {
     await handleLogsCommand(interaction, store, action);
+    return;
+  }
+  if (group === "enforcement") {
+    await handleEnforcementCommand(interaction, store, action);
     return;
   }
   if (!group && action === "status") {

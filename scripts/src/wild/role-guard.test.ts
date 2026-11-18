@@ -33,12 +33,14 @@ function createSetup(
     allowedUserIds?: string[];
     hasManageRoles?: boolean;
     botAboveRole?: boolean;
+    enforcementEnabled?: boolean;
   } = {},
 ): GuardSetup {
   const settings: GuildSettings = {
     protectedRoleIds: [ROLE_ID],
     allowedUserIds: options.allowedUserIds ?? [],
     logChannelId: "666666666666666666",
+    enforcementEnabled: options.enforcementEnabled ?? true,
   };
   const removedRoleIds: string[][] = [];
   const sentMessages: SentMessage[] = [];
@@ -166,6 +168,20 @@ test("removes watched roles assigned by an unapproved actor", async () => {
     embed.fields?.some((field) => field.name === "Action needed"),
     false,
   );
+});
+
+test("does not remove roles or send alerts while enforcement is paused", async () => {
+  const setup = createSetup({ enforcementEnabled: false });
+
+  await guardAuditLogEntry(
+    createEntry("audit-paused", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.memberFetchCount, 0);
+  assert.equal(setup.sentMessages.length, 0);
 });
 
 test("removes watched roles when the audit log does not verify an actor", async () => {

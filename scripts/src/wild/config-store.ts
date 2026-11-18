@@ -5,6 +5,7 @@ export interface GuildSettings {
   protectedRoleIds: string[];
   allowedUserIds: string[];
   logChannelId: string | null;
+  enforcementEnabled: boolean;
 }
 
 interface PersistedConfig {
@@ -16,6 +17,7 @@ const emptySettings = (): GuildSettings => ({
   protectedRoleIds: [],
   allowedUserIds: [],
   logChannelId: null,
+  enforcementEnabled: true,
 });
 
 function isSnowflake(value: unknown): value is string {
@@ -33,9 +35,10 @@ function parseSettings(value: unknown, guildId: string): GuildSettings {
     !candidate.protectedRoleIds.every(isSnowflake) ||
     !Array.isArray(candidate.allowedUserIds) ||
     !candidate.allowedUserIds.every(isSnowflake) ||
+    !(candidate.logChannelId === null || isSnowflake(candidate.logChannelId)) ||
     !(
-      candidate.logChannelId === null ||
-      isSnowflake(candidate.logChannelId)
+      candidate.enforcementEnabled === undefined ||
+      typeof candidate.enforcementEnabled === "boolean"
     )
   ) {
     throw new Error(`Wild settings for server ${guildId} are invalid.`);
@@ -45,6 +48,7 @@ function parseSettings(value: unknown, guildId: string): GuildSettings {
     protectedRoleIds: [...candidate.protectedRoleIds],
     allowedUserIds: [...candidate.allowedUserIds],
     logChannelId: candidate.logChannelId,
+    enforcementEnabled: candidate.enforcementEnabled ?? true,
   };
 }
 
@@ -101,6 +105,7 @@ export class ConfigStore {
           protectedRoleIds: [...current.protectedRoleIds],
           allowedUserIds: [...current.allowedUserIds],
           logChannelId: current.logChannelId,
+          enforcementEnabled: current.enforcementEnabled,
         }
       : emptySettings();
   }
@@ -111,6 +116,7 @@ export class ConfigStore {
       protectedRoleIds: [...next.protectedRoleIds],
       allowedUserIds: [...next.allowedUserIds],
       logChannelId: next.logChannelId,
+      enforcementEnabled: next.enforcementEnabled,
     });
 
     const snapshot: PersistedConfig = {

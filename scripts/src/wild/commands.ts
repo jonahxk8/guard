@@ -98,7 +98,7 @@ export const wildCommand = new SlashCommandBuilder()
           .addChannelOption((option) =>
             option
               .setName("channel")
-              .setDescription("Channel where Wild should send alerts")
+              .setDescription("Channel where the bot should send alerts")
               .addChannelTypes(ChannelType.GuildText)
               .setRequired(true),
           ),
@@ -145,7 +145,7 @@ async function requireManageServer(
 ): Promise<boolean> {
   if (hasManageServer(interaction)) return true;
   await interaction.reply({
-    content: "You need **Manage Server** permission to change Wild's settings.",
+    content: "You need **Manage Server** permission to change bot settings.",
     ephemeral: true,
   });
   return false;
@@ -255,7 +255,7 @@ async function handleWatchCommand(
   if (action === "add") {
     if (role.id === guild.id || role.managed) {
       await interaction.reply({
-        content: "That role can't be protected by Wild.",
+        content: "That role can't be protected by the bot.",
         ephemeral: true,
       });
       return;
@@ -265,14 +265,14 @@ async function handleWatchCommand(
       guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
     if (!botMember?.permissions.has(PermissionFlagsBits.ManageRoles)) {
       await interaction.reply({
-        content: "Wild needs **Manage Roles** before it can protect roles.",
+        content: "The bot needs **Manage Roles** before it can protect roles.",
         ephemeral: true,
       });
       return;
     }
     if (botMember.roles.highest.comparePositionTo(role) <= 0) {
       await interaction.reply({
-        content: "Move Wild's bot role above the role you want it to protect.",
+        content: "Move the bot's role above the role you want it to protect.",
         ephemeral: true,
       });
       return;
@@ -290,7 +290,7 @@ async function handleWatchCommand(
       interaction,
       store,
       { ...settings, protectedRoleIds: [...settings.protectedRoleIds, role.id] },
-      `${role} is now protected. If Wild can't verify that the assigner is allowlisted, it removes the role.`,
+      `${role} is now protected. If the assigner isn't allowlisted, the bot removes the role.`,
     );
     return;
   }
@@ -434,7 +434,7 @@ async function handleLogsCommand(
       interaction,
       store,
       { ...settings, logChannelId: null },
-      "Role guard alerts are turned off.",
+      "Guard alerts are turned off.",
     );
     return;
   }
@@ -454,7 +454,7 @@ async function handleLogsCommand(
     guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
   if (!botMember) {
     await interaction.reply({
-      content: "Wild couldn't confirm its permissions in this server.",
+      content: "The bot couldn't confirm its permissions in this server.",
       ephemeral: true,
     });
     return;
@@ -468,7 +468,7 @@ async function handleLogsCommand(
     ])
   ) {
     await interaction.reply({
-      content: "Give Wild permission to view this channel, send messages, and embed links first.",
+      content: "Give the bot permission to view this channel, send messages, and embed links first.",
       ephemeral: true,
     });
     return;
@@ -478,7 +478,7 @@ async function handleLogsCommand(
     interaction,
     store,
     { ...settings, logChannelId: channel.id },
-    `Role guard alerts will go to ${channel}.`,
+    `Guard alerts will go to ${channel}.`,
   );
 }
 
@@ -494,8 +494,8 @@ async function handleEnforcementCommand(
   if (settings.enforcementEnabled === enforcementEnabled) {
     await interaction.reply({
       content: enforcementEnabled
-        ? "Role removal enforcement is already active."
-        : "Role removal enforcement is already paused.",
+        ? "Automatic role removal is already active."
+        : "Automatic role removal is already paused.",
       ephemeral: true,
     });
     return;
@@ -506,8 +506,8 @@ async function handleEnforcementCommand(
     store,
     { ...settings, enforcementEnabled },
     enforcementEnabled
-      ? "Role removal enforcement is active again."
-      : "Role removal enforcement is paused. Wild will not remove protected roles until it is resumed.",
+      ? "Automatic role removal is active again."
+      : "Automatic role removal is paused. The bot won't remove protected roles until it is resumed.",
   );
 }
 
@@ -531,18 +531,20 @@ async function handleStatusCommand(
   const description = [
     `**Protected roles**  ${protectedCount}`,
     `**Allowed members**  ${allowCount}`,
+    `**Allowed roles**  ${settings.allowedRoleIds.length}`,
+    `**FG roles**  ${Object.keys(settings.fgRoles).length}`,
     `**Alert channel**  ${channel}`,
     `**Enforcement**  ${settings.enforcementEnabled ? "Active" : "Paused"}`,
-    `**Role guard**  ${missingPermissions.length === 0 ? "Ready" : "Needs setup"}`,
+    `**Guard**  ${missingPermissions.length === 0 ? "Ready" : "Needs setup"}`,
     missingPermissions.length > 0
       ? `\nMissing permissions: ${missingPermissions.join(", ")}`
       : null,
-    `\nIf Wild can't verify who assigned a watched role, it removes that role by default.`,
+    `\nIf the bot can't verify who assigned a watched role, it removes that role by default.`,
   ]
     .filter(Boolean)
     .join("\n");
   await interaction.reply({
-    embeds: [wildEmbed("Wild status", description)],
+    embeds: [wildEmbed("Bot status", description)],
     ephemeral: true,
     allowedMentions: { parse: [] },
   });
@@ -552,10 +554,14 @@ export async function handleWildCommand(
   interaction: ChatInputCommandInteraction,
   store: ConfigStore,
 ): Promise<void> {
+  if (interaction.commandName === "commands") {
+    await handleCommandsHelp(interaction);
+    return;
+  }
   if (interaction.commandName !== "wild") return;
   if (!requireGuild(interaction)) {
     await interaction.reply({
-      content: "Wild commands are only available inside a server.",
+      content: "These commands are only available inside a server.",
       ephemeral: true,
     });
     return;
@@ -593,7 +599,7 @@ export async function handleWildCommand(
   }
 
   await interaction.reply({
-    content: "That Wild command isn't supported.",
+    content: "That command isn't supported.",
     ephemeral: true,
   });
 }

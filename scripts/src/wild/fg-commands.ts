@@ -4,7 +4,7 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { ConfigStore, FgRoleAccess, GuildSettings } from "./config-store.js";
-import { isFgStaff } from "./authorization.js";
+import { canAssignFgRole, isFgStaff } from "./authorization.js";
 import { wildEmbed } from "./embeds.js";
 
 const MANAGE_GUILD = PermissionFlagsBits.ManageGuild;

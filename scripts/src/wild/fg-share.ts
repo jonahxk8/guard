@@ -4,6 +4,7 @@ import {
   ButtonInteraction,
   ButtonStyle,
   ComponentType,
+  EmbedBuilder,
   Guild,
   GuildMember,
   Message,
@@ -23,17 +24,19 @@ function buildShareEmbed(
   title: string,
   requesterId: string,
   targetId: string,
-  role: Role,
+  role: Role | null,
   status?: string,
-) {
-  return {
-    color: BOT_WHITE,
-    title,
-    description: status ??
-      `<@${requesterId}> wants to share ${role} with <@${targetId}>.\n\nDo you want to accept this FG role?`,
-    footer: { text: "FG SHARE • GUARD" },
-    timestamp: new Date().toISOString(),
-  };
+): EmbedBuilder {
+  const roleMention = role ? `${role}` : "FG role";
+  return new EmbedBuilder()
+    .setColor(BOT_WHITE)
+    .setTitle(title)
+    .setDescription(
+      status ??
+        `<@${requesterId}> wants to share ${roleMention} with <@${targetId}>.\n\nDo you want to accept this FG role?`,
+    )
+    .setFooter({ text: "FG SHARE • GUARD" })
+    .setTimestamp();
 }
 
 function buildDecisionButtons(disabled = false): ActionRowBuilder<ButtonBuilder> {
@@ -68,13 +71,13 @@ async function finishOffer(
   targetId: string,
   roleId: string,
   store: ConfigStore,
-): Promise<void> {
+): Promise<boolean> {
   if (button.user.id !== targetId) {
     await button.reply({
       content: "This FG role offer is for the mentioned member.",
       ephemeral: true,
     });
-    return;
+    return false;
   }
 
   const role = guild.roles.cache.get(roleId);
@@ -87,14 +90,14 @@ async function finishOffer(
           "FG role offer ended",
           requesterId,
           targetId,
-          role ?? ({ name: "FG role" } as Role),
+          role ?? null,
           "This FG role is no longer available.",
         ),
       ],
       components: [],
       allowedMentions: { parse: [] },
     });
-    return;
+    return true;
   }
 
   if (button.customId === "fg-share:no") {
@@ -111,7 +114,7 @@ async function finishOffer(
       components: [],
       allowedMentions: { parse: [] },
     });
-    return;
+    return true;
   }
 
   if (!(await mayShareRole(guild, requesterId, roleId, access))) {
@@ -128,7 +131,7 @@ async function finishOffer(
       components: [],
       allowedMentions: { parse: [] },
     });
-    return;
+    return true;
   }
 
   const target = await guild.members.fetch(targetId).catch(() => null);
@@ -148,7 +151,24 @@ async function finishOffer(
       components: [],
       allowedMentions: { parse: [] },
     });
-    return;
+    return true;
+  }
+
+  if (target.roles.cache.has(role.id)) {
+    await button.update({
+      embeds: [
+        buildShareEmbed(
+          "FG role already assigned",
+          requesterId,
+          targetId,
+          role,
+          `<@${targetId}> already has ${role}.`,
+        ),
+      ],
+      components: [],
+      allowedMentions: { parse: [] },
+    });
+    return true;
   }
 
   try {
@@ -181,6 +201,7 @@ async function finishOffer(
       allowedMentions: { parse: [] },
     });
   }
+  return true;
 }
 
 async function sendShareOffer(
@@ -189,9 +210,25 @@ async function sendShareOffer(
   requesterId: string,
   targetId: string,
   role: Role,
-  access: FgRoleAccess,
   store: ConfigStore,
 ): Promise<void> {
+  const settings = store.get(guild.id);
+  const access = settings.fgRoles[role.id];
+  const requester = await guild.members.fetch(requesterId).catch(() => null);
+  const target = await guild.members.fetch(targetId).catch(() => null);
+  if (!target) {
+    await channel.send("The mentioned member is no longer in this server.");
+    return;
+  }
+  if (!requester || !access || !canShareFgRole(requester, role.id, access)) {
+    await channel.send("The person who ran the command no longer has share access.");
+    return;
+  }
+  if (target.roles.cache.has(role.id)) {
+    await channel.send("That member already has this FG role.");
+    return;
+  }
+
   const payload: MessageCreateOptions = {
     embeds: [buildShareEmbed("FG role share", requesterId, targetId, role)],
     components: [buildDecisionButtons()],
@@ -203,13 +240,47 @@ async function sendShareOffer(
     time: SHARE_TIMEOUT_MS,
   });
 
+  let finishing = false;
   collector.on("collect", async (button) => {
     if (button.customId !== "fg-share:yes" && button.customId !== "fg-share:no") {
       await button.deferUpdate();
       return;
     }
-    await finishOffer(button, guild, requesterId, targetId, role.id, store);
-    collector.stop("answered");
+    if (button.user.id !== targetId) {
+      await finishOffer(button, guild, requesterId, targetId, role.id, store);
+      return;
+    }
+    if (finishing) {
+      await button.deferUpdate();
+      return;
+    }
+    finishing = true;
+    let answered = false;
+    try {
+      answered = await finishOffer(
+        button,
+        guild,
+        requesterId,
+        targetId,
+        role.id,
+        store,
+      );
+    } catch {
+      if (!button.replied && !button.deferred) {
+        await button
+          .reply({
+            content: "The bot couldn't complete this FG role offer.",
+            ephemeral: true,
+          })
+          .catch(() => undefined);
+      }
+      answered = true;
+    }
+    if (answered) {
+      collector.stop("answered");
+    } else {
+      finishing = false;
+    }
   });
 
   collector.on("end", async (_collected, reason) => {
@@ -288,7 +359,6 @@ async function selectRoleThenShare(
       message.author.id,
       targetId,
       role,
-      access,
       store,
     );
     collector.stop("selected");
@@ -361,7 +431,6 @@ export async function handleFgShareMessage(
       requester.id,
       target.id,
       role,
-      settings.fgRoles[role.id],
       store,
     );
     return;

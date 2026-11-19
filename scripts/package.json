@@ -6,8 +6,13 @@
   "scripts": {
     "hello": "tsx ./src/hello.ts",
     "wild": "tsx ./src/wild.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/wild.js",
     "test": "tsx --test ./src/wild/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=24 <25"
   },
   "devDependencies": {
     "@types/node": "catalog:",

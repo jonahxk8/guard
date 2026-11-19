@@ -6,7 +6,11 @@ import {
   PermissionFlagsBits,
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
-import { handleWildCommand } from "./commands.js";
+import {
+  commandsHelpCommand,
+  handleCommandsHelp,
+  handleWildCommand,
+} from "./commands.js";
 
 const GUILD_ID = "111111111111111111";
 
@@ -20,6 +24,10 @@ function createStore(
   initialSettings: GuildSettings = {
     protectedRoleIds: [],
     allowedUserIds: [],
+    allowedRoleIds: [],
+    fgStaffUserIds: [],
+    fgStaffRoleIds: [],
+    fgRoles: {},
     logChannelId: null,
     enforcementEnabled: true,
   },
@@ -90,7 +98,7 @@ test("Manage Server members can pause and resume enforcement", async () => {
   assert.equal(config.getSaveCount(), 1);
   assert.match(
     pause.replies[0].embeds?.[0].toJSON().description ?? "",
-    /enforcement is paused/i,
+    /role removal is paused/i,
   );
 
   const resume = createInteraction({ group: "enforcement", action: "resume" });
@@ -100,7 +108,7 @@ test("Manage Server members can pause and resume enforcement", async () => {
   assert.equal(config.getSaveCount(), 2);
   assert.match(
     resume.replies[0].embeds?.[0].toJSON().description ?? "",
-    /enforcement is active again/i,
+    /role removal is active again/i,
   );
 });
 
@@ -123,6 +131,10 @@ test("/wild status shows when enforcement is paused", async () => {
   const config = createStore({
     protectedRoleIds: [],
     allowedUserIds: [],
+    allowedRoleIds: [],
+    fgStaffUserIds: [],
+    fgStaffRoleIds: [],
+    fgRoles: {},
     logChannelId: null,
     enforcementEnabled: false,
   });
@@ -134,4 +146,18 @@ test("/wild status shows when enforcement is paused", async () => {
     interaction.replies[0].embeds?.[0].toJSON().description ?? "",
     /\*\*Enforcement\*\*  Paused/,
   );
+});
+
+test("/commands lists command names in a white embed", async () => {
+  const replies: Reply[] = [];
+  await handleCommandsHelp({
+    reply: async (reply: Reply) => replies.push(reply),
+  } as unknown as ChatInputCommandInteraction);
+
+  const embed = replies[0].embeds?.[0].toJSON();
+  assert.equal(commandsHelpCommand.toJSON().name, "commands");
+  assert.match(embed?.description ?? "", /\/fg roles create\|assign\|list/);
+  assert.match(embed?.description ?? "", /`,fg share @member`/);
+  assert.doesNotMatch(embed?.description ?? "", /Wild JS|role guard/i);
+  assert.equal(embed?.color, 0xffffff);
 });

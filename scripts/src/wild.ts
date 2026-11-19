@@ -7,12 +7,19 @@ import {
   Guild,
   PermissionFlagsBits,
 } from "discord.js";
-import { wildCommand, handleWildCommand } from "./wild/commands.js";
+import {
+  commandsHelpCommand,
+  handleCommandsHelp,
+  handleWildCommand,
+} from "./wild/commands.js";
+import { fgCommand, handleFgCommand } from "./wild/fg-commands.js";
+import { wildCommand } from "./wild/commands.js";
 import { ConfigStore } from "./wild/config-store.js";
+import { handleFgShareMessage } from "./wild/fg-share.js";
 import { guardAuditLogEntry } from "./wild/role-guard.js";
 
 function log(message: string): void {
-  process.stdout.write(`[Wild] ${message}\n`);
+  process.stdout.write(`[Bot] ${message}\n`);
 }
 
 function describeError(error: unknown): string {
@@ -29,12 +36,21 @@ async function main(): Promise<void> {
   await store.load();
 
   const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildModeration],
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildModeration,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+    ],
   });
 
   client.once(Events.ClientReady, async (readyClient) => {
     try {
-      await readyClient.application.commands.set([wildCommand.toJSON()]);
+      await readyClient.application.commands.set([
+        wildCommand.toJSON(),
+        commandsHelpCommand.toJSON(),
+        fgCommand.toJSON(),
+      ]);
     } catch (error) {
       log(`Could not register slash commands: ${describeError(error)}`);
       return;
@@ -52,18 +68,24 @@ async function main(): Promise<void> {
     installUrl.searchParams.set("permissions", requiredPermissions.toString());
 
     log(`Connected as ${readyClient.user.tag}.`);
-    log(`Invite Wild to a server: ${installUrl.toString()}`);
-    log("Global /wild commands are registered; Discord may take a short time to show them.");
+    log(`Invite the bot to a server: ${installUrl.toString()}`);
+    log("Global /wild, /commands, and /fg commands are registered.");
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
     try {
-      await handleWildCommand(interaction, store);
+      if (interaction.commandName === "fg") {
+        await handleFgCommand(interaction, store);
+      } else if (interaction.commandName === "commands") {
+        await handleCommandsHelp(interaction);
+      } else {
+        await handleWildCommand(interaction, store);
+      }
     } catch (error) {
       log(`Command failed: ${describeError(error)}`);
       const response = {
-        content: "Wild couldn't complete that command. Check its permissions and try again.",
+        content: "The bot couldn't complete that command. Check its permissions and try again.",
         ephemeral: true,
       };
       if (interaction.replied || interaction.deferred) {
@@ -74,12 +96,23 @@ async function main(): Promise<void> {
     }
   });
 
+  client.on(Events.MessageCreate, async (message) => {
+    try {
+      await handleFgShareMessage(message, store);
+    } catch (error) {
+      log(`FG share failed: ${describeError(error)}`);
+      await message
+        .reply("The bot couldn't complete that FG role share. Check its permissions and try again.")
+        .catch(() => undefined);
+    }
+  });
+
   client.on(
     Events.GuildAuditLogEntryCreate,
     (entry: GuildAuditLogsEntry, guild: Guild) => {
       if (entry.action !== AuditLogEvent.MemberRoleUpdate) return;
       void guardAuditLogEntry(entry, guild, store).catch((error: unknown) => {
-        log(`Role guard failed in server ${guild.id}: ${describeError(error)}`);
+        log(`Guard failed in server ${guild.id}: ${describeError(error)}`);
       });
     },
   );

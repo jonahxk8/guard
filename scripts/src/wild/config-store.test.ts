@@ -20,12 +20,32 @@ test("defaults enforcement to active and persists pause and resume", async () =>
 
     await initialStore.set(GUILD_ID, {
       ...initialStore.get(GUILD_ID),
+      allowedRoleIds: ["222222222222222222"],
+      fgStaffUserIds: ["333333333333333333"],
+      fgStaffRoleIds: ["444444444444444444"],
+      fgRoles: {
+        "555555555555555555": {
+          assignUserIds: ["666666666666666666"],
+          assignRoleIds: ["777777777777777777"],
+          shareUserIds: ["888888888888888888"],
+          shareRoleIds: ["999999999999999999"],
+        },
+      },
       enforcementEnabled: false,
     });
 
     const pausedStore = new ConfigStore();
     await pausedStore.load();
     assert.equal(pausedStore.get(GUILD_ID).enforcementEnabled, false);
+    assert.deepEqual(pausedStore.get(GUILD_ID).allowedRoleIds, ["222222222222222222"]);
+    assert.deepEqual(pausedStore.get(GUILD_ID).fgStaffUserIds, ["333333333333333333"]);
+    assert.deepEqual(pausedStore.get(GUILD_ID).fgStaffRoleIds, ["444444444444444444"]);
+    assert.deepEqual(pausedStore.get(GUILD_ID).fgRoles["555555555555555555"], {
+      assignUserIds: ["666666666666666666"],
+      assignRoleIds: ["777777777777777777"],
+      shareUserIds: ["888888888888888888"],
+      shareRoleIds: ["999999999999999999"],
+    });
     assert.equal(
       JSON.parse(await readFile(configPath, "utf8")).guilds[GUILD_ID]
         .enforcementEnabled,
@@ -76,6 +96,8 @@ test("treats saved settings without enforcement state as active", async () => {
     const store = new ConfigStore();
     await store.load();
     assert.equal(store.get(GUILD_ID).enforcementEnabled, true);
+    assert.deepEqual(store.get(GUILD_ID).allowedRoleIds, []);
+    assert.deepEqual(store.get(GUILD_ID).fgRoles, {});
   } finally {
     if (previousConfigPath === undefined) {
       delete process.env.WILD_CONFIG_PATH;

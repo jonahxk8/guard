@@ -52,7 +52,7 @@ async function isAllowedForRole(
   roleId: string,
 ): Promise<boolean> {
   if (!actorId) return false;
-  if (actorId === guild.client.user?.id) return true;
+  if (actorId === guild.client?.user?.id) return true;
 
   const fgAccess = settings.fgRoles[roleId];
   if (fgAccess) {

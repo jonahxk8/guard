@@ -15,6 +15,7 @@ const MEMBER_ID = "222222222222222222";
 const ROLE_ID = "333333333333333333";
 const ALLOWED_ACTOR_ID = "444444444444444444";
 const UNAPPROVED_ACTOR_ID = "555555555555555555";
+const ALLOWED_ROLE_ID = "888888888888888888";
 
 interface SentMessage {
   embeds: EmbedBuilder[];
@@ -31,6 +32,8 @@ interface GuardSetup {
 function createSetup(
   options: {
     allowedUserIds?: string[];
+    allowedRoleIds?: string[];
+    actorRoleIds?: string[];
     hasManageRoles?: boolean;
     botAboveRole?: boolean;
     enforcementEnabled?: boolean;
@@ -39,6 +42,10 @@ function createSetup(
   const settings: GuildSettings = {
     protectedRoleIds: [ROLE_ID],
     allowedUserIds: options.allowedUserIds ?? [],
+    allowedRoleIds: options.allowedRoleIds ?? [],
+    fgStaffUserIds: [],
+    fgStaffRoleIds: [],
+    fgRoles: {},
     logChannelId: "666666666666666666",
     enforcementEnabled: options.enforcementEnabled ?? true,
   };
@@ -51,6 +58,15 @@ function createSetup(
     roles: {
       remove: async (roleIds: string[]) => {
         removedRoleIds.push(roleIds);
+      },
+    },
+  };
+  const actor = {
+    id: UNAPPROVED_ACTOR_ID,
+    roles: {
+      cache: {
+        some: (predicate: (role: { id: string }) => boolean) =>
+          (options.actorRoleIds ?? []).some((roleId) => predicate({ id: roleId })),
       },
     },
   };
@@ -79,9 +95,9 @@ function createSetup(
     },
     members: {
       me: botMember,
-      fetch: async () => {
+      fetch: async (memberId: string) => {
         memberFetchCount += 1;
-        return member;
+        return memberId === MEMBER_ID ? member : actor;
       },
       fetchMe: async () => botMember,
     },
@@ -148,6 +164,22 @@ test("keeps watched roles assigned by an allowlisted actor", async () => {
   assert.equal(setup.sentMessages.length, 0);
 });
 
+test("keeps watched roles assigned by a member of an allowlisted role", async () => {
+  const setup = createSetup({
+    allowedRoleIds: [ALLOWED_ROLE_ID],
+    actorRoleIds: [ALLOWED_ROLE_ID],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-allowed-role", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+});
+
 test("removes watched roles assigned by an unapproved actor", async () => {
   const setup = createSetup();
 
@@ -201,7 +233,7 @@ test("removes watched roles when the audit log does not verify an actor", async 
   );
   assert.equal(
     embed.fields?.find((field) => field.name === "Reason")?.value,
-    "Wild could not verify the assigner.",
+    "Bot could not verify the assigner.",
   );
 });
 

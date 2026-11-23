@@ -1346,7 +1346,7 @@ test("/fg share succeeds for an assigned member who is not whitelisted", async (
   // An offer was sent (public embed), not an error reply.
   assert.equal(replies[0].ephemeral, undefined);
   assert.ok(replies[0].embeds?.length === 1);
-  assert.match(replies[0].embeds?.[0].toJSON().title ?? "", /FG role share/);
+  assert.match(replies[0].embeds?.[0].toJSON().title ?? "", /fg share/);
 });
 
 test("/fg share succeeds for an authed member who does not hold the role", async () => {
@@ -1425,8 +1425,11 @@ test("/fg list shows FG roles with owners in a colorless embed", async () => {
   assert.equal(embed?.footer, undefined);
   assert.equal(embed?.timestamp, undefined);
   assert.equal(embed?.fields?.length, 1);
-  assert.equal(embed?.fields?.[0]?.name, "My FG");
-  assert.match(embed?.fields?.[0]?.value ?? "", new RegExp(`<@${MEMBER_ID}>`));
+  // Field name is the role itself (@mention); value is the owner's
+  // plain display name as text, never an @ mention of the owner.
+  assert.equal(embed?.fields?.[0]?.name, `<@&${FG_ROLE_ID}>`);
+  assert.equal(embed?.fields?.[0]?.value, "Owner: Alex");
+  assert.doesNotMatch(embed?.fields?.[0]?.value ?? "", /<@/);
   // Plain text only: no emoji anywhere in the FG list embed.
   assert.doesNotMatch(
     JSON.stringify(embed),
@@ -1650,7 +1653,7 @@ test("/fg share offer is one sleek line with no fields", async () => {
     description?: string;
     fields?: unknown[];
   };
-  assert.equal(embed.title, "FG role share");
+  assert.equal(embed.title, "fg share");
   assert.equal(embed.fields, undefined);
   assert.equal(
     embed.description,

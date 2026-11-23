@@ -1038,13 +1038,22 @@ async function handleListCommand(
     return;
   }
   const entries = Object.entries(settings.fgRoleOwners).slice(0, 25);
-  const fields = entries.map(([roleId, ownerId]) => {
-    const role = guild.roles.cache.get(roleId);
-    return {
-      name: role ? roleDisplayName(role) : `Deleted role \`${roleId}\``,
-      value: `Owner: <@${ownerId}>`,
-    };
-  });
+  // Field name is the role itself (@mention, no ping — replies set
+  // allowedMentions parse: []); value is the owner's plain display
+  // name as text, never an @ mention. An owner who cannot be fetched
+  // shows as their plain user ID, also never a mention.
+  const fields = await Promise.all(
+    entries.map(async ([roleId, ownerId]) => {
+      const role = guild.roles.cache.get(roleId);
+      const owner = await guild.members.fetch(ownerId).catch(() => null);
+      const ownerName =
+        owner?.displayName ?? owner?.user?.username ?? ownerId;
+      return {
+        name: role ? roleMention(role) : `Deleted role \`${roleId}\``,
+        value: `Owner: ${ownerName}`,
+      };
+    }),
+  );
   const extra = Object.keys(settings.fgRoleOwners).length - entries.length;
   await interaction.reply({
     embeds: [
@@ -1347,7 +1356,7 @@ async function finishShareOffer(
     await button.update({
       embeds: [
         buildShareEmbed(
-          "FG role offer ended",
+          "fg share ended",
           "This FG role is no longer available.",
         ),
       ],
@@ -1361,7 +1370,7 @@ async function finishShareOffer(
     await button.update({
       embeds: [
         buildShareEmbed(
-          "FG role declined",
+          "fg share declined",
           `<@${targetId}> declined ${roleMention(role)}.`,
         ),
       ],
@@ -1379,7 +1388,7 @@ async function finishShareOffer(
     await button.update({
       embeds: [
         buildShareEmbed(
-          "FG role offer ended",
+          "fg share ended",
           "The person who shared this role no longer has share access.",
         ),
       ],
@@ -1399,7 +1408,7 @@ async function finishShareOffer(
     await button.update({
       embeds: [
         buildShareEmbed(
-          "FG role could not be applied",
+          "fg share could not be applied",
           "The bot can't manage this role right now. Ask server staff to check its role order and permissions.",
         ),
       ],
@@ -1415,7 +1424,7 @@ async function finishShareOffer(
     await button.update({
       embeds: [
         buildShareEmbed(
-          "FG role already assigned",
+          "fg share already assigned",
           `<@${targetId}> already has an FG role.`,
         ),
       ],
@@ -1430,7 +1439,7 @@ async function finishShareOffer(
     await button.update({
       embeds: [
         buildShareEmbed(
-          "FG role accepted",
+          "fg share accepted",
           `<@${targetId}> accepted ${roleMention(role)}.`,
         ),
       ],
@@ -1441,7 +1450,7 @@ async function finishShareOffer(
     await button.update({
       embeds: [
         buildShareEmbed(
-          "FG role could not be applied",
+          "fg share could not be applied",
           "The bot couldn't give them this role. Ask server staff to check its permissions.",
         ),
       ],
@@ -1506,7 +1515,7 @@ async function handleShareCommand(
   await interaction.reply({
     embeds: [
       buildShareEmbed(
-        "FG role share",
+        "fg share",
         `<@${requester.id}> is offering ${roleMention(role)} to <@${target.id}> — tap Yes to accept.`,
       ),
     ],
@@ -1568,7 +1577,7 @@ async function handleShareCommand(
       .edit({
         embeds: [
           buildShareEmbed(
-            "FG role offer expired",
+            "fg share expired",
             `<@${requester.id}>'s offer of ${roleMention(role)} to <@${target.id}> expired without a response.`,
           ),
         ],

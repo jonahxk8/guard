@@ -155,12 +155,77 @@ async function sendLog(
     .catch(() => undefined);
 }
 
-async function isAllowedForRole(
+/**
+ * Parse the human who asked another bot to assign a role, from the
+ * audit entry's reason. Bleed passes a reason like "added role by
+ * weak3" when it adds a role via the API, and Discord stores it on
+ * the audit entry. The token is usually a username; a 17–19 digit
+ * token is a user ID. Tolerates surrounding text and case; a trailing
+ * "#1234" discriminator or trailing punctuation is stripped. Returns
+ * null when the reason has no "added role by <token>" in it.
+ */
+export function parseAuditReasonRequester(
+  reason: string | null | undefined,
+): string | null {
+  if (!reason) return null;
+  const match = /added role by\s+([^\s,;]+)/i.exec(reason);
+  if (!match) return null;
+  const token = match[1]
+    .replace(/#\d{4}$/, "")
+    .replace(/[.,;:!?]+$/, "");
+  return token.length > 0 ? token : null;
+}
+
+/**
+ * Resolve a requester token from an audit reason to a guild member.
+ * A 17–19 digit token is a user ID (fresh fetch). Anything else is a
+ * username: exact match (case-insensitive) against the member cache,
+ * then a REST member search. Exactly one exact match is required —
+ * zero or several matches means the token does not resolve.
+ */
+async function resolveReasonRequester(
+  guild: Guild,
+  token: string,
+): Promise<GuildMember | null> {
+  if (/^\d{17,19}$/.test(token)) {
+    return fetchMemberFresh(guild, token);
+  }
+  const lower = token.toLowerCase();
+  const cache = (
+    guild.members as unknown as {
+      cache?: {
+        find?: (
+          predicate: (member: GuildMember) => boolean,
+        ) => GuildMember | undefined;
+      };
+    }
+  ).cache;
+  const cached = cache?.find?.(
+    (member) => member.user?.username?.toLowerCase() === lower,
+  );
+  if (cached) return cached;
+  const results = await guild.members
+    .fetch({ query: token, limit: 10 })
+    .catch(() => null);
+  if (!results) return null;
+  const exact = [...results.values()].filter(
+    (member) => member.user?.username?.toLowerCase() === lower,
+  );
+  return exact.length === 1 ? exact[0] : null;
+}
+
+/**
+ * Id-only authorisation: no member fetch. Covers Wild itself, the
+ * server owner, whitelisted users, FG staff, FG owners and sharers.
+ * Used for the fast path in guardAuditLogEntry (an id-authorised giver
+ * costs no fetch) and by isAllowedForRole below.
+ */
+function isAllowedById(
   actorId: string | null,
   guild: Guild,
   settings: GuildSettings,
   roleId: string,
-): Promise<boolean> {
+): boolean {
   if (!actorId) return false;
   if (actorId === guild.client?.user?.id) return true;
   // The server owner — and anyone with Administrator — bypasses the
@@ -173,18 +238,25 @@ async function isAllowedForRole(
     // FG roles: whitelisted staff, the FG role's owner, and authorised
     // sharers may all grant the role — by id, before any member fetch.
     // Manage Roles alone authorises nothing: it is never checked here.
-    if (
+    return (
       settings.fgStaffUserIds.includes(actorId) ||
       fgAccess.assignUserIds.includes(actorId) ||
       settings.allowedUserIds.includes(actorId) ||
       settings.fgRoleOwners[roleId] === actorId ||
       (settings.fgRoleSharers[roleId] ?? []).includes(actorId)
-    ) {
-      return true;
-    }
-  } else if (settings.allowedUserIds.includes(actorId)) {
-    return true;
+    );
   }
+  return settings.allowedUserIds.includes(actorId);
+}
+
+async function isAllowedForRole(
+  actorId: string | null,
+  guild: Guild,
+  settings: GuildSettings,
+  roleId: string,
+): Promise<boolean> {
+  if (isAllowedById(actorId, guild, settings, roleId)) return true;
+  if (!actorId) return false;
 
   // Only now fetch the member — FRESH from the API, never the cache:
   // a plain fetch returns the cached member, whose Administrator bit
@@ -195,6 +267,7 @@ async function isAllowedForRole(
   if (actor && isBotAdmin(actor, guild.ownerId)) return true;
 
   if (!actor) return false;
+  const fgAccess = settings.fgRoles[roleId];
   if (fgAccess) {
     // Role-based whitelist, FG staff, assign lists, owner, sharers.
     return (
@@ -214,6 +287,9 @@ function createBlockedAssignmentEmbed(
   // "only": the removal is purely a blacklist hit (giver was authorised).
   // "also": the giver was unauthorised AND the member is blacklisted.
   blacklistNote?: "only" | "also",
+  // How a bot executor's grant was attributed to a human (audit reason
+  // or FG role owner). Human executors get the normal entry, no field.
+  attributionNote?: string | null,
 ): EmbedBuilder {
   const roleMentions = roleIds.map((roleId) => `<@&${roleId}>`).join(", ");
   const actor = actorId
@@ -238,6 +314,9 @@ function createBlockedAssignmentEmbed(
     { name: "Assigned by", value: actor, inline: true },
     { name: "Reason", value: reason, inline: true },
   ];
+  if (attributionNote) {
+    fields.push({ name: "Attribution", value: attributionNote });
+  }
   if (
     typeof offenseCount === "number" &&
     offenseCount >= REPEAT_OFFENDER_THRESHOLD
@@ -408,27 +487,139 @@ export async function guardAuditLogEntry(
   // grant is still removed below (fail closed).
   const actorId = await verifyExecutor(entry, guild);
 
+  // Fast path, no fetch: the executor is authorised by id for every
+  // added role (server owner, Wild itself, whitelisted user, FG owner
+  // or sharer). An id-authorised giver costs no member fetch — and no
+  // bot attribution either, since the grant stands whoever asked for it.
+  const executorAllowedById =
+    actorId !== null &&
+    addedRoleIds.every((roleId) =>
+      isAllowedById(actorId, guild, settings, roleId),
+    );
+
+  // When the executor is NOT authorised by id, work out whether it is
+  // another bot (Bleed, or any bot — not Wild itself). The audit log
+  // names the bot, never the human who asked it to assign the role —
+  // but Bleed passes a reason ("added role by weak3") naming that
+  // human. Only a fetch can tell a bot executor from a human one (the
+  // member cache is stale by design — no GuildMembers intent), so this
+  // costs one force-fetch for non-id-authorised executors.
+  let executorIsOtherBot = false;
+  let reasonActorId: string | null = null;
+  let reasonAttributionNote: string | null = null;
+  if (!executorAllowedById && actorId && actorId !== guild.client?.user?.id) {
+    const executorMember = await fetchMemberFresh(guild, actorId);
+    executorIsOtherBot = Boolean(executorMember?.user?.bot);
+    if (executorIsOtherBot) {
+      const token = parseAuditReasonRequester(entry.reason);
+      if (token) {
+        const requester = await resolveReasonRequester(guild, token);
+        if (requester) {
+          reasonActorId = requester.id;
+          reasonAttributionNote = `Audit reason: added role by ${token}`;
+        }
+      }
+    }
+  }
+
+  // Effective actor per role: the executor, or for a bot executor the
+  // human from the audit reason, or (FG roles only) the FG role's
+  // owner — in Bleed only the owner of a booster role can share it.
+  // null = no human to attribute the grant to.
+  const effectiveActorByRole = new Map<string, string | null>();
+  for (const roleId of addedRoleIds) {
+    if (!executorIsOtherBot) {
+      effectiveActorByRole.set(roleId, actorId);
+      continue;
+    }
+    if (reasonActorId) {
+      effectiveActorByRole.set(roleId, reasonActorId);
+      continue;
+    }
+    const ownerId = settings.fgRoles[roleId]
+      ? settings.fgRoleOwners[roleId]
+      : undefined;
+    effectiveActorByRole.set(roleId, ownerId ?? null);
+  }
+
+  // Roles grouped by the human they are attributed to (null = no
+  // human: a bot grant with no requester in the reason and no FG owner
+  // to fall back to). Only attributed humans are DM'd or counted as
+  // offenders; unattributed roles are removed and logged only.
+  const groupRolesByActor = (
+    roleIds: string[],
+  ): Map<string | null, string[]> => {
+    const groups = new Map<string | null, string[]>();
+    for (const roleId of roleIds) {
+      const attributed = effectiveActorByRole.get(roleId) ?? null;
+      const list = groups.get(attributed) ?? [];
+      list.push(roleId);
+      groups.set(attributed, list);
+    }
+    return groups;
+  };
+
+  // The log names the single attributed human when there is exactly
+  // one; otherwise it names the executor (e.g. Bleed) when known, so
+  // the entry still says who performed the grant.
+  const logActorId = (roleIds: string[]): string | null => {
+    const actors = [
+      ...new Set(
+        roleIds.map((roleId) => effectiveActorByRole.get(roleId) ?? null),
+      ),
+    ];
+    if (actors.length === 1 && actors[0]) return actors[0];
+    return actorId;
+  };
+
+  // Which attribution path was taken, for the log entry (bot executors
+  // only; human executors get the normal entry, no field).
+  const attributionNote = (): string | null => {
+    if (!executorIsOtherBot) return null;
+    if (reasonActorId) return reasonAttributionNote;
+    if ([...effectiveActorByRole.values()].some((id) => id)) {
+      return "Attributed to the FG role owner (no requester in the audit reason)";
+    }
+    return "No requester found in the audit reason";
+  };
+
   // Blacklist check, on the same flow as the unauthorised-giver check:
   // a protected role granted to a user blacklisted from THAT role is
   // removed even when the giver was authorised — the blacklist blocks the
-  // target, not the giver. Only the server owner and Administrators
-  // bypass it. The actor is only fetched when the target is actually
-  // blacklisted, so an id-whitelisted giver costs no member fetch.
+  // target, not the giver. The exemption is per role: the effective
+  // actor (the executor, or the human attributed to a bot executor's
+  // grant) being the server owner or an Administrator bypasses it. The
+  // actor is only fetched when the target is actually blacklisted, so
+  // an id-whitelisted giver costs no member fetch.
   const targetIsBlacklisted = addedRoleIds.some((roleId) =>
     isBlacklisted(settings, targetId, roleId),
   );
-  let actorIsExempt = actorId === guild.ownerId;
-  if (targetIsBlacklisted && actorId && !actorIsExempt) {
-    const actorMember = await fetchMemberFresh(guild, actorId);
-    actorIsExempt = isBotAdmin(actorMember, guild.ownerId);
+  const exemptByRole = new Map<string, boolean>();
+  if (targetIsBlacklisted) {
+    for (const roleId of addedRoleIds) {
+      const effective = effectiveActorByRole.get(roleId);
+      let exempt = effective === guild.ownerId;
+      if (!exempt && effective) {
+        const member = await fetchMemberFresh(guild, effective);
+        exempt = isBotAdmin(member, guild.ownerId);
+      }
+      exemptByRole.set(roleId, exempt);
+    }
   }
   const blacklistedRoleIds = addedRoleIds.filter(
-    (roleId) => !actorIsExempt && isBlacklisted(settings, targetId, roleId),
+    (roleId) => !exemptByRole.get(roleId) && isBlacklisted(settings, targetId, roleId),
   );
 
   let watchedRoleIds: string[] = [];
   for (const roleId of addedRoleIds) {
-    if (!(await isAllowedForRole(actorId, guild, settings, roleId))) {
+    if (
+      !(await isAllowedForRole(
+        effectiveActorByRole.get(roleId) ?? null,
+        guild,
+        settings,
+        roleId,
+      ))
+    ) {
       watchedRoleIds.push(roleId);
     }
   }
@@ -438,9 +629,14 @@ export async function guardAuditLogEntry(
   // roles, and a cached member could claim roles it no longer has.
   const member = await fetchMemberFresh(guild, targetId);
   if (!member) {
+    const unionRoleIds = [...new Set([...watchedRoleIds, ...blacklistedRoleIds])];
     let offenseCount = 0;
-    if (actorId && watchedRoleIds.length > 0) {
-      offenseCount = recordOffense(guild.id, actorId);
+    for (const [attributed] of groupRolesByActor(watchedRoleIds)) {
+      if (!attributed) continue;
+      offenseCount = Math.max(
+        offenseCount,
+        recordOffense(guild.id, attributed),
+      );
     }
     const actionNeeded =
       "Bot could not fetch the member to remove the role. Check its server permissions.";
@@ -449,8 +645,8 @@ export async function guardAuditLogEntry(
       settings,
       createBlockedAssignmentEmbed(
         targetId,
-        [...new Set([...watchedRoleIds, ...blacklistedRoleIds])],
-        actorId,
+        unionRoleIds,
+        logActorId(unionRoleIds),
         actionNeeded,
         offenseCount,
         blacklistedRoleIds.length > 0
@@ -458,14 +654,16 @@ export async function guardAuditLogEntry(
             ? "also"
             : "only"
           : undefined,
+        attributionNote(),
       ),
     );
-    if (actorId) {
+    for (const [attributed, roles] of groupRolesByActor(unionRoleIds)) {
+      if (!attributed) continue;
       await notifyRemovalFailed(
         guild,
-        actorId,
+        attributed,
         targetId,
-        [...new Set([...watchedRoleIds, ...blacklistedRoleIds])],
+        roles,
         actionNeeded,
       );
     }
@@ -489,16 +687,22 @@ export async function guardAuditLogEntry(
         : "only"
       : undefined;
 
-  // Record the offence first. The owner, Administrators, and the bot
-  // never reach this path (bypassed).
+  // Record the offence first, once per attributed human. The owner,
+  // Administrators, and the bot never reach this path (bypassed).
   // A blacklist-only removal is not an offence by the giver — they were
   // allowed to assign roles — so no offence is recorded for it.
   // The giver is told why only AFTER the removal is attempted, so the
   // DM never claims a removal that did not happen: success gets the
   // "Role removed" DM, failure gets a "could not be removed" DM.
+  // Each attributed human is DM'd about their own roles only; a grant
+  // with no human to attribute it to is never DM'd.
   let offenseCount = 0;
-  if (actorId && watchedRoleIds.length > 0) {
-    offenseCount = recordOffense(guild.id, actorId);
+  for (const [attributed] of groupRolesByActor(watchedRoleIds)) {
+    if (!attributed) continue;
+    offenseCount = Math.max(
+      offenseCount,
+      recordOffense(guild.id, attributed),
+    );
   }
 
   const botMember = await fetchBotMemberFresh(guild);
@@ -529,23 +733,30 @@ export async function guardAuditLogEntry(
       "Bot cannot manage one or more watched roles. Check Manage Roles and role order.";
   }
 
-  if (actorId) {
+  for (const [dmActor, dmRoles] of groupRolesByActor(removalRoleIds)) {
+    if (!dmActor) continue;
+    const dmWatched = dmRoles.filter((roleId) =>
+      watchedRoleIds.includes(roleId),
+    );
+    const dmBlacklisted = dmRoles.filter((roleId) =>
+      heldBlacklistedRoleIds.includes(roleId),
+    );
     if (actionNeeded) {
       await notifyRemovalFailed(
         guild,
-        actorId,
+        dmActor,
         targetId,
-        removalRoleIds,
+        dmRoles,
         actionNeeded,
       );
-    } else if (watchedRoleIds.length > 0) {
-      await notifyActor(guild, actorId, targetId, watchedRoleIds);
+    } else if (dmWatched.length > 0) {
+      await notifyActor(guild, dmActor, targetId, dmWatched);
     } else {
       await notifyBlacklistedActor(
         guild,
-        actorId,
+        dmActor,
         targetId,
-        heldBlacklistedRoleIds,
+        dmBlacklisted,
       );
     }
   }
@@ -556,10 +767,11 @@ export async function guardAuditLogEntry(
     createBlockedAssignmentEmbed(
       member.id,
       removalRoleIds,
-      actorId,
+      logActorId(removalRoleIds),
       actionNeeded,
       offenseCount,
       blacklistNote,
+      attributionNote(),
     ),
   );
 }

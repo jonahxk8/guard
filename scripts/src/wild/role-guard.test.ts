@@ -13,6 +13,7 @@ import {
   guardAuditLogEntry,
   getOffenseCount,
   isDangerousRole,
+  parseAuditReasonRequester,
   sweepMissedGrants,
   verifyExecutor,
 } from "./role-guard.js";
@@ -28,6 +29,8 @@ const UNAPPROVED_ACTOR_ID = "555555555555555555";
 const ALLOWED_ROLE_ID = "888888888888888888";
 const REPEAT_ACTOR_ID = "121212121212121212";
 const OWNER_ID = "999999999999999999";
+const BLEED_BOT_ID = "131313131313131313";
+const WEAK3_ID = "141414141414141414";
 const NOW = 1_700_000_000_000;
 
 interface SentMessage {
@@ -74,6 +77,10 @@ function createSetup(
     // actorCachedIsAdmin, while a force fetch returns the fresh member
     // (Administrator = actorIsAdmin). This is the reported live bug.
     actorCachedIsAdmin?: boolean;
+    // Members resolvable by username (REST member search): Bleed's
+    // audit reason names the requester by username ("added role by
+    // weak3"), and the guard resolves it to one of these.
+    usernameMembers?: Array<{ id: string; username: string; displayName?: string }>;
     // Whether the target member currently holds the watched role
     // (roles.cache.has). Defaults to true.
     targetHoldsRole?: boolean;
@@ -129,6 +136,7 @@ function createSetup(
   };
   const actor = {
     id: UNAPPROVED_ACTOR_ID,
+    user: { bot: false, username: "actor" },
     permissions: {
       has: (permission: bigint) => {
         if (permission === PermissionFlagsBits.Administrator) {
@@ -178,6 +186,55 @@ function createSetup(
             },
           },
         };
+  // Bleed's bot user: the audit executor when a role is granted
+  // through Bleed. Its DM send records, so a test can prove the guard
+  // never DMs the bot itself.
+  const bleedBot = {
+    id: BLEED_BOT_ID,
+    user: { bot: true, username: "bleed" },
+    permissions: { has: () => false },
+    roles: {
+      cache: {
+        has: () => false,
+        some: () => false,
+      },
+    },
+    send: async (message: DmMessage) => {
+      dms.push(message);
+    },
+  };
+  // The FG role's owner, as a member: used for the FG-owner fallback
+  // attribution and for DM assertions (their send records).
+  const ownerMember = {
+    id: FG_OWNER_ID,
+    displayName: "Leen",
+    user: { bot: false, username: "leen" },
+    permissions: { has: () => false },
+    roles: {
+      cache: {
+        has: () => false,
+        some: () => false,
+      },
+    },
+    send: async (message: DmMessage) => {
+      dms.push(message);
+    },
+  };
+  const usernameMembers = (options.usernameMembers ?? []).map((entry) => ({
+    id: entry.id,
+    displayName: entry.displayName ?? entry.username,
+    user: { bot: false, username: entry.username },
+    permissions: { has: () => false },
+    roles: {
+      cache: {
+        has: () => false,
+        some: () => false,
+      },
+    },
+    send: async (message: DmMessage) => {
+      dms.push(message);
+    },
+  }));
   const botMember = {
     permissions: {
       has: (permission: bigint) =>
@@ -208,13 +265,34 @@ function createSetup(
       me: botMember,
       // Simulates discord.js `GuildMemberManager.fetch`: without
       // `force: true` a cached member is returned with no API call,
-      // with `force: true` the fresh member comes back.
-      fetch: async (arg: string | { user?: string; force?: boolean }) => {
+      // with `force: true` the fresh member comes back. A `{ query }`
+      // fetch is the REST member search: prefix matches on username.
+      fetch: async (
+        arg:
+          | string
+          | { user?: string; force?: boolean; query?: string; limit?: number },
+      ) => {
+        if (typeof arg === "object" && typeof arg.query === "string") {
+          const query = arg.query.toLowerCase();
+          const matches = new Map<string, unknown>();
+          for (const candidate of usernameMembers) {
+            if (candidate.user.username.toLowerCase().startsWith(query)) {
+              matches.set(candidate.id, candidate);
+            }
+          }
+          return matches;
+        }
         const userId = typeof arg === "string" ? arg : (arg.user ?? "");
         const force = typeof arg === "object" && arg.force === true;
         memberFetchCount += 1;
         memberFetchCalls.push({ user: userId, force });
         if (userId === MEMBER_ID) return member;
+        if (userId === BLEED_BOT_ID) return bleedBot;
+        if (userId === FG_OWNER_ID) return ownerMember;
+        const usernameMember = usernameMembers.find(
+          (candidate) => candidate.id === userId,
+        );
+        if (usernameMember) return usernameMember;
         if (!force && staleActor) return staleActor;
         return actor;
       },
@@ -255,13 +333,14 @@ function createEntry(
   id: string,
   executorId: string | null,
   createdTimestamp: number = NOW,
-  entryOptions: { roleId?: string; targetId?: string } = {},
+  entryOptions: { roleId?: string; targetId?: string; reason?: string | null } = {},
 ): GuildAuditLogsEntry {
   return {
     id,
     action: AuditLogEvent.MemberRoleUpdate,
     targetId: entryOptions.targetId ?? MEMBER_ID,
     executorId,
+    reason: entryOptions.reason ?? null,
     createdTimestamp,
     changes: [
       {
@@ -968,4 +1047,199 @@ test("sweepMissedGrants never throws when the audit log cannot be read", async (
     NOW,
   );
   assert.deepEqual(noFetchSetup.removedRoleIds, []);
+});
+
+test("parseAuditReasonRequester pulls the requester out of a Bleed audit reason", () => {
+  assert.equal(parseAuditReasonRequester("added role by weak3"), "weak3");
+  assert.equal(parseAuditReasonRequester("Added Role By Weak3"), "Weak3");
+  assert.equal(
+    parseAuditReasonRequester("added role by 141414141414141414"),
+    "141414141414141414",
+  );
+  assert.equal(
+    parseAuditReasonRequester("added role by weak3, via booster"),
+    "weak3",
+  );
+  assert.equal(parseAuditReasonRequester("added role by weak3#1234"), "weak3");
+  assert.equal(parseAuditReasonRequester("something else entirely"), null);
+  assert.equal(parseAuditReasonRequester("added role by"), null);
+  assert.equal(parseAuditReasonRequester(null), null);
+  assert.equal(parseAuditReasonRequester(""), null);
+});
+
+test("allows a Bleed grant when the audit reason names a whitelisted requester", async () => {
+  // Bleed is the audit executor, but its reason names weak3 — and
+  // weak3 is whitelisted, so the grant stands. The bot itself is never
+  // treated as authorised just for being the executor.
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+    allowedUserIds: [WEAK3_ID],
+    usernameMembers: [{ id: WEAK3_ID, username: "weak3" }],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-bleed-allowed", BLEED_BOT_ID, NOW, {
+      roleId: FG_ROLE_ID,
+      reason: "added role by weak3",
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+  assert.equal(getOffenseCount(GUILD_ID, BLEED_BOT_ID), 0);
+  assert.equal(getOffenseCount(GUILD_ID, WEAK3_ID), 0);
+});
+
+test("removes a Bleed grant when the audit reason names an unauthorised requester", async () => {
+  clearOffenses();
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+    usernameMembers: [{ id: WEAK3_ID, username: "weak3" }],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-bleed-denied", BLEED_BOT_ID, NOW, {
+      roleId: FG_ROLE_ID,
+      reason: "added role by weak3",
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[FG_ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
+  const embed = getLoggedEmbed(setup);
+  assert.equal(embed.title, "Unauthorized role assignment");
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Assigned by")?.value,
+    `<@${WEAK3_ID}>`,
+  );
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Attribution")?.value,
+    "Audit reason: added role by weak3",
+  );
+  // The DM goes to weak3, the human — never to the Bleed bot.
+  assert.equal(setup.dms.length, 1);
+  assert.equal(getDmEmbed(setup).title, "Role removed");
+  assert.equal(getOffenseCount(GUILD_ID, WEAK3_ID), 1);
+  assert.equal(getOffenseCount(GUILD_ID, BLEED_BOT_ID), 0);
+});
+
+test("removes a Bleed grant of a protected role when the audit reason names an unauthorised requester", async () => {
+  // The reason attribution covers protected roles too, not just FG
+  // roles — the screenshot that proved this showed "pic perms".
+  clearOffenses();
+  const setup = createSetup({
+    usernameMembers: [{ id: WEAK3_ID, username: "weak3" }],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-bleed-protected", BLEED_BOT_ID, NOW, {
+      roleId: ROLE_ID,
+      reason: "added role by weak3",
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
+  const embed = getLoggedEmbed(setup);
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Assigned by")?.value,
+    `<@${WEAK3_ID}>`,
+  );
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Attribution")?.value,
+    "Audit reason: added role by weak3",
+  );
+  assert.equal(setup.dms.length, 1);
+  assert.equal(getDmEmbed(setup).title, "Role removed");
+  assert.equal(getOffenseCount(GUILD_ID, WEAK3_ID), 1);
+});
+
+test("falls back to the FG role owner when a Bleed grant has no audit reason", async () => {
+  // No reason to parse, so the grant is attributed to the FG role's
+  // owner — who is authorised for their own role, so it stands.
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+    usernameMembers: [{ id: WEAK3_ID, username: "weak3" }],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-bleed-no-reason", BLEED_BOT_ID, NOW, {
+      roleId: FG_ROLE_ID,
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("removes a Bleed grant with an unresolvable requester and no FG owner to fall back to", async () => {
+  clearOffenses();
+  const setup = createSetup({
+    usernameMembers: [{ id: WEAK3_ID, username: "weak3" }],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-bleed-unknown", BLEED_BOT_ID, NOW, {
+      roleId: ROLE_ID,
+      reason: "added role by ghostuser",
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
+  const embed = getLoggedEmbed(setup);
+  // No human could be attributed, so the log names the executor
+  // (Bleed) and says so — and nobody is DM'd.
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Assigned by")?.value,
+    `<@${BLEED_BOT_ID}>`,
+  );
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Attribution")?.value,
+    "No requester found in the audit reason",
+  );
+  assert.equal(setup.dms.length, 0);
+  assert.equal(getOffenseCount(GUILD_ID, BLEED_BOT_ID), 0);
+  assert.equal(getOffenseCount(GUILD_ID, WEAK3_ID), 0);
+});
+
+test("resolves a user ID in the audit reason to the requester", async () => {
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+    allowedUserIds: [WEAK3_ID],
+    usernameMembers: [{ id: WEAK3_ID, username: "weak3" }],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-bleed-by-id", BLEED_BOT_ID, NOW, {
+      roleId: FG_ROLE_ID,
+      reason: `added role by ${WEAK3_ID}`,
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
 });

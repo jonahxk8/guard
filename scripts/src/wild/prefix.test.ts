@@ -503,7 +503,7 @@ test(",fg rename and ,fg share route to the shared FG handler", async () => {
     description?: string;
     fields?: unknown[];
   };
-  assert.equal(embed.title, "FG role share");
+  assert.equal(embed.title, "fg share");
   assert.equal(embed.fields, undefined);
   assert.match(embed.description ?? "", /is offering/);
   assert.match(embed.description ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));

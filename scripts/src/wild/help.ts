@@ -267,6 +267,7 @@ export type HelpGate =
   | "manageOrWhitelisted"
   | "ownerOrWhitelisted"
   | "fgOwner"
+  | "fgOwnerOrPrivileged"
   | "canShare"
   | "canAuth";
 
@@ -287,6 +288,11 @@ export function canSeeEntry(
       return caps.owner || caps.admin || caps.whitelisted;
     case "fgOwner":
       return caps.ownsFgRole;
+    case "fgOwnerOrPrivileged":
+      // Recoloring is for FG owners (like Bleed, the owner customises
+      // their own role) and for privileged members, who can create a
+      // role first and then recolor it.
+      return caps.ownsFgRole || caps.privileged;
     case "canShare":
       return caps.canShareAny;
     case "canAuth":
@@ -364,20 +370,20 @@ const FG_ENTRIES: HelpEntry[] = [
   },
   {
     key: "fg color",
-    slash: "/fg color <color> <name>",
-    prefix: ",fg color <color> <name> [second_color]",
-    purpose: "Make your own FG role (hex, name, random, holographic)",
-    example: "/fg color #ff0000 My Role",
-    examplePrefix: ",fg color #ff0000 My Role",
-    gate: "ownerOrWhitelisted",
+    slash: "/fg color <color> [second_color]",
+    prefix: ",fg color <color> [second_color]",
+    purpose: "Recolor your FG role (hex, random, holographic, dominant)",
+    example: "/fg color #ff0000",
+    examplePrefix: ",fg color #ff0000",
+    gate: "fgOwnerOrPrivileged",
   },
   {
     key: "fg create",
-    slash: "/fg create <name> <color> [second_color] [@member]",
-    prefix: ",fg create <name> <color> [second_color] [@member]",
-    purpose: "Create an FG role",
-    example: "/fg create My Role #ff0000 @Alex",
-    examplePrefix: ",fg create My Role #ff0000 @Alex",
+    slash: "/fg create <name> [@member]",
+    prefix: ",fg create <name> [@member]",
+    purpose: "Create an FG role (color from their picture)",
+    example: "/fg create My Role @Alex",
+    examplePrefix: ",fg create My Role @Alex",
     gate: "ownerOrWhitelisted",
   },
   {

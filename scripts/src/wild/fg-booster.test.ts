@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { deflateSync } from "node:zlib";
 import {
   ChatInputCommandInteraction,
   EmbedBuilder,
@@ -101,13 +102,24 @@ interface MockRole {
   icon?: string | null;
   unicodeEmoji?: string | null;
   deleted: boolean;
+  /** Make setColors reject gradient/holographic colors, like Discord does without the Enhanced Role Styles perk. */
+  rejectEnhancedStyles?: boolean;
+  edits: Array<Record<string, unknown>>;
+  /** Every setColors call, including ones Discord rejected. */
+  setColorsAttempts: Array<Record<string, unknown>>;
   setName: (name: string) => Promise<MockRole>;
   setIcon: (icon: string) => Promise<MockRole>;
   setUnicodeEmoji: (emoji: string) => Promise<MockRole>;
+  setColors: (colors: Record<string, unknown>) => Promise<MockRole>;
   delete: () => Promise<void>;
 }
 
-function makeRole(id: string, name = "Role", position = 5): MockRole {
+function makeRole(
+  id: string,
+  name = "Role",
+  position = 5,
+  options: { rejectEnhancedStyles?: boolean } = {},
+): MockRole {
   const role = {
     id,
     name,
@@ -115,6 +127,9 @@ function makeRole(id: string, name = "Role", position = 5): MockRole {
     managed: false,
     permissions: { has: () => false },
     deleted: false,
+    rejectEnhancedStyles: options.rejectEnhancedStyles ?? false,
+    edits: [] as Array<Record<string, unknown>>,
+    setColorsAttempts: [] as Array<Record<string, unknown>>,
     setName: async (newName: string) => {
       role.name = newName;
       return role;
@@ -125,6 +140,18 @@ function makeRole(id: string, name = "Role", position = 5): MockRole {
     },
     setUnicodeEmoji: async (emoji: string) => {
       role.unicodeEmoji = emoji;
+      return role;
+    },
+    setColors: async (colors: Record<string, unknown>) => {
+      role.setColorsAttempts.push({ colors });
+      if (
+        role.rejectEnhancedStyles &&
+        (colors.secondaryColor || colors.tertiaryColor)
+      ) {
+        throw new Error("Enhanced Role Styles not unlocked");
+      }
+      role.edits.push({ colors });
+      role.color = (colors.primaryColor as string | undefined) ?? role.color;
       return role;
     },
     delete: async () => {
@@ -182,6 +209,8 @@ function createGuild(options: {
             : memberId === OTHER_ID
               ? "Sam"
               : "Owner",
+        displayAvatarURL: () =>
+          `https://cdn.discordapp.com/avatars/${memberId}/avatar.png`,
         user: {
           id: memberId,
           username:
@@ -234,6 +263,7 @@ function createGuild(options: {
           typeof createOptions.position === "number"
             ? (createOptions.position as number)
             : 5,
+          { rejectEnhancedStyles: options.rejectEnhancedStyles },
         );
         role.color = colors?.primaryColor ?? (createOptions.color as string);
         rolesCache.set(role.id, role);
@@ -315,135 +345,114 @@ function withGuild(
   return interaction;
 }
 
-test("parseFgColor accepts hex, short hex, and color names", () => {
+/** Small CRC32 for building test PNGs. */
+const CRC_TABLE: Uint32Array = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const typeBuffer = Buffer.from(type, "ascii");
+  let c = 0xffffffff;
+  for (const byte of Buffer.concat([typeBuffer, data])) {
+    c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
+  }
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE((c ^ 0xffffffff) >>> 0, 0);
+  return Buffer.concat([length, typeBuffer, data, crc]);
+}
+
+/** A 1x1 RGB PNG of one solid color, for avatar-color tests. */
+function solidPng(r: number, g: number, b: number): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2; // RGB
+  const raw = Buffer.from([0, r, g, b]);
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+/**
+ * Stub global fetch so avatar reads return the given PNG (or throw),
+ * restoring the real fetch afterwards. Returns a cleanup function.
+ */
+function stubAvatarFetch(png: Buffer | null): () => void {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    if (!png) throw new Error("network down");
+    return {
+      ok: true,
+      arrayBuffer: async () =>
+        png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength),
+    };
+  }) as unknown as typeof fetch;
+  return () => {
+    globalThis.fetch = originalFetch;
+  };
+}
+
+test("parseFgColor accepts hex and rejects names", () => {
   assert.equal(parseFgColor("#ff0000"), "#ff0000");
   assert.equal(parseFgColor("ff0000"), "#ff0000");
   assert.equal(parseFgColor("#f00"), "#ff0000");
-  assert.equal(parseFgColor("blue"), "#0000ff");
-  assert.equal(parseFgColor("grey"), "#808080");
+  assert.equal(parseFgColor("blue"), null);
+  assert.equal(parseFgColor("light blue"), null);
   assert.equal(parseFgColor("not-a-color"), null);
   assert.equal(parseFgColor("#gggggg"), null);
 });
 
-test("/fg base sets the base role for Manage Server members", async () => {
-  const config = createStore();
-  const { guild } = createGuild({
-    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
-  });
-  const { interaction, replies } = createInteraction({
-    action: "base",
-    roleId: BASE_ROLE_ID,
-  });
-
-  await handleFgCommand(withGuild(guild, interaction), config.store);
-
-  assert.equal(config.getSettings().fgBaseRoleId, BASE_ROLE_ID);
-  assert.equal(replies[0].ephemeral, true);
-  assert.match(replyTextOf(replies[0]), /base role/i);
-});
-
-test("/fg base without Manage Server is rejected", async () => {
-  const config = createStore();
-  const { guild } = createGuild({
-    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
-  });
-  const { interaction, replies } = createInteraction({
-    action: "base",
-    roleId: BASE_ROLE_ID,
-    canManageServer: false,
-  });
-
-  await handleFgCommand(withGuild(guild, interaction), config.store);
-
-  assert.equal(config.getSettings().fgBaseRoleId, null);
-  assert.match(replyTextOf(replies[0]), /Manage Server/i);
-});
-
-test("/fg color creates an owned FG role under the base with no permissions", async () => {
-  const config = createStore(
-    makeSettings({
-      allowedUserIds: [MEMBER_ID],
-      fgBaseRoleId: BASE_ROLE_ID,
-      fgRoleSharers: {},
-    }),
-  );
-  const { guild, createdRoles, getMember } = createGuild({
-    roles: [
-      makeRole(BASE_ROLE_ID, "FG Base", 10),
-      makeRole(AWARD_ROLE_ID, "Award", 3),
-    ],
-    memberRoleIds: { [MEMBER_ID]: [] },
-  });
-  const { interaction, replies } = createInteraction({
-    action: "color",
-    strings: { color: "#ff0000", name: "My FG" },
-  });
-
-  await handleFgCommand(withGuild(guild, interaction), config.store);
-
-  assert.equal(createdRoles.length, 1);
-  // FG roles are created with no permissions.
-  assert.deepEqual(createdRoles[0].permissions, []);
-  assert.equal(createdRoles[0].position, 9);
-  const settings = config.getSettings();
-  const createdRoleId = Object.keys(settings.fgRoleOwners)[0];
-  assert.equal(settings.fgRoleOwners[createdRoleId], MEMBER_ID);
-  assert.ok(settings.protectedRoleIds.includes(createdRoleId));
-  assert.ok(settings.fgRoles[createdRoleId]);
-  assert.equal(replies[0].ephemeral, true);
-  assert.match(replyTextOf(replies[0]), /My FG is your FG role now/i);
-  assert.doesNotMatch(replyTextOf(replies[0]), /\[object Object\]/);
-  // The award system is gone: no extra role is granted on creation.
-  assert.equal(
-    (getMember(MEMBER_ID)!.roles as { cache: { has: (id: string) => boolean } }).cache.has(AWARD_ROLE_ID),
-    false,
-  );
-});
-
-test("/fg color rejects a second FG role for the same member", async () => {
-  const config = createStore(
-    makeSettings({
-      allowedUserIds: [MEMBER_ID],
-      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
-      fgRoles: {
-        [FG_ROLE_ID]: {
-          assignUserIds: [],
-          assignRoleIds: [],
-          shareUserIds: [],
-          shareRoleIds: [],
-        },
+function fgOwnedSettings(): GuildSettings {
+  return makeSettings({
+    allowedUserIds: [MEMBER_ID],
+    fgBaseRoleId: BASE_ROLE_ID,
+    fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+    fgRoles: {
+      [FG_ROLE_ID]: {
+        assignUserIds: [],
+        assignRoleIds: [],
+        shareUserIds: [],
+        shareRoleIds: [],
       },
-    }),
-  );
-  const { guild, createdRoles } = createGuild({
-    roles: [makeRole(FG_ROLE_ID, "Old FG", 9)],
+    },
+  });
+}
+
+test("/fg color recolors your own FG role", async () => {
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9);
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
   });
   const { interaction, replies } = createInteraction({
     action: "color",
-    strings: { color: "blue", name: "Second FG" },
+    strings: { color: "#ff0000" },
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(createdRoles.length, 0);
-  assert.match(replyTextOf(replies[0]), /already have an FG role/i);
+  assert.equal(fgRole.edits.length, 1);
+  assert.deepEqual(fgRole.edits[0].colors, { primaryColor: "#ff0000" });
+  assert.equal(replies[0].ephemeral, true);
+  assert.match(replyTextOf(replies[0]), /Your FG role is now #ff0000/i);
+  assert.doesNotMatch(replyTextOf(replies[0]), /\[object Object\]/);
 });
 
-test("/fg color rejects non-whitelisted members", async () => {
-  const config = createStore();
-  const { guild, createdRoles } = createGuild({ roles: [] });
-  const { interaction, replies } = createInteraction({
-    action: "color",
-    strings: { color: "blue", name: "Nope" },
-  });
-
-  await handleFgCommand(withGuild(guild, interaction), config.store);
-
-  assert.equal(createdRoles.length, 0);
-  assert.match(replyTextOf(replies[0]), /whitelisted/i);
-});
-
-test("/fg color with two colors creates a real gradient role", async () => {
+test("/fg color without an FG role tells you to make one with /fg create", async () => {
   const config = createStore(
     makeSettings({
       allowedUserIds: [MEMBER_ID],
@@ -455,159 +464,240 @@ test("/fg color with two colors creates a real gradient role", async () => {
   });
   const { interaction, replies } = createInteraction({
     action: "color",
-    strings: { color: "#ff0000", second_color: "#0000ff", name: "Grad FG" },
+    strings: { color: "#ff0000" },
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(createdRoles.length, 1);
-  assert.deepEqual(createdRoles[0].colors, {
+  assert.equal(createdRoles.length, 0);
+  assert.match(replyTextOf(replies[0]), /make one with \/fg create first/i);
+});
+
+test("/fg color works for an FG owner who is not whitelisted", async () => {
+  // Recoloring your own role is not gated on being whitelisted: like
+  // Bleed, the owner customises their own role.
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9);
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "color",
+    strings: { color: "#00ff00" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(fgRole.edits.length, 1);
+  assert.match(replyTextOf(replies[0]), /Your FG role is now #00ff00/i);
+});
+
+test("/fg color with two hexes recolors as a real gradient", async () => {
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9);
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "color",
+    strings: { color: "#ff0000", second_color: "#0000ff" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(fgRole.edits.length, 1);
+  assert.deepEqual(fgRole.edits[0].colors, {
     primaryColor: "#ff0000",
     secondaryColor: "#0000ff",
   });
-  assert.match(replyTextOf(replies[0]), /Grad FG is your FG role now/i);
+  assert.match(
+    replyTextOf(replies[0]),
+    /gradient from #ff0000 to #0000ff/i,
+  );
   assert.doesNotMatch(replyTextOf(replies[0]), /only show one color/i);
 });
 
-test("/fg color accepts two colors in the one color option", async () => {
-  const config = createStore(
-    makeSettings({
-      allowedUserIds: [MEMBER_ID],
-      fgBaseRoleId: BASE_ROLE_ID,
-    }),
-  );
-  const { guild, createdRoles } = createGuild({
-    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+test("/fg color accepts two hexes in the one color option", async () => {
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9);
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
   });
   const { interaction } = createInteraction({
     action: "color",
-    strings: { color: "red, blue", name: "Grad FG" },
+    strings: { color: "#ff0000, #0000ff" },
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(createdRoles.length, 1);
-  assert.deepEqual(createdRoles[0].colors, {
+  assert.equal(fgRole.edits.length, 1);
+  assert.deepEqual(fgRole.edits[0].colors, {
     primaryColor: "#ff0000",
     secondaryColor: "#0000ff",
   });
 });
 
-test("/fg color holographic creates a role with Discord's preset", async () => {
-  const config = createStore(
-    makeSettings({
-      allowedUserIds: [MEMBER_ID],
-      fgBaseRoleId: BASE_ROLE_ID,
-    }),
-  );
-  const { guild, createdRoles } = createGuild({
-    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+test("/fg color holographic recolors with Discord's preset", async () => {
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9);
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
   });
-  const { interaction } = createInteraction({
+  const { interaction, replies } = createInteraction({
     action: "color",
-    strings: { color: "holographic", name: "Holo FG" },
+    strings: { color: "holographic" },
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(createdRoles.length, 1);
-  assert.deepEqual(createdRoles[0].colors, {
+  assert.equal(fgRole.edits.length, 1);
+  assert.deepEqual(fgRole.edits[0].colors, {
     primaryColor: "#a9c9ff",
     secondaryColor: "#ffbbec",
     tertiaryColor: "#ffc3a0",
   });
+  assert.match(replyTextOf(replies[0]), /now holographic/i);
 });
 
-test("/fg color random creates a role with a valid hex color", async () => {
-  const config = createStore(
-    makeSettings({
-      allowedUserIds: [MEMBER_ID],
-      fgBaseRoleId: BASE_ROLE_ID,
-    }),
-  );
-  const { guild, createdRoles } = createGuild({
-    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+test("/fg color random recolors with a valid hex color", async () => {
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9);
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
   });
   const { interaction } = createInteraction({
     action: "color",
-    strings: { color: "random", name: "Random FG" },
+    strings: { color: "random" },
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(createdRoles.length, 1);
+  assert.equal(fgRole.edits.length, 1);
   assert.match(
-    (createdRoles[0].colors as { primaryColor: string }).primaryColor,
+    (fgRole.edits[0].colors as { primaryColor: string }).primaryColor,
     /^#[0-9a-f]{6}$/,
   );
 });
 
-test("/fg color rejects three colors", async () => {
-  const config = createStore(
-    makeSettings({
-      allowedUserIds: [MEMBER_ID],
-      fgBaseRoleId: BASE_ROLE_ID,
-    }),
-  );
-  const { guild, createdRoles } = createGuild({
-    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+test("/fg color dominant recolors with the avatar's dominant color", async () => {
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9);
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
   });
   const { interaction, replies } = createInteraction({
     action: "color",
-    strings: { color: "red blue", second_color: "#00ff00", name: "Too Many" },
+    strings: { color: "dominant" },
+  });
+  const restoreFetch = stubAvatarFetch(solidPng(0, 128, 255));
+  try {
+    await handleFgCommand(withGuild(guild, interaction), config.store);
+  } finally {
+    restoreFetch();
+  }
+
+  assert.equal(fgRole.edits.length, 1);
+  assert.deepEqual(fgRole.edits[0].colors, { primaryColor: "#0080ff" });
+  assert.match(replyTextOf(replies[0]), /matches your profile picture/i);
+});
+
+test("/fg color dominant falls back to the default color when the avatar can't be read", async () => {
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9);
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "color",
+    strings: { color: "dominant" },
+  });
+  const restoreFetch = stubAvatarFetch(null);
+  try {
+    await handleFgCommand(withGuild(guild, interaction), config.store);
+  } finally {
+    restoreFetch();
+  }
+
+  assert.equal(fgRole.edits.length, 1);
+  assert.deepEqual(fgRole.edits[0].colors, { primaryColor: "#5865f2" });
+  assert.match(replyTextOf(replies[0]), /couldn't read your profile picture/i);
+});
+
+test("/fg color rejects three colors", async () => {
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9);
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "color",
+    strings: { color: "#ff0000 #0000ff", second_color: "#00ff00" },
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(createdRoles.length, 0);
+  assert.equal(fgRole.edits.length, 0);
   assert.match(replyTextOf(replies[0]), /Too many colors/i);
 });
 
-test("/fg color falls back to solid when the server lacks Enhanced Role Styles", async () => {
-  const config = createStore(
-    makeSettings({
-      allowedUserIds: [MEMBER_ID],
-      fgBaseRoleId: BASE_ROLE_ID,
-    }),
-  );
-  const { guild, createdRoles } = createGuild({
-    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
-    rejectEnhancedStyles: true,
+test("/fg color rejects a color name", async () => {
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9);
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
   });
   const { interaction, replies } = createInteraction({
     action: "color",
-    strings: { color: "#ff0000", second_color: "#0000ff", name: "Grad FG" },
+    strings: { color: "blue" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(fgRole.edits.length, 0);
+  assert.match(replyTextOf(replies[0]), /isn't a hex color/i);
+});
+
+test("/fg color falls back to solid when the server lacks Enhanced Role Styles", async () => {
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9, {
+    rejectEnhancedStyles: true,
+  });
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "color",
+    strings: { color: "#ff0000", second_color: "#0000ff" },
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   // First attempt (gradient) rejected, second attempt (solid) kept.
-  assert.equal(createdRoles.length, 2);
-  assert.deepEqual(createdRoles[1].colors, { primaryColor: "#ff0000" });
+  assert.equal(fgRole.setColorsAttempts.length, 2);
+  assert.equal(fgRole.edits.length, 1);
+  assert.deepEqual(fgRole.edits[0].colors, { primaryColor: "#ff0000" });
   assert.match(replyTextOf(replies[0]), /Gradients need the Enhanced Role Styles perk/i);
   assert.match(replyTextOf(replies[0]), /solid #ff0000 for now/i);
 });
 
 test("/fg color holographic falls back to solid without Enhanced Role Styles", async () => {
-  const config = createStore(
-    makeSettings({
-      allowedUserIds: [MEMBER_ID],
-      fgBaseRoleId: BASE_ROLE_ID,
-    }),
-  );
-  const { guild, createdRoles } = createGuild({
-    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "Old FG", 9, {
     rejectEnhancedStyles: true,
+  });
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), fgRole],
   });
   const { interaction, replies } = createInteraction({
     action: "color",
-    strings: { color: "holo", name: "Holo FG" },
+    strings: { color: "holo" },
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(createdRoles.length, 2);
-  assert.deepEqual(createdRoles[1].colors, { primaryColor: "#a9c9ff" });
+  assert.equal(fgRole.setColorsAttempts.length, 2);
+  assert.equal(fgRole.edits.length, 1);
+  assert.deepEqual(fgRole.edits[0].colors, { primaryColor: "#a9c9ff" });
   assert.match(replyTextOf(replies[0]), /Holographic needs the Enhanced Role Styles perk/i);
   assert.match(replyTextOf(replies[0]), /solid #a9c9ff for now/i);
 });
@@ -630,14 +720,21 @@ test("/fg create creates an FG role for a named member (whitelisted caller)", as
   const { interaction, replies } = createInteraction({
     action: "create",
     memberId: OTHER_ID,
-    strings: { name: "Sam FG", color: "blue" },
+    strings: { name: "Sam FG" },
   });
 
-  await handleFgCommand(withGuild(guild, interaction), config.store);
+  // Sam's avatar is solid red, so the role takes that color.
+  const restoreFetch = stubAvatarFetch(solidPng(255, 0, 0));
+  try {
+    await handleFgCommand(withGuild(guild, interaction), config.store);
+  } finally {
+    restoreFetch();
+  }
 
   assert.equal(createdRoles.length, 1);
   assert.deepEqual(createdRoles[0].permissions, []);
   assert.equal(createdRoles[0].position, 9);
+  assert.deepEqual(createdRoles[0].colors, { primaryColor: "#ff0000" });
   const settings = config.getSettings();
   const createdRoleId = Object.keys(settings.fgRoleOwners)[0];
   assert.equal(settings.fgRoleOwners[createdRoleId], OTHER_ID);
@@ -660,15 +757,22 @@ test("/fg create for yourself works when whitelisted", async () => {
   });
   const { interaction, replies } = createInteraction({
     action: "create",
-    strings: { name: "My FG", color: "#ff0000" },
+    strings: { name: "My FG" },
   });
 
-  await handleFgCommand(withGuild(guild, interaction), config.store);
+  const restoreFetch = stubAvatarFetch(solidPng(0, 255, 0));
+  try {
+    await handleFgCommand(withGuild(guild, interaction), config.store);
+  } finally {
+    restoreFetch();
+  }
 
   assert.equal(createdRoles.length, 1);
+  assert.deepEqual(createdRoles[0].colors, { primaryColor: "#00ff00" });
   const createdRoleId = Object.keys(config.getSettings().fgRoleOwners)[0];
   assert.equal(config.getSettings().fgRoleOwners[createdRoleId], MEMBER_ID);
   assert.match(replyTextOf(replies[0]), /My FG is your FG role now/i);
+  assert.match(replyTextOf(replies[0]), /matches their profile picture/i);
 });
 
 test("/fg create by the server owner works without being whitelisted", async () => {
@@ -679,12 +783,18 @@ test("/fg create by the server owner works without being whitelisted", async () 
   const { interaction, replies } = createInteraction({
     action: "create",
     userId: OWNER_ID,
-    strings: { name: "Owner FG", color: "red" },
+    strings: { name: "Owner FG" },
   });
 
-  await handleFgCommand(withGuild(guild, interaction), config.store);
+  const restoreFetch = stubAvatarFetch(solidPng(0, 0, 255));
+  try {
+    await handleFgCommand(withGuild(guild, interaction), config.store);
+  } finally {
+    restoreFetch();
+  }
 
   assert.equal(createdRoles.length, 1);
+  assert.deepEqual(createdRoles[0].colors, { primaryColor: "#0000ff" });
   const createdRoleId = Object.keys(config.getSettings().fgRoleOwners)[0];
   assert.equal(config.getSettings().fgRoleOwners[createdRoleId], OWNER_ID);
   assert.match(replyTextOf(replies[0]), /Owner FG is your FG role now/i);
@@ -704,12 +814,43 @@ test("/fg create by a member with a whitelisted role works", async () => {
   });
   const { interaction } = createInteraction({
     action: "create",
-    strings: { name: "Role FG", color: "green" },
+    strings: { name: "Role FG" },
   });
 
-  await handleFgCommand(withGuild(guild, interaction), config.store);
+  const restoreFetch = stubAvatarFetch(solidPng(255, 255, 0));
+  try {
+    await handleFgCommand(withGuild(guild, interaction), config.store);
+  } finally {
+    restoreFetch();
+  }
 
   assert.equal(createdRoles.length, 1);
+  assert.deepEqual(createdRoles[0].colors, { primaryColor: "#ffff00" });
+});
+
+test("/fg create uses the default color when the avatar can't be read", async () => {
+  const config = createStore(
+    makeSettings({ allowedUserIds: [MEMBER_ID], fgBaseRoleId: BASE_ROLE_ID }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "create",
+    strings: { name: "My FG" },
+  });
+
+  const restoreFetch = stubAvatarFetch(null);
+  try {
+    await handleFgCommand(withGuild(guild, interaction), config.store);
+  } finally {
+    restoreFetch();
+  }
+
+  assert.equal(createdRoles.length, 1);
+  assert.deepEqual(createdRoles[0].colors, { primaryColor: "#5865f2" });
+  assert.match(replyTextOf(replies[0]), /couldn't read their profile picture/i);
+  assert.match(replyTextOf(replies[0]), /My FG is your FG role now/i);
 });
 
 test("/fg create rejects a non-whitelisted member", async () => {
@@ -719,7 +860,7 @@ test("/fg create rejects a non-whitelisted member", async () => {
   });
   const { interaction, replies } = createInteraction({
     action: "create",
-    strings: { name: "Nope", color: "blue" },
+    strings: { name: "Nope" },
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
@@ -756,7 +897,7 @@ test("/fg create rejects a second FG role for the same target", async () => {
   const { interaction, replies } = createInteraction({
     action: "create",
     memberId: OTHER_ID,
-    strings: { name: "Second FG", color: "blue" },
+    strings: { name: "Second FG" },
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
@@ -770,7 +911,7 @@ test("/fg create errors when no base role is set", async () => {
   const { guild, createdRoles } = createGuild({ roles: [] });
   const { interaction, replies } = createInteraction({
     action: "create",
-    strings: { name: "No Base", color: "blue" },
+    strings: { name: "No Base" },
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
@@ -1529,12 +1670,18 @@ test("/fg create by an Administrator works without being whitelisted", async () 
   });
   const { interaction, replies } = createInteraction({
     action: "create",
-    strings: { name: "Admin FG", color: "crimson" },
+    strings: { name: "Admin FG" },
   });
 
-  await handleFgCommand(withGuild(guild, interaction), config.store);
+  const restoreFetch = stubAvatarFetch(solidPng(128, 0, 128));
+  try {
+    await handleFgCommand(withGuild(guild, interaction), config.store);
+  } finally {
+    restoreFetch();
+  }
 
   assert.equal(createdRoles.length, 1);
+  assert.deepEqual(createdRoles[0].colors, { primaryColor: "#800080" });
   assert.match(replyTextOf(replies[0]), /Admin FG is your FG role now/i);
 });
 

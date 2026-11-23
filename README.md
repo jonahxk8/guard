@@ -36,10 +36,11 @@ chat background and look invisible), no footer, no timestamp.
 Administrator roles can never be protected or assigned through the bot.
 The server owner and anyone with the Discord Administrator permission
 can use the bot fully, exactly like each other. All commands need Manage
-Server, except `/fg color`, `/fg create`, `/fg rename`, `/fg icon`,
+Server, except `/fg create`, `/fg rename`, `/fg icon`,
 `/fg remove`, and `/fg share`, which any whitelisted member (or the
-server owner or an Administrator) can use. `/fg create` needs an FG base
-role set first. `/blacklist list` can also be used by whitelisted
+server owner or an Administrator) can use, and `/fg color`, which anyone
+who owns an FG role can use. `/fg create` needs an FG base role set
+first. `/blacklist list` can also be used by whitelisted
 members; `/blacklist add` and `/blacklist remove` need Manage Server.
 
 ## Commands
@@ -60,21 +61,21 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
   Greed owns `,setup`.
 - `/fg base @role` / `,fg base @role` — set the base role FG roles sit
   under (Manage Server).
-- `/fg color <color> <name>` / `,fg color <color> <name>` — make your
-  own FG role. One color = solid, two = gradient: give the second color
-  as `/fg color`'s `second_color` option, or after the name in
-  `,fg color <color> <name> <second_color>`, separated by a space or a
-  comma. Colors accept any CSS color name or hex code: `#rrggbb`,
-  `rrggbb`, `#rgb`, `rgb`, or `0xrrggbb` — any hex code works, so
-  16,777,216 colors are possible, plus 148 named colors. `random`
-  picks a random color, and `holographic` (alias `holo`) gives the
-  role Discord's holographic style. More than two colors is rejected.
-  Gradients and holographic need the Enhanced Role Styles perk (3
-  server boosts on it); without it the role is made solid in the first
-  color instead, and the bot says so.
-- `/fg create <name> <color> [second_color] [@member]` /
-  `,fg create <name> <color> [second_color] [@member]` — create an FG
-  role for yourself, or for a named member. Needs an FG base role set
+- `/fg color <color> [second_color]` / `,fg color <color> [second_color]` —
+  recolor your own FG role. One hex = solid, two = gradient, separated
+  by a space or a comma. Colors are hex codes only: `#rrggbb`, `rrggbb`,
+  `#rgb`, `rgb`, or `0xrrggbb` — any hex code works, so 16,777,216 colors
+  are possible, no names. `random` picks a random color, `holographic`
+  (alias `holo`) gives the role Discord's holographic style, and
+  `dominant` uses the color of your profile picture. More than two
+  colors is rejected. Gradients and holographic need the Enhanced Role
+  Styles perk (3 server boosts on it); without it the role is made solid
+  in the first color instead, and the bot says so. Anyone who owns an FG
+  role can use it.
+- `/fg create <name> [@member]` / `,fg create <name> [@member]` —
+  create an FG role for yourself, or for a named member. The role takes
+  the color of that member's profile picture; if the picture can't be
+  read, it uses a default color instead. Needs an FG base role set
   first. Only the server owner, administrators, or whitelisted members
   can use it.
 - `/fg rename <name>` / `,fg rename <name>` — rename your own FG role.

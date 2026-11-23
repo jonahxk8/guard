@@ -149,15 +149,12 @@ test("slash registration has the expected options", () => {
     ["topic"],
   );
 
+  // /fg color recolors only: color + optional second_color, no name.
   assert.deepEqual(optionNames(fgCommand, "color"), [
     "color",
     "second_color",
-    "name",
   ]);
-  assert.deepEqual(optionNames(fgCommand, "create"), [
-    "name",
-    "color",
-    "second_color",
-    "member",
-  ]);
+  // /fg create is name + optional member only: the color comes from
+  // the member's profile picture, so there are no color options.
+  assert.deepEqual(optionNames(fgCommand, "create"), ["name", "member"]);
 });

@@ -11,7 +11,7 @@ test("wildFieldEmbed: no color, no footer, no timestamp, one field per item", ()
     "Help - FG (1/2)",
     [
       { name: "`/fg base @role`", value: "Set the FG base role\nWho: Manage Server" },
-      { name: "`/fg color <color> <name>`", value: "Make your own FG role\nWho: Owner / whitelisted" },
+      { name: "`/fg color <color> [second_color]`", value: "Recolor your FG role\nWho: FG owner" },
     ],
     "Personal FG roles.",
   ).toJSON();

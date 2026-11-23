@@ -15,7 +15,10 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
-import { FG_COLOR_NAMES, normalizeColorName } from "./colors.js";
+import {
+  DEFAULT_AVATAR_COLOR,
+  getMemberAvatarDominantColor,
+} from "./avatar-color.js";
 import { wildFieldEmbed, wildMessageEmbed } from "./embeds.js";
 import {
   canAuthFgRole,
@@ -58,15 +61,13 @@ const SHARE_TIMEOUT_MS = 5 * 60 * 1_000;
 const MAX_FG_NAME_LENGTH = 90;
 
 /**
- * Parse a color: any CSS color name (148 names, case-insensitive,
- * spaces optional, grey/gray spellings both work) or a hex code
- * (#rrggbb, rrggbb, #rgb, rgb, 0xrrggbb). Returns a lowercase
- * "#rrggbb" string, or null when the input is not a color.
+ * Parse a color: a hex code only — #rrggbb, rrggbb, #rgb, rgb, or
+ * 0xrrggbb (strictly 3 or 6 hex digits). Color names do not exist here:
+ * "blue", "red", "crimson" and every other name is invalid. Returns a
+ * lowercase "#rrggbb" string, or null when the input is not a hex color.
  */
 export function parseFgColor(input: string): string | null {
-  const value = normalizeColorName(input);
-  if (value in FG_COLOR_NAMES) return FG_COLOR_NAMES[value];
-  let hex = value;
+  let hex = input.trim().toLowerCase();
   if (hex.startsWith("0x")) hex = hex.slice(2);
   else if (hex.startsWith("#")) hex = hex.slice(1);
   if (/^[0-9a-f]{6}$/.test(hex)) return `#${hex}`;
@@ -102,41 +103,49 @@ export const HOLOGRAPHIC_COLORS = {
   tertiary: `#${Constants.HolographicStyle.Tertiary.toString(16).padStart(6, "0")}`,
 } as const;
 
-export type FgColorKind = "solid" | "gradient" | "holographic";
+export type FgColorKind = "solid" | "gradient" | "holographic" | "dominant";
 
 export interface FgColorChoice {
   kind: FgColorKind;
-  /** Lowercase "#rrggbb". For holographic, the preset primary. */
+  /**
+   * Lowercase "#rrggbb". For holographic, the preset primary. For
+   * dominant, "" until the handler resolves it from the avatar.
+   */
   primary: string;
   /** Lowercase "#rrggbb", or null for solid. Holographic stores its preset secondary here. */
   secondary: string | null;
 }
 
 interface MatchedColor {
-  /** Lowercase "#rrggbb", or null for holographic. */
+  /** Lowercase "#rrggbb", or null for holographic / dominant. */
   hex: string | null;
   holographic: boolean;
+  dominant: boolean;
   /** How many tokens this color used. */
   length: number;
 }
 
 /**
- * Try to match one color at tokens[start]: `holographic`/`holo`, `random`,
- * or a name (multi-word: "light blue" matches before "light") or hex.
- * Null when the token(s) there aren't a color.
+ * Try to match one color at tokens[start]: `holographic`/`holo`,
+ * `random`, `dominant` (the caller's avatar color, resolved later),
+ * or a single hex code. Null when the token there isn't a color.
+ * Hex codes are one token; color names do not exist.
  */
 function matchOneColor(tokens: string[], start: number): MatchedColor | null {
   const token = tokens[start]?.toLowerCase();
   if (!token) return null;
   if (token === "holographic" || token === "holo") {
-    return { hex: null, holographic: true, length: 1 };
+    return { hex: null, holographic: true, dominant: false, length: 1 };
   }
   if (token === "random") {
-    return { hex: randomFgColor(), holographic: false, length: 1 };
+    return { hex: randomFgColor(), holographic: false, dominant: false, length: 1 };
   }
-  for (let len = Math.min(3, tokens.length - start); len >= 1; len--) {
-    const parsed = parseFgColor(tokens.slice(start, start + len).join(" "));
-    if (parsed) return { hex: parsed, holographic: false, length: len };
+  if (token === "dominant") {
+    return { hex: null, holographic: false, dominant: true, length: 1 };
+  }
+  const parsed = parseFgColor(token);
+  if (parsed) {
+    return { hex: parsed, holographic: false, dominant: false, length: 1 };
   }
   return null;
 }
@@ -148,12 +157,14 @@ export type FgColorParseResult =
   | { error: FgColorParseError };
 
 /**
- * Parse Greed/Bleed-style colors from the front of a token list: one color
- * = solid, two = gradient, `holographic`/`holo` on its own, `random` = a
- * random hex. Colors may be names (multi-word: "light blue"), hex in any
- * form, separated by spaces or commas. Returns how many tokens the colors
- * used, so the caller knows where the role name starts. More than two
- * colors is an error ("too-many"), never silently ignored.
+ * Parse Greed/Bleed-style colors from the front of a token list: one
+ * color = solid, two = gradient, `holographic`/`holo` on its own,
+ * `random` = a random hex, `dominant` = the caller's avatar color
+ * (resolved by the handler, not here). Colors are hex codes only —
+ * `#rrggbb`, `rrggbb`, `#rgb`, `rgb`, `0xrrggbb` — separated by spaces
+ * or commas. Returns how many tokens the colors used, so the caller
+ * knows where the rest starts. More than two colors is an error
+ * ("too-many"), never silently ignored.
  */
 export function parseFgColorTokens(tokens: string[]): FgColorParseResult {
   const first = matchOneColor(tokens, 0);
@@ -169,11 +180,19 @@ export function parseFgColorTokens(tokens: string[]): FgColorParseResult {
       colorText: tokens.slice(0, 1).join(" "),
     };
   }
+  if (first.dominant) {
+    if (matchOneColor(tokens, 1)) return { error: "too-many" };
+    return {
+      choice: { kind: "dominant", primary: "", secondary: null },
+      consumed: 1,
+      colorText: tokens.slice(0, 1).join(" "),
+    };
+  }
   const colors: string[] = [first.hex!];
   let pos = first.length;
   const second = matchOneColor(tokens, pos);
   if (second) {
-    if (second.holographic) return { error: "too-many" };
+    if (second.holographic || second.dominant) return { error: "too-many" };
     colors.push(second.hex!);
     pos += second.length;
     if (matchOneColor(tokens, pos)) return { error: "too-many" };
@@ -186,9 +205,9 @@ export function parseFgColorTokens(tokens: string[]): FgColorParseResult {
 }
 
 /**
- * Parse a whole color spec string ("red blue", "red, blue", "random",
- * "holographic"). Returns null unless the ENTIRE string is one or two
- * colors (or holographic on its own).
+ * Parse a whole color spec string ("#ff0000 #0000ff", "#ff0000,#0000ff",
+ * "random", "holographic", "dominant"). Returns null unless the ENTIRE
+ * string is one or two hex colors (or holographic / dominant on its own).
  */
 export function parseFgColorSpec(input: string): FgColorChoice | null {
   const tokens = splitColorTokens(input);
@@ -197,63 +216,6 @@ export function parseFgColorSpec(input: string): FgColorChoice | null {
   if ("error" in parsed) return null;
   if (parsed.consumed !== tokens.length) return null;
   return parsed.choice;
-}
-
-export type FgColorFromEndResult =
-  | { choice: FgColorChoice; nameTokens: string[]; colorText: string }
-  | { error: FgColorParseError };
-
-/**
- * Parse colors from the END of a token list (for `,fg create`, where the
- * name comes first and the color(s) last). Same rules as the front parser:
- * at most two colors, holographic on its own, `random` allowed.
- */
-export function parseFgColorTokensFromEnd(
-  tokens: string[],
-): FgColorFromEndResult {
-  const matchEndingAt = (end: number): MatchedColor | null => {
-    const token = tokens[end - 1]?.toLowerCase();
-    if (!token) return null;
-    if (token === "holographic" || token === "holo") {
-      return { hex: null, holographic: true, length: 1 };
-    }
-    if (token === "random") {
-      return { hex: randomFgColor(), holographic: false, length: 1 };
-    }
-    for (let len = 3; len >= 1; len--) {
-      if (end - len < 0) continue;
-      const parsed = parseFgColor(tokens.slice(end - len, end).join(" "));
-      if (parsed) return { hex: parsed, holographic: false, length: len };
-    }
-    return null;
-  };
-  const last = matchEndingAt(tokens.length);
-  if (!last) return { error: "invalid" };
-  if (last.holographic) {
-    return {
-      choice: {
-        kind: "holographic",
-        primary: HOLOGRAPHIC_COLORS.primary,
-        secondary: HOLOGRAPHIC_COLORS.secondary,
-      },
-      nameTokens: tokens.slice(0, tokens.length - 1),
-      colorText: tokens.slice(tokens.length - 1).join(" "),
-    };
-  }
-  const colors: string[] = [last.hex!];
-  let pos = tokens.length - last.length;
-  const second = matchEndingAt(pos);
-  if (second) {
-    if (second.holographic) return { error: "too-many" };
-    colors.unshift(second.hex!);
-    pos -= second.length;
-    if (matchEndingAt(pos)) return { error: "too-many" };
-  }
-  const choice: FgColorChoice =
-    colors.length === 1
-      ? { kind: "solid", primary: colors[0], secondary: null }
-      : { kind: "gradient", primary: colors[0], secondary: colors[1] };
-  return { choice, nameTokens: tokens.slice(0, pos), colorText: tokens.slice(pos).join(" ") };
 }
 
 function isValidFgName(name: string): boolean {
@@ -280,20 +242,12 @@ export const fgCommand = new SlashCommandBuilder()
   .addSubcommand((command) =>
     command
       .setName("color")
-      .setDescription("Create your own FG role with a color")
+      .setDescription("Recolor your own FG role")
       .addStringOption((option) =>
-        option.setName("color").setDescription("Color: hex, name, random, or holographic").setRequired(true),
+        option.setName("color").setDescription("Hex color, random, holographic, or dominant").setRequired(true),
       )
       .addStringOption((option) =>
-        option.setName("second_color").setDescription("Second color for a gradient"),
-      )
-      .addStringOption((option) =>
-        option
-          .setName("name")
-          .setDescription("Name for your FG role")
-          .setMinLength(1)
-          .setMaxLength(MAX_FG_NAME_LENGTH)
-          .setRequired(true),
+        option.setName("second_color").setDescription("Second hex color for a gradient"),
       ),
   )
   .addSubcommand((command) =>
@@ -307,12 +261,6 @@ export const fgCommand = new SlashCommandBuilder()
           .setMinLength(1)
           .setMaxLength(MAX_FG_NAME_LENGTH)
           .setRequired(true),
-      )
-      .addStringOption((option) =>
-        option.setName("color").setDescription("Color: hex, name, random, or holographic").setRequired(true),
-      )
-      .addStringOption((option) =>
-        option.setName("second_color").setDescription("Second color for a gradient"),
       )
       .addUserOption((option) =>
         option.setName("member").setDescription("Member the FG role is for (default: you)"),
@@ -528,19 +476,18 @@ async function handleBaseCommand(
 }
 
 /**
- * Shared FG-role creation, used by /fg color (for yourself) and
- * /fg create (for yourself or a named member). The caller must already
- * have passed the owner-or-whitelisted gate. `requireBase` is true for
- * /fg create, which needs a base role set; /fg color works without one.
+ * Shared FG-role creation, used only by /fg create (for yourself or a
+ * named member). The caller must already have passed the
+ * owner-or-whitelisted gate. A base role must be set. The role's color
+ * is the dominant color of the assignee's profile picture (Bleed-style);
+ * when the avatar can't be read, the role is made in the default color
+ * instead and the reply says so — creation never fails over the color.
  */
 async function createFgRole(
   interaction: ChatInputCommandInteraction,
   store: ConfigStore,
   targetId: string,
-  colorInput: string,
-  secondColorInput: string | null,
   nameInput: string,
-  requireBase: boolean,
 ): Promise<void> {
   const guild = interaction.guild!;
   const settings = store.get(guild.id);
@@ -560,39 +507,6 @@ async function createFgRole(
     return;
   }
 
-  // Greed/Bleed-style color spec: the `color` option may itself hold one
-  // or two colors ("red blue", "red, blue", "random", "holographic"), and
-  // `second_color` adds a second one. More than two colors total is an
-  // error, never silently ignored.
-  const spec = parseFgColorSpec(colorInput);
-  if (!spec) {
-    await replyText(
-      interaction,
-      "That isn't a color. Use a hex color like #ff0000, a name like blue, random, or holographic.",
-    );
-    return;
-  }
-  let choice = spec;
-  if (secondColorInput) {
-    if (spec.kind !== "solid") {
-      await replyText(
-        interaction,
-        "Too many colors — give one color, or two for a gradient.",
-      );
-      return;
-    }
-    const second = parseFgColorSpec(secondColorInput);
-    if (!second || second.kind !== "solid") {
-      await replyText(
-        interaction,
-        second?.kind === "holographic"
-          ? "Holographic can't be a second color — use it on its own."
-          : "That second color isn't a color.",
-      );
-      return;
-    }
-    choice = { kind: "gradient", primary: spec.primary, secondary: second.primary };
-  }
   const name = nameInput.trim();
   if (!isValidFgName(name)) {
     await replyText(interaction, "Pick a name between 1 and 90 characters.");
@@ -606,7 +520,7 @@ async function createFgRole(
     return;
   }
 
-  if (requireBase && !settings.fgBaseRoleId) {
+  if (!settings.fgBaseRoleId) {
     await replyText(interaction, "Set an FG base role first with /fg base @role.");
     return;
   }
@@ -624,33 +538,17 @@ async function createFgRole(
     return;
   }
 
-  // Gradients and holographic are Discord's Enhanced Role Styles: the
-  // role gets real primary/secondary (and tertiary) colors. The API
-  // enforces the holographic preset values. If the server hasn't
-  // unlocked the perk (3 server boosts on it), Discord rejects the
-  // style — like Greed, fall back to a solid role in the first color
-  // and say why, instead of failing the whole creation.
-  type RoleColorSet = {
-    primaryColor: `#${string}`;
-    secondaryColor?: `#${string}`;
-    tertiaryColor?: `#${string}`;
-  };
-  const roleColors: RoleColorSet =
-    choice.kind === "holographic"
-      ? {
-          primaryColor: HOLOGRAPHIC_COLORS.primary,
-          secondaryColor: HOLOGRAPHIC_COLORS.secondary,
-          tertiaryColor: HOLOGRAPHIC_COLORS.tertiary,
-        }
-      : choice.kind === "gradient"
-        ? {
-            primaryColor: choice.primary as `#${string}`,
-            secondaryColor: choice.secondary! as `#${string}`,
-          }
-        : { primaryColor: choice.primary as `#${string}` };
+  // The role takes the color of the assignee's profile picture. When
+  // the avatar can't be read, use the default color and say so.
+  const avatarColor = await getMemberAvatarDominantColor(target);
+  const primary = avatarColor ?? DEFAULT_AVATAR_COLOR;
+  const colorNote = avatarColor
+    ? " Its color matches their profile picture."
+    : ` The bot couldn't read their profile picture, so it used ${DEFAULT_AVATAR_COLOR} instead.`;
+
   const createOptions = {
     name,
-    colors: roleColors,
+    colors: { primaryColor: primary as `#${string}` },
     permissions: [],
     hoist: false,
     mentionable: false,
@@ -658,33 +556,14 @@ async function createFgRole(
     reason: `FG role created by ${interaction.user.id} for ${targetId}`,
   };
   let role: Role;
-  let styleNote = "";
   try {
     role = await guild.roles.create(createOptions);
   } catch {
-    if (choice.kind === "solid") {
-      await replyText(
-        interaction,
-        "The bot couldn't create that FG role. Check its permissions and role order and try again.",
-      );
-      return;
-    }
-    try {
-      role = await guild.roles.create({
-        ...createOptions,
-        colors: { primaryColor: choice.primary as `#${string}` },
-      });
-    } catch {
-      await replyText(
-        interaction,
-        "The bot couldn't create that FG role. Check its permissions and role order and try again.",
-      );
-      return;
-    }
-    styleNote =
-      choice.kind === "holographic"
-        ? ` Holographic needs the Enhanced Role Styles perk (3 server boosts on it), so your role is solid ${choice.primary} for now.`
-        : ` Gradients need the Enhanced Role Styles perk (3 server boosts on it), so your role is solid ${choice.primary} for now.`;
+    await replyText(
+      interaction,
+      "The bot couldn't create that FG role. Check its permissions and role order and try again.",
+    );
+    return;
   }
 
   const nextSettings = store.get(guild.id);
@@ -712,10 +591,86 @@ async function createFgRole(
   await replyText(
     interaction,
     forSelf
-      ? `${roleDisplayName(role)} is your FG role now. It's protected, so only whitelisted people can give it to anyone else.${styleNote}`
-      : `Created FG role ${roleDisplayName(role)} for ${memberDisplayName(target)}. It's protected, so only whitelisted people can give it to anyone else.${styleNote}`,
+      ? `${roleDisplayName(role)} is your FG role now.${colorNote} It's protected, so only whitelisted people can give it to anyone else.`
+      : `Created FG role ${roleDisplayName(role)} for ${memberDisplayName(target)}.${colorNote} It's protected, so only whitelisted people can give it to anyone else.`,
     false,
   );
+}
+
+/**
+ * Resolve a recolor spec from /fg color's options: one hex = solid,
+ * two = gradient, `holographic`/`holo` on its own, `random` = a random
+ * hex, `dominant` = the caller's avatar color (resolved by the caller).
+ * Returns an error message when the spec is invalid.
+ */
+function resolveRecolorChoice(
+  colorInput: string,
+  secondColorInput: string | null,
+): { choice: FgColorChoice } | { error: string } {
+  const spec = parseFgColorSpec(colorInput);
+  if (!spec) {
+    return {
+      error:
+        "That isn't a hex color. Use a hex color like #ff0000, random, holographic, or dominant.",
+    };
+  }
+  if (spec.kind === "dominant") {
+    if (secondColorInput) {
+      return { error: "Dominant can't be used with a second color." };
+    }
+    return { choice: spec };
+  }
+  if (secondColorInput) {
+    if (spec.kind !== "solid") {
+      return { error: "Too many colors — give one color, or two for a gradient." };
+    }
+    const second = parseFgColorSpec(secondColorInput);
+    if (!second || second.kind !== "solid") {
+      return {
+        error:
+          second?.kind === "holographic"
+            ? "Holographic can't be a second color — use it on its own."
+            : second?.kind === "dominant"
+              ? "Dominant can't be a second color — use it on its own."
+              : "That second color isn't a hex color.",
+      };
+    }
+    return {
+      choice: { kind: "gradient", primary: spec.primary, secondary: second.primary },
+    };
+  }
+  return { choice: spec };
+}
+
+type RoleColorSet = {
+  primaryColor: `#${string}`;
+  secondaryColor?: `#${string}`;
+  tertiaryColor?: `#${string}`;
+};
+
+/** The Discord color set for a choice (gradient / holographic / solid). */
+function roleColorsForChoice(choice: FgColorChoice): RoleColorSet {
+  return choice.kind === "holographic"
+    ? {
+        primaryColor: HOLOGRAPHIC_COLORS.primary,
+        secondaryColor: HOLOGRAPHIC_COLORS.secondary,
+        tertiaryColor: HOLOGRAPHIC_COLORS.tertiary,
+      }
+    : choice.kind === "gradient"
+      ? {
+          primaryColor: choice.primary as `#${string}`,
+          secondaryColor: choice.secondary! as `#${string}`,
+        }
+      : { primaryColor: choice.primary as `#${string}` };
+}
+
+/** Short description of a choice for the reply, e.g. "now #ff0000". */
+function describeRecolor(choice: FgColorChoice): string {
+  if (choice.kind === "holographic") return "now holographic";
+  if (choice.kind === "gradient") {
+    return `now a gradient from ${choice.primary} to ${choice.secondary}`;
+  }
+  return `now ${choice.primary}`;
 }
 
 /** Owner-or-whitelisted gate for FG creation. Returns the caller or null. */
@@ -743,18 +698,92 @@ async function requireFgCreator(
   return member;
 }
 
+/**
+ * /fg color — recolor your own FG role. It never creates a role: if
+ * you don't have one yet, it tells you to make one with /fg create.
+ * Any FG owner may recolor their own role (whitelisted or not — like
+ * Bleed, the owner customises their own role).
+ */
 async function handleColorCommand(
   interaction: ChatInputCommandInteraction,
   store: ConfigStore,
 ): Promise<void> {
-  if (!(await requireFgCreator(interaction, store))) return;
-  await createFgRole(
-    interaction,
-    store,
-    interaction.user.id,
+  const guild = interaction.guild!;
+  const settings = store.get(guild.id);
+  const own = findOwnFgRole(guild, settings, interaction.user.id);
+  if (!own) {
+    await replyText(
+      interaction,
+      "You don't have an FG role yet — make one with /fg create first.",
+    );
+    return;
+  }
+  const resolved = resolveRecolorChoice(
     interaction.options.getString("color", true),
     interaction.options.getString("second_color"),
-    interaction.options.getString("name", true),
+  );
+  if ("error" in resolved) {
+    await replyText(interaction, resolved.error);
+    return;
+  }
+  let choice = resolved.choice;
+  let avatarNote = "";
+  if (choice.kind === "dominant") {
+    // The role takes the color of your profile picture.
+    const member = await guild.members
+      .fetch(interaction.user.id)
+      .catch(() => null);
+    const avatarColor = member
+      ? await getMemberAvatarDominantColor(member)
+      : null;
+    choice = {
+      kind: "solid",
+      primary: avatarColor ?? DEFAULT_AVATAR_COLOR,
+      secondary: null,
+    };
+    avatarNote = avatarColor
+      ? " It matches your profile picture."
+      : ` The bot couldn't read your profile picture, so it used ${DEFAULT_AVATAR_COLOR} instead.`;
+  }
+
+  // Gradients and holographic are Discord's Enhanced Role Styles. If
+  // the server hasn't unlocked the perk (3 server boosts on it),
+  // Discord rejects the style — like Greed, fall back to a solid role
+  // in the first color and say why, instead of failing.
+  let styleNote = "";
+  try {
+    await own.role.setColors(
+      roleColorsForChoice(choice),
+      `FG role recolored by ${interaction.user.id}`,
+    );
+  } catch {
+    if (choice.kind === "solid") {
+      await replyText(
+        interaction,
+        "The bot couldn't recolor that role. Check its permissions and try again.",
+      );
+      return;
+    }
+    try {
+      await own.role.setColors(
+        { primaryColor: choice.primary as `#${string}` },
+        `FG role recolored by ${interaction.user.id}`,
+      );
+    } catch {
+      await replyText(
+        interaction,
+        "The bot couldn't recolor that role. Check its permissions and try again.",
+      );
+      return;
+    }
+    styleNote =
+      choice.kind === "holographic"
+        ? ` Holographic needs the Enhanced Role Styles perk (3 server boosts on it), so your role is solid ${choice.primary} for now.`
+        : ` Gradients need the Enhanced Role Styles perk (3 server boosts on it), so your role is solid ${choice.primary} for now.`;
+  }
+  await replyText(
+    interaction,
+    `Your FG role is ${describeRecolor(choice)}.${avatarNote}${styleNote}`,
     false,
   );
 }
@@ -769,10 +798,7 @@ async function handleCreateCommand(
     interaction,
     store,
     target?.id ?? interaction.user.id,
-    interaction.options.getString("color", true),
-    interaction.options.getString("second_color"),
     interaction.options.getString("name", true),
-    true,
   );
 }
 
@@ -786,7 +812,7 @@ async function handleRenameCommand(
   if (!own) {
     await replyText(
       interaction,
-      "You don't have an FG role yet — make one with /fg color first.",
+      "You don't have an FG role yet — make one with /fg create first.",
     );
     return;
   }
@@ -817,7 +843,7 @@ async function handleIconCommand(
   if (!own) {
     await replyText(
       interaction,
-      "You don't have an FG role yet — make one with /fg color first.",
+      "You don't have an FG role yet — make one with /fg create first.",
     );
     return;
   }
@@ -1115,7 +1141,7 @@ async function resolveFgRole(
   if (!role || !settings.fgRoles[role.id]) {
     await replyText(
       interaction,
-      "That isn't an FG role. Make one with /fg color first.",
+      "That isn't an FG role. Make one with /fg create first.",
     );
     return null;
   }
@@ -1497,7 +1523,7 @@ async function handleShareCommand(
   if (!role || !settings.fgRoles[role.id]) {
     await replyText(
       interaction,
-      "That isn't an FG role. Make one with /fg color first.",
+      "That isn't an FG role. Make one with /fg create first.",
     );
     return;
   }

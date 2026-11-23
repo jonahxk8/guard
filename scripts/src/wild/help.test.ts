@@ -195,10 +195,10 @@ test("/help fg page 1 has 7 commands and a Next button", () => {
   assert.equal(result.page.fields.length, 7);
   assert.equal(result.page.fields[0].name, "`/fg base @role`");
   assert.equal(result.page.fields[0].value, "Set the FG base role");
-  assert.equal(result.page.fields[1].name, "`/fg color <color> <name>`");
+  assert.equal(result.page.fields[1].name, "`/fg color <color> [second_color]`");
   assert.equal(
     result.page.fields[2].name,
-    "`/fg create <name> <color> [second_color] [@member]`",
+    "`/fg create <name> [@member]`",
   );
   assert.equal(result.page.fields[6].name, "`/fg list`");
   assert.deepEqual(
@@ -268,9 +268,9 @@ test("/help fg create shows syntax, purpose, gate, and example in fields", async
     fields.map((field) => field.name),
     ["Syntax", "What it does", "Example"],
   );
-  assert.match(fields[0].value, /\/fg create <name> <color>/);
+  assert.match(fields[0].value, /\/fg create <name> \[@member\]/);
   assert.doesNotMatch(fields[0].value, /,fg create/);
-  assert.match(fields[2].value, /\/fg create My Role #ff0000 @Alex/);
+  assert.match(fields[2].value, /\/fg create My Role @Alex/);
   assert.doesNotMatch(embedText(replies[0]), /Who:/);
 });
 
@@ -363,8 +363,8 @@ test("personas see exactly the FG commands they can use", () => {
   // Server owner: everything except rename/icon/remove (needs to own a role).
   assert.deepEqual(seen(OWNER), [
     "`/fg base @role`",
-    "`/fg color <color> <name>`",
-    "`/fg create <name> <color> [second_color] [@member]`",
+    "`/fg color <color> [second_color]`",
+    "`/fg create <name> [@member]`",
     "`/fg list`",
     "`/fg cleanup`",
     "`/fg share @member @role`",
@@ -378,8 +378,8 @@ test("personas see exactly the FG commands they can use", () => {
   // (needs to own a role).
   assert.deepEqual(seen(ADMIN), [
     "`/fg base @role`",
-    "`/fg color <color> <name>`",
-    "`/fg create <name> <color> [second_color] [@member]`",
+    "`/fg color <color> [second_color]`",
+    "`/fg create <name> [@member]`",
     "`/fg list`",
     "`/fg cleanup`",
     "`/fg share @member @role`",
@@ -390,8 +390,8 @@ test("personas see exactly the FG commands they can use", () => {
   ]);
   // Whitelisted staff: creation, listing, sharing, assign, and auth.
   assert.deepEqual(seen(WHITELISTED), [
-    "`/fg color <color> <name>`",
-    "`/fg create <name> <color> [second_color] [@member]`",
+    "`/fg color <color> [second_color]`",
+    "`/fg create <name> [@member]`",
     "`/fg list`",
     "`/fg share @member @role`",
     "`/fg assign @member @role`",
@@ -401,6 +401,7 @@ test("personas see exactly the FG commands they can use", () => {
   ]);
   // FG owner: their own role, sharing, and auth — nothing admin-only.
   assert.deepEqual(seen(FG_OWNER), [
+    "`/fg color <color> [second_color]`",
     "`/fg rename <name>`",
     "`/fg icon <url>`",
     "`/fg remove`",
@@ -435,7 +436,7 @@ test("personas see the right categories on the main page", () => {
   const fgOwnerMain = resolveHelpTopic(null, FG_OWNER);
   assert.equal(fgOwnerMain.kind, "embed");
   if (fgOwnerMain.kind === "embed") {
-    assert.match(fgOwnerMain.page.fields[0]?.value ?? "", /7 commands/);
+    assert.match(fgOwnerMain.page.fields[0]?.value ?? "", /8 commands/);
   }
   const holderMain = resolveHelpTopic(null, HOLDER);
   assert.equal(holderMain.kind, "embed");
@@ -456,9 +457,9 @@ test("prefix-invoked help shows prefix syntax only", () => {
   assert.equal(single.kind, "embed");
   if (single.kind !== "embed") return;
   const fields = single.page.fields;
-  assert.match(fields[0].value, /,fg create <name> <color>/);
+  assert.match(fields[0].value, /,fg create <name> \[@member\]/);
   assert.doesNotMatch(fields[0].value, /\/fg create/);
-  assert.match(fields[2].value, /,fg create My Role #ff0000 @Alex/);
+  assert.match(fields[2].value, /,fg create My Role @Alex/);
   assert.doesNotMatch(fieldTextFromPage(single.page), /Who:/);
 
   const main = resolveHelpTopic(null, FULL_PREFIX);

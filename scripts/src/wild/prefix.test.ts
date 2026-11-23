@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { deflateSync } from "node:zlib";
 import { ChannelType, Message, PermissionFlagsBits } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
 import { handlePrefixMessage, parsePrefixMessage } from "./prefix.js";
@@ -90,6 +91,10 @@ function createMessage(options: {
         },
         setIcon: async () => entry,
         setUnicodeEmoji: async () => entry,
+        setColors: async (colors: Record<string, unknown>) => {
+          (entry as { color?: string }).color = colors.primaryColor as string;
+          return entry;
+        },
         delete: async () => {
           entry.deleted = true;
         },
@@ -116,6 +121,8 @@ function createMessage(options: {
       members.set(memberId, {
         id: memberId,
         displayName,
+        displayAvatarURL: () =>
+          `https://cdn.discordapp.com/avatars/${memberId}/avatar.png`,
         user: { id: memberId, username: displayName },
         permissions: {
           has: (permission: bigint) =>
@@ -184,6 +191,11 @@ function createMessage(options: {
                 },
                 setIcon: async () => role,
                 setUnicodeEmoji: async () => role,
+                setColors: async (colors: Record<string, unknown>) => {
+                  (role as { color?: string }).color =
+                    colors.primaryColor as string;
+                  return role;
+                },
                 delete: async () => {
                   (role as { deleted: boolean }).deleted = true;
                 },
@@ -216,6 +228,60 @@ function createMessage(options: {
   };
 }
 
+/** Small CRC32 + 1x1 PNG builder, for avatar-color tests. */
+const CRC_TABLE: Uint32Array = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const typeBuffer = Buffer.from(type, "ascii");
+  let c = 0xffffffff;
+  for (const byte of Buffer.concat([typeBuffer, data])) {
+    c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
+  }
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE((c ^ 0xffffffff) >>> 0, 0);
+  return Buffer.concat([length, typeBuffer, data, crc]);
+}
+
+function solidPng(r: number, g: number, b: number): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2; // RGB
+  const raw = Buffer.from([0, r, g, b]);
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+/** Stub global fetch so avatar reads return the given PNG. */
+function stubAvatarFetch(png: Buffer): () => void {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: true,
+    arrayBuffer: async () =>
+      png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength),
+  })) as unknown as typeof fetch;
+  return () => {
+    globalThis.fetch = originalFetch;
+  };
+}
+
 test("parsePrefixMessage parses mentions, raw ids, and fg color args", () => {
   assert.deepEqual(parsePrefixMessage(",guard <@&444444444444444444>"), {
     command: "guard",
@@ -228,51 +294,48 @@ test("parsePrefixMessage parses mentions, raw ids, and fg color args", () => {
       subcommandGroup: null,
     },
   });
-  const fg = parsePrefixMessage(",fg color #ff0000 My Cool Role #00ff00");
-  assert.equal(fg && "args" in fg && fg.args.strings.color, "#ff0000");
-  assert.equal(fg && "args" in fg && fg.args.strings.name, "My Cool Role");
-  assert.equal(fg && "args" in fg && fg.args.strings.second_color, "#00ff00");
-  const singleWord = parsePrefixMessage(",fg color red blue");
-  assert.ok(
-    singleWord && "error" in singleWord,
-    "two colors and no name is a usage error, not a role called 'blue'",
-  );
-  const twoFront = parsePrefixMessage(",fg color red blue My Role");
-  assert.equal(twoFront && "args" in twoFront && twoFront.args.strings.color, "red blue");
-  assert.equal(twoFront && "args" in twoFront && twoFront.args.strings.name, "My Role");
-  assert.equal(twoFront && "args" in twoFront && twoFront.args.strings.second_color, undefined);
-  const twoComma = parsePrefixMessage(",fg color #ff0000,#0000ff My Role");
+  // ,fg color is now a recolor only: the whole tail is the color spec.
+  const fg = parsePrefixMessage(",fg color #ff0000 #00ff00");
+  assert.equal(fg && "args" in fg && fg.args.subcommand, "color");
+  assert.equal(fg && "args" in fg && fg.args.strings.color, "#ff0000 #00ff00");
+  const single = parsePrefixMessage(",fg color #ff0000");
+  assert.equal(single && "args" in single && single.args.strings.color, "#ff0000");
+  const twoComma = parsePrefixMessage(",fg color #ff0000,#0000ff");
   assert.equal(twoComma && "args" in twoComma && twoComma.args.strings.color, "#ff0000 #0000ff");
-  assert.equal(twoComma && "args" in twoComma && twoComma.args.strings.name, "My Role");
-  const multiWord = parsePrefixMessage(",fg color light blue My Role");
-  assert.equal(multiWord && "args" in multiWord && multiWord.args.strings.color, "light blue");
-  assert.equal(multiWord && "args" in multiWord && multiWord.args.strings.name, "My Role");
-  const tooMany = parsePrefixMessage(",fg color red blue green");
+  const nameRejected = parsePrefixMessage(",fg color blue");
+  assert.ok(
+    nameRejected && "error" in nameRejected,
+    "color names are invalid — hex codes only",
+  );
+  const tooMany = parsePrefixMessage(",fg color #ff0000 #0000ff #00ff00");
   assert.equal(
     tooMany && "error" in tooMany && tooMany.error,
     "Too many colors — give one color, or two for a gradient.",
   );
-  const random = parsePrefixMessage(",fg color random My Role");
+  const random = parsePrefixMessage(",fg color random");
   assert.equal(random && "args" in random && random.args.strings.color, "random");
-  const holo = parsePrefixMessage(",fg color holo My Role");
+  const holo = parsePrefixMessage(",fg color holo");
   assert.equal(holo && "args" in holo && holo.args.strings.color, "holo");
-  const createTooMany = parsePrefixMessage(",fg create My Role red blue green");
-  assert.ok(createTooMany && "error" in createTooMany);
-  const createMultiWord = parsePrefixMessage(",fg create My Role light blue");
-  assert.equal(createMultiWord && "args" in createMultiWord && createMultiWord.args.strings.color, "light blue");
-  assert.equal(createMultiWord && "args" in createMultiWord && createMultiWord.args.strings.name, "My Role");
-  const create = parsePrefixMessage(",fg create My Cool Role #ff0000");
+  const dominant = parsePrefixMessage(",fg color dominant");
+  assert.equal(dominant && "args" in dominant && dominant.args.strings.color, "dominant");
+  const noColor = parsePrefixMessage(",fg color");
+  assert.ok(noColor && "error" in noColor);
+  // ,fg create is now name + optional member only: no color anymore.
+  const create = parsePrefixMessage(",fg create My Cool Role");
   assert.equal(create && "args" in create && create.args.subcommand, "create");
   assert.equal(create && "args" in create && create.args.strings.name, "My Cool Role");
-  assert.equal(create && "args" in create && create.args.strings.color, "#ff0000");
-  const createFor = parsePrefixMessage(",fg create Sam FG blue <@333333333333333333>");
+  assert.equal(create && "args" in create && create.args.users.member, undefined);
+  const createFor = parsePrefixMessage(",fg create Sam FG <@333333333333333333>");
   assert.equal(createFor && "args" in createFor && createFor.args.strings.name, "Sam FG");
-  assert.equal(createFor && "args" in createFor && createFor.args.strings.color, "blue");
   assert.equal(createFor && "args" in createFor && createFor.args.users.member, "333333333333333333");
-  const createGradient = parsePrefixMessage(",fg create My Role red blue");
-  assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.color, "red blue");
-  assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.second_color, undefined);
-  assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.name, "My Role");
+  const createRawId = parsePrefixMessage(",fg create Sam FG 333333333333333333");
+  assert.equal(createRawId && "args" in createRawId && createRawId.args.strings.name, "Sam FG");
+  assert.equal(createRawId && "args" in createRawId && createRawId.args.users.member, "333333333333333333");
+  const createEmpty = parsePrefixMessage(",fg create");
+  assert.ok(createEmpty && "error" in createEmpty);
+  const createOldSyntax = parsePrefixMessage(",fg create My Role #ff0000");
+  // No color argument anymore: a trailing hex is just part of the name.
+  assert.equal(createOldSyntax && "args" in createOldSyntax && createOldSyntax.args.strings.name, "My Role #ff0000");
   const assign = parsePrefixMessage(",fg assign <@333333333333333333> <@&666666666666666666>");
   assert.equal(assign && "args" in assign && assign.args.subcommand, "assign");
   assert.equal(assign && "args" in assign && assign.args.users.member, "333333333333333333");
@@ -349,18 +412,29 @@ test(",status sends the colorless embed and ,logchannel off turns alerts off", a
   assert.match(sentTextOf(setup.sent[0]), /Alerts are turned off/i);
 });
 
-test(",fg color creates an FG role through the shared handler", async () => {
-  const config = createStore(makeSettings({ allowedUserIds: [USER_ID] }));
+test(",fg color recolors your FG role through the shared handler", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [USER_ID],
+      fgRoleOwners: { [FG_ROLE_ID]: USER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
   const { message, sent } = createMessage({
-    content: ",fg color #ff0000 My FG",
+    content: ",fg color #ff0000",
+    roles: [{ id: FG_ROLE_ID }],
   });
 
   assert.equal(await handlePrefixMessage(message, config.store), true);
 
-  const settings = config.getSettings();
-  assert.deepEqual(settings.fgRoleOwners, { "100000000000000001": USER_ID });
-  assert.ok(settings.protectedRoleIds.includes("100000000000000001"));
-  assert.match(sentTextOf(sent[0]), /is your FG role now/i);
+  assert.match(sentTextOf(sent[0]), /Your FG role is now #ff0000/i);
 });
 
 test(",fg remove asks for confirmation and deletes nothing yet", async () => {
@@ -576,22 +650,29 @@ test(",fg create creates an FG role for a named member through the prefix", asyn
     makeSettings({ allowedUserIds: [USER_ID], fgBaseRoleId: ROLE_ID }),
   );
   const { message, sent } = createMessage({
-    content: ",fg create Sam FG blue <@333333333333333333>",
+    content: ",fg create Sam FG <@333333333333333333>",
     roles: [{ id: ROLE_ID }],
   });
 
-  assert.equal(await handlePrefixMessage(message, config.store), true);
+  // Sam's avatar is solid red, so the role takes that color.
+  const restoreFetch = stubAvatarFetch(solidPng(255, 0, 0));
+  try {
+    assert.equal(await handlePrefixMessage(message, config.store), true);
+  } finally {
+    restoreFetch();
+  }
 
   const settings = config.getSettings();
   assert.deepEqual(settings.fgRoleOwners, { "100000000000000001": OTHER_ID });
   assert.match(sentTextOf(sent[0]), /Created FG role Sam FG for Sam/i);
+  assert.match(sentTextOf(sent[0]), /matches their profile picture/i);
   assert.doesNotMatch(sentTextOf(sent[0]), /\[object Object\]/);
 });
 
 test(",fg create by a non-whitelisted member is rejected", async () => {
   const config = createStore(makeSettings({ fgBaseRoleId: ROLE_ID }));
   const { message, sent } = createMessage({
-    content: ",fg create Nope blue",
+    content: ",fg create Nope",
     roles: [{ id: ROLE_ID }],
   });
 

@@ -8,6 +8,10 @@ import {
 import { ConfigStore, GuildSettings } from "./config-store.js";
 import { wildEmbed } from "./embeds.js";
 import { showRoleBrowser } from "./role-browser.js";
+import {
+  getUnmanageableRoleIds,
+  isDangerousRole,
+} from "./role-guard.js";
 
 export const wildCommand = new SlashCommandBuilder()
   .setName("wild")
@@ -256,6 +260,14 @@ async function handleWatchCommand(
     if (role.id === guild.id || role.managed) {
       await interaction.reply({
         content: "That role can't be protected by the bot.",
+        ephemeral: true,
+      });
+      return;
+    }
+    if (isDangerousRole(role)) {
+      await interaction.reply({
+        content:
+          "That role has the Administrator permission, so it can't be protected or handed out through the bot. Protecting it would let allowlisted members grant full admin.",
         ephemeral: true,
       });
       return;
@@ -528,6 +540,16 @@ async function handleStatusCommand(
   const channel = settings.logChannelId
     ? `<#${settings.logChannelId}>`
     : "Off";
+  const unmanageableRoleIds = getUnmanageableRoleIds(
+    guild,
+    botMember,
+    [
+      ...settings.protectedRoleIds,
+      ...Object.keys(settings.fgRoles),
+    ],
+  );
+  const guardReady =
+    missingPermissions.length === 0 && unmanageableRoleIds.length === 0;
   const description = [
     `**Protected roles**  ${protectedCount}`,
     `**Allowed members**  ${allowCount}`,
@@ -535,9 +557,12 @@ async function handleStatusCommand(
     `**FG roles**  ${Object.keys(settings.fgRoles).length}`,
     `**Alert channel**  ${channel}`,
     `**Enforcement**  ${settings.enforcementEnabled ? "Active" : "Paused"}`,
-    `**Guard**  ${missingPermissions.length === 0 ? "Ready" : "Needs setup"}`,
+    `**Guard**  ${guardReady ? "Ready" : "Needs setup"}`,
     missingPermissions.length > 0
       ? `\nMissing permissions: ${missingPermissions.join(", ")}`
+      : null,
+    unmanageableRoleIds.length > 0
+      ? `\nBot can't manage: ${unmanageableRoleIds.map((id) => `<@&${id}>`).join(", ")} — move the bot's role above these roles.`
       : null,
     `\nIf the bot can't verify who assigned a watched role, it removes that role by default.`,
   ]
@@ -570,12 +595,13 @@ export async function handleWildCommand(
   const group = interaction.options.getSubcommandGroup(false);
   const action = interaction.options.getSubcommand();
 
+  // Every /wild subcommand, including /wild roles, requires Manage Server.
+  if (!(await requireManageServer(interaction))) return;
+
   if (!group && action === "roles") {
     await showRoleBrowser(interaction);
     return;
   }
-
-  if (!(await requireManageServer(interaction))) return;
 
   if (group === "watch") {
     await handleWatchCommand(interaction, store, action);

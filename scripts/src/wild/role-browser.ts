@@ -8,7 +8,7 @@ import {
   Role,
   ChatInputCommandInteraction,
 } from "discord.js";
-import { BOT_WHITE } from "./embeds.js";
+import { BOT_BLACK } from "./embeds.js";
 
 const PAGE_SIZE = 10;
 const COMPONENT_PREFIX = "wild-roles";
@@ -40,12 +40,14 @@ function createRoleEmbed(
   );
 
   return new EmbedBuilder()
-    .setColor(BOT_WHITE)
+    .setColor(BOT_BLACK)
     .setTitle("Roles")
-    .setDescription(lines.length > 0 ? lines.join("\n") : "No roles to show.")
-    .setFooter({
-      text: `${guild.name}  ·  Page ${page + 1}/${pageCount}  ·  ${roles.length} roles  ·  ${order === "position" ? "Role order" : "A–Z"}`,
-    });
+    .setDescription(
+      [
+        lines.length > 0 ? lines.join("\n") : "No roles to show.",
+        `Page ${page + 1}/${pageCount} · ${roles.length} roles · ${order === "position" ? "Role order" : "A–Z"}`,
+      ].join("\n\n"),
+    );
 }
 
 function createButtons(

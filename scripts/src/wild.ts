@@ -16,7 +16,7 @@ import { fgCommand, handleFgCommand } from "./wild/fg-commands.js";
 import { wildCommand } from "./wild/commands.js";
 import { ConfigStore } from "./wild/config-store.js";
 import { handleFgShareMessage } from "./wild/fg-share.js";
-import { guardAuditLogEntry } from "./wild/role-guard.js";
+import { getUnmanageableRoleIds, guardAuditLogEntry } from "./wild/role-guard.js";
 
 function log(message: string): void {
   process.stdout.write(`[Bot] ${message}\n`);
@@ -70,6 +70,34 @@ async function main(): Promise<void> {
     log(`Connected as ${readyClient.user.tag}.`);
     log(`Invite the bot to a server: ${installUrl.toString()}`);
     log("Global /wild, /commands, and /fg commands are registered.");
+
+    // Best-effort hierarchy check: warn per server about protected/FG roles
+    // the bot cannot manage. Never let this crash startup.
+    for (const guild of readyClient.guilds.cache.values()) {
+      try {
+        const settings = store.get(guild.id);
+        const roleIds = [
+          ...settings.protectedRoleIds,
+          ...Object.keys(settings.fgRoles),
+        ];
+        if (roleIds.length === 0) continue;
+        const botMember =
+          guild.members.me ??
+          (await guild.members.fetchMe().catch(() => null));
+        const unmanageable = getUnmanageableRoleIds(guild, botMember, roleIds);
+        if (unmanageable.length > 0) {
+          log(
+            `Warning in server ${guild.id} (${guild.name}): bot cannot manage ` +
+              `${unmanageable.map((id) => `<@&${id}>`).join(", ")} — ` +
+              `move the bot's role above these roles.`,
+          );
+        }
+      } catch (error) {
+        log(
+          `Could not check role hierarchy in server ${guild.id}: ${describeError(error)}`,
+        );
+      }
+    }
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {

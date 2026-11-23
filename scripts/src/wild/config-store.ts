@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface GuildSettings {
@@ -241,6 +241,8 @@ export class ConfigStore {
     this.writeQueue = this.writeQueue
       .catch(() => undefined)
       .then(async () => {
+        // Best-effort backup of the previous settings before overwriting.
+        await copyFile(this.filePath, `${this.filePath}.bak`).catch(() => undefined);
         await mkdir(path.dirname(this.filePath), { recursive: true });
         const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
         await writeFile(temporaryPath, serialized, { mode: 0o600 });

@@ -6,6 +6,7 @@ import {
 import { ConfigStore, FgRoleAccess, GuildSettings } from "./config-store.js";
 import { canAssignFgRole, isFgStaff } from "./authorization.js";
 import { wildEmbed } from "./embeds.js";
+import { isDangerousRole } from "./role-guard.js";
 
 const MANAGE_GUILD = PermissionFlagsBits.ManageGuild;
 const emptyFgAccess = (): FgRoleAccess => ({
@@ -396,6 +397,15 @@ async function handleRoleCommand(
   if (!actor || !canAssignFgRole(actor, role.id, settings)) {
     await interaction.reply({
       content: "You aren't allowlisted to assign this FG role.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (isDangerousRole(role)) {
+    await interaction.reply({
+      content:
+        "That FG role has the Administrator permission, so it can't be assigned through the bot.",
       ephemeral: true,
     });
     return;

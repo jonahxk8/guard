@@ -107,3 +107,38 @@ test("treats saved settings without enforcement state as active", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("creates a .bak backup of the previous settings on save", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "wild-config-bak-test-"));
+  const configPath = path.join(directory, "wild-config.json");
+  const previousConfigPath = process.env.WILD_CONFIG_PATH;
+  process.env.WILD_CONFIG_PATH = configPath;
+
+  try {
+    const store = new ConfigStore();
+    await store.load();
+
+    await store.set(GUILD_ID, {
+      ...store.get(GUILD_ID),
+      enforcementEnabled: false,
+    });
+    // No previous file existed, so no backup yet.
+    await assert.rejects(readFile(`${configPath}.bak`, "utf8"));
+
+    await store.set(GUILD_ID, {
+      ...store.get(GUILD_ID),
+      enforcementEnabled: true,
+    });
+    const backup = JSON.parse(await readFile(`${configPath}.bak`, "utf8"));
+    assert.equal(backup.guilds[GUILD_ID].enforcementEnabled, false);
+    const current = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(current.guilds[GUILD_ID].enforcementEnabled, true);
+  } finally {
+    if (previousConfigPath === undefined) {
+      delete process.env.WILD_CONFIG_PATH;
+    } else {
+      process.env.WILD_CONFIG_PATH = previousConfigPath;
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});

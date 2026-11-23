@@ -58,6 +58,8 @@ function createInteraction(options: {
   group: string | null;
   action: string;
   canManageServer?: boolean;
+  botAboveRole?: boolean;
+  roleIds?: string[];
 }) {
   const replies: Reply[] = [];
   const botMember = {
@@ -66,11 +68,24 @@ function createInteraction(options: {
         permission === PermissionFlagsBits.ManageRoles ||
         permission === PermissionFlagsBits.ViewAuditLog,
     },
+    roles: {
+      highest: {
+        comparePositionTo: () => (options.botAboveRole === false ? -1 : 1),
+      },
+    },
   };
   const interaction = {
     commandName: "wild",
     guildId: GUILD_ID,
-    guild: { id: GUILD_ID, members: { me: botMember } },
+    guild: {
+      id: GUILD_ID,
+      members: { me: botMember },
+      roles: {
+        cache: new Map(
+          (options.roleIds ?? []).map((id) => [id, { id }]),
+        ),
+      },
+    },
     memberPermissions: {
       has: (permission: bigint) =>
         permission === PermissionFlagsBits.ManageGuild &&
@@ -148,7 +163,7 @@ test("/wild status shows when enforcement is paused", async () => {
   );
 });
 
-test("/commands lists command names in a white embed", async () => {
+test("/commands lists command names in a black embed", async () => {
   const replies: Reply[] = [];
   await handleCommandsHelp({
     reply: async (reply: Reply) => replies.push(reply),
@@ -159,5 +174,46 @@ test("/commands lists command names in a white embed", async () => {
   assert.match(embed?.description ?? "", /\/fg roles create\|assign\|list/);
   assert.match(embed?.description ?? "", /`,fg share @member`/);
   assert.doesNotMatch(embed?.description ?? "", /Wild JS|role guard/i);
-  assert.equal(embed?.color, 0xffffff);
+  assert.equal(embed?.color, 0);
+  assert.equal(embed?.footer, undefined);
+  assert.equal(embed?.timestamp, undefined);
+});
+
+test("/wild roles without Manage Server is rejected", async () => {
+  const config = createStore();
+  const interaction = createInteraction({
+    group: null,
+    action: "roles",
+    canManageServer: false,
+  });
+
+  await handleWildCommand(interaction.interaction, config.store);
+
+  assert.equal(config.getSaveCount(), 0);
+  assert.match(interaction.replies[0].content ?? "", /Manage Server/i);
+});
+
+test("/wild status lists a protected role the bot cannot manage", async () => {
+  const config = createStore({
+    protectedRoleIds: ["333333333333333333"],
+    allowedUserIds: [],
+    allowedRoleIds: [],
+    fgStaffUserIds: [],
+    fgStaffRoleIds: [],
+    fgRoles: {},
+    logChannelId: null,
+    enforcementEnabled: true,
+  });
+  const interaction = createInteraction({
+    group: null,
+    action: "status",
+    botAboveRole: false,
+    roleIds: ["333333333333333333"],
+  });
+
+  await handleWildCommand(interaction.interaction, config.store);
+
+  const description = interaction.replies[0].embeds?.[0].toJSON().description ?? "";
+  assert.match(description, /\*\*Guard\*\*  Needs setup/);
+  assert.match(description, /Bot can't manage: <@&333333333333333333>/);
 });

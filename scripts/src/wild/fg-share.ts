@@ -15,7 +15,7 @@ import {
 } from "discord.js";
 import { canShareFgRole } from "./authorization.js";
 import { ConfigStore, FgRoleAccess } from "./config-store.js";
-import { BOT_WHITE } from "./embeds.js";
+import { BOT_BLACK } from "./embeds.js";
 
 const SHARE_TIMEOUT_MS = 5 * 60 * 1_000;
 const SHARE_SELECT_PREFIX = "fg-share-select";
@@ -29,14 +29,12 @@ function buildShareEmbed(
 ): EmbedBuilder {
   const roleMention = role ? `${role}` : "FG role";
   return new EmbedBuilder()
-    .setColor(BOT_WHITE)
+    .setColor(BOT_BLACK)
     .setTitle(title)
     .setDescription(
       status ??
         `<@${requesterId}> wants to share ${roleMention} with <@${targetId}>.\n\nDo you want to accept this FG role?`,
-    )
-    .setFooter({ text: "FG SHARE • GUARD" })
-    .setTimestamp();
+    );
 }
 
 function buildDecisionButtons(disabled = false): ActionRowBuilder<ButtonBuilder> {
@@ -385,10 +383,9 @@ export async function handleFgShareMessage(
   if (!match) {
     await message.reply({
       embeds: [{
-        color: BOT_WHITE,
+        color: BOT_BLACK,
         title: "FG role share",
         description: "Usage: `,fg share @member`",
-        footer: { text: "FG SHARE • GUARD" },
       }],
       allowedMentions: { parse: [] },
     });

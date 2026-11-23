@@ -1,0 +1,1 @@
+{"$schema":"https://railway.app/railway.schema.json","build":{"buildCommand":"pnpm run build:wild","builder":"NIXPACKS"},"deploy":{"numReplicas":1,"restartPolicyType":"ON_FAILURE","startCommand":"pnpm run start:wild"}}

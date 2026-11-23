@@ -6,9 +6,15 @@ import {
   Guild,
   GuildAuditLogsEntry,
   PermissionFlagsBits,
+  Role,
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
-import { guardAuditLogEntry } from "./role-guard.js";
+import {
+  guardAuditLogEntry,
+  isDangerousRole,
+  verifyExecutor,
+} from "./role-guard.js";
+import { clearOffenses } from "./offenders.js";
 
 const GUILD_ID = "111111111111111111";
 const MEMBER_ID = "222222222222222222";
@@ -16,6 +22,9 @@ const ROLE_ID = "333333333333333333";
 const ALLOWED_ACTOR_ID = "444444444444444444";
 const UNAPPROVED_ACTOR_ID = "555555555555555555";
 const ALLOWED_ROLE_ID = "888888888888888888";
+const REPEAT_ACTOR_ID = "121212121212121212";
+const OWNER_ID = "999999999999999999";
+const NOW = 1_700_000_000_000;
 
 interface SentMessage {
   embeds: EmbedBuilder[];
@@ -26,6 +35,7 @@ interface GuardSetup {
   settings: GuildSettings;
   removedRoleIds: string[][];
   sentMessages: SentMessage[];
+  dms: string[];
   memberFetchCount: number;
 }
 
@@ -37,6 +47,9 @@ function createSetup(
     hasManageRoles?: boolean;
     botAboveRole?: boolean;
     enforcementEnabled?: boolean;
+    ownerId?: string;
+    logChannelId?: string | null;
+    fetchAuditLogs?: (options: unknown) => Promise<unknown>;
   } = {},
 ): GuardSetup {
   const settings: GuildSettings = {
@@ -46,11 +59,12 @@ function createSetup(
     fgStaffUserIds: [],
     fgStaffRoleIds: [],
     fgRoles: {},
-    logChannelId: "666666666666666666",
+    logChannelId: options.logChannelId === undefined ? "666666666666666666" : options.logChannelId,
     enforcementEnabled: options.enforcementEnabled ?? true,
   };
   const removedRoleIds: string[][] = [];
   const sentMessages: SentMessage[] = [];
+  const dms: string[] = [];
   let memberFetchCount = 0;
 
   const member = {
@@ -68,6 +82,9 @@ function createSetup(
         some: (predicate: (role: { id: string }) => boolean) =>
           (options.actorRoleIds ?? []).some((roleId) => predicate({ id: roleId })),
       },
+    },
+    send: async (message: string) => {
+      dms.push(message);
     },
   };
   const botMember = {
@@ -90,6 +107,9 @@ function createSetup(
   };
   const guild = {
     id: GUILD_ID,
+    name: "Test Server",
+    ownerId: options.ownerId ?? OWNER_ID,
+    fetchAuditLogs: options.fetchAuditLogs,
     channels: {
       fetch: async () => channel,
     },
@@ -111,6 +131,7 @@ function createSetup(
     settings,
     removedRoleIds,
     sentMessages,
+    dms,
     get memberFetchCount() {
       return memberFetchCount;
     },
@@ -130,12 +151,14 @@ function createStore(settings: GuildSettings): ConfigStore {
 function createEntry(
   id: string,
   executorId: string | null,
+  createdTimestamp: number = NOW,
 ): GuildAuditLogsEntry {
   return {
     id,
     action: AuditLogEvent.MemberRoleUpdate,
     targetId: MEMBER_ID,
     executorId,
+    createdTimestamp,
     changes: [
       {
         key: "$add",
@@ -269,4 +292,124 @@ test("reports when a watched role is above Wild in the role hierarchy", async ()
     embed.fields?.find((field) => field.name === "Action needed")?.value ?? "",
     /cannot manage one or more watched roles/i,
   );
+});
+
+test("keeps watched roles assigned by the server owner", async () => {
+  const setup = createSetup({ ownerId: UNAPPROVED_ACTOR_ID });
+
+  await guardAuditLogEntry(
+    createEntry("audit-owner", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("DMs the unapproved actor even with no log channel set", async () => {
+  clearOffenses();
+  const setup = createSetup({ logChannelId: null });
+
+  await guardAuditLogEntry(
+    createEntry("audit-dm-no-log", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 1);
+  assert.match(setup.dms[0], new RegExp(ROLE_ID));
+  assert.match(setup.dms[0], /allowlist/i);
+});
+
+test("flags a repeat offender on the third unauthorised assignment", async () => {
+  clearOffenses();
+  const setup = createSetup();
+
+  for (let i = 1; i <= 3; i += 1) {
+    await guardAuditLogEntry(
+      createEntry(`audit-repeat-${i}`, REPEAT_ACTOR_ID),
+      setup.guild,
+      createStore(setup.settings),
+    );
+  }
+
+  assert.equal(setup.removedRoleIds.length, 3);
+  const thirdEmbed = setup.sentMessages[2].embeds[0].toJSON();
+  assert.equal(
+    thirdEmbed.fields?.find((field) => field.name === "Repeat offender")?.value,
+    "3+ unauthorised assignments",
+  );
+  const firstEmbed = setup.sentMessages[0].embeds[0].toJSON();
+  assert.equal(
+    firstEmbed.fields?.some((field) => field.name === "Repeat offender"),
+    false,
+  );
+});
+
+test("keeps a grant when the audit log corroborates an allowlisted executor", async () => {
+  const setup = createSetup({
+    allowedUserIds: [ALLOWED_ACTOR_ID],
+    fetchAuditLogs: async () => ({
+      entries: new Map([
+        [
+          "audit-corr",
+          {
+            id: "audit-corr",
+            targetId: MEMBER_ID,
+            executorId: ALLOWED_ACTOR_ID,
+            createdTimestamp: NOW,
+            changes: [{ key: "$add", new: [{ id: ROLE_ID }] }],
+          },
+        ],
+      ]),
+    }),
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-event", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+});
+
+test("still removes a grant when audit-log corroboration returns nothing", async () => {
+  clearOffenses();
+  const setup = createSetup({
+    fetchAuditLogs: async () => ({ entries: new Map() }),
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-no-corr", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+});
+
+test("verifyExecutor tolerates a guild with no fetchAuditLogs method", async () => {
+  const setup = createSetup();
+  const entry = createEntry("audit-no-fetch", UNAPPROVED_ACTOR_ID);
+  assert.equal(await verifyExecutor(entry, setup.guild), UNAPPROVED_ACTOR_ID);
+});
+
+test("isDangerousRole flags Administrator roles and only those", () => {
+  const adminRole = {
+    permissions: {
+      has: (permission: bigint) =>
+        permission === PermissionFlagsBits.Administrator,
+    },
+  } as unknown as Role;
+  const normalRole = {
+    permissions: { has: () => false },
+  } as unknown as Role;
+  assert.equal(isDangerousRole(adminRole), true);
+  assert.equal(isDangerousRole(normalRole), false);
 });

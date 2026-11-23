@@ -15,6 +15,7 @@ import {
 import { ConfigStore, GuildSettings } from "./config-store.js";
 import { BOT_BLACK, wildEmbed } from "./embeds.js";
 import { canShareRole, isWhitelisted } from "./authorization.js";
+import { memberDisplayName, roleDisplayName, roleMention } from "./names.js";
 import { isDangerousRole } from "./role-guard.js";
 import { WILD_ERROR_REPLY } from "./reply.js";
 
@@ -106,6 +107,28 @@ export const fgCommand = new SlashCommandBuilder()
           .setMinLength(1)
           .setMaxLength(MAX_FG_NAME_LENGTH)
           .setRequired(true),
+      ),
+  )
+  .addSubcommand((command) =>
+    command
+      .setName("create")
+      .setDescription("Create an FG role for yourself or a member")
+      .addStringOption((option) =>
+        option
+          .setName("name")
+          .setDescription("Name for the FG role")
+          .setMinLength(1)
+          .setMaxLength(MAX_FG_NAME_LENGTH)
+          .setRequired(true),
+      )
+      .addStringOption((option) =>
+        option.setName("color").setDescription("Colour: hex or name").setRequired(true),
+      )
+      .addStringOption((option) =>
+        option.setName("second_color").setDescription("Second colour for a gradient"),
+      )
+      .addUserOption((option) =>
+        option.setName("member").setDescription("Member the FG role is for (default: you)"),
       ),
   )
   .addSubcommand((command) =>
@@ -273,39 +296,43 @@ async function handleBaseCommand(
     interaction,
     store,
     { ...settings, fgBaseRoleId: role.id },
-    `${role} is now the FG base role. FG roles sit just under it — keep it above any coloured roles or the colour won't show.${warning}`,
+    `${roleDisplayName(role)} is now the FG base role. FG roles sit just under it — keep it above any coloured roles or the colour won't show.${warning}`,
   );
 }
 
-async function handleColorCommand(
+/**
+ * Shared FG-role creation, used by /fg color (for yourself) and
+ * /fg create (for yourself or a named member). The caller must already
+ * have passed the owner-or-whitelisted gate. `requireBase` is true for
+ * /fg create, which needs a base role set; /fg color works without one.
+ */
+async function createFgRole(
   interaction: ChatInputCommandInteraction,
   store: ConfigStore,
+  targetId: string,
+  colorInput: string,
+  secondColorInput: string | null,
+  nameInput: string,
+  requireBase: boolean,
 ): Promise<void> {
   const guild = interaction.guild!;
   const settings = store.get(guild.id);
-  const member = await guild.members.fetch(interaction.user.id).catch(() => null);
-  if (!member) {
-    await replyText(interaction, "You need to be a member of this server first.");
+  const forSelf = targetId === interaction.user.id;
+  const target = await guild.members.fetch(targetId).catch(() => null);
+  if (!target) {
+    await replyText(interaction, "That person must be a member of this server first.");
     return;
   }
-  // Wild rule: eligibility is being whitelisted (or the server owner),
-  // not boosting. Bleed gates this on boosting instead.
-  if (interaction.user.id !== guild.ownerId && !isWhitelisted(member, settings)) {
+  if (findAnyFgRole(guild, settings, targetId)) {
     await replyText(
       interaction,
-      "Only whitelisted members can make an FG role. Ask an admin to whitelist you with /whitelist first.",
-    );
-    return;
-  }
-  if (findAnyFgRole(guild, settings, interaction.user.id)) {
-    await replyText(
-      interaction,
-      "You already have an FG role — use /fg rename or /fg remove first.",
+      forSelf
+        ? "You already have an FG role — use /fg rename or /fg remove first."
+        : "They already have an FG role — use /fg remove first.",
     );
     return;
   }
 
-  const colorInput = interaction.options.getString("color", true);
   const color = parseFgColor(colorInput);
   if (!color) {
     await replyText(
@@ -314,13 +341,12 @@ async function handleColorCommand(
     );
     return;
   }
-  const secondColorInput = interaction.options.getString("second_color");
   const secondColor = secondColorInput ? parseFgColor(secondColorInput) : null;
   if (secondColorInput && !secondColor) {
     await replyText(interaction, "That second colour isn't a colour.");
     return;
   }
-  const name = interaction.options.getString("name", true).trim();
+  const name = nameInput.trim();
   if (!isValidFgName(name)) {
     await replyText(interaction, "Pick a name between 1 and 90 characters.");
     return;
@@ -333,6 +359,10 @@ async function handleColorCommand(
     return;
   }
 
+  if (requireBase && !settings.fgBaseRoleId) {
+    await replyText(interaction, "Set an FG base role first with /fg base @role.");
+    return;
+  }
   const baseRole = settings.fgBaseRoleId
     ? guild.roles.cache.get(settings.fgBaseRoleId)
     : undefined;
@@ -356,7 +386,7 @@ async function handleColorCommand(
       hoist: false,
       mentionable: false,
       position: baseRole ? Math.max(0, baseRole.position - 1) : undefined,
-      reason: `FG role created by ${interaction.user.id}`,
+      reason: `FG role created by ${interaction.user.id} for ${targetId}`,
     });
   } catch {
     await replyText(
@@ -373,7 +403,7 @@ async function handleColorCommand(
     shareUserIds: [],
     shareRoleIds: [],
   };
-  nextSettings.fgRoleOwners[role.id] = interaction.user.id;
+  nextSettings.fgRoleOwners[role.id] = targetId;
   if (!nextSettings.protectedRoleIds.includes(role.id)) {
     nextSettings.protectedRoleIds.push(role.id);
   }
@@ -392,8 +422,8 @@ async function handleColorCommand(
   // not when the member boosts (Wild has no boost event to hook).
   if (nextSettings.fgAwardRoleId) {
     const awardRole = guild.roles.cache.get(nextSettings.fgAwardRoleId);
-    if (awardRole && !member.roles.cache.has(awardRole.id)) {
-      await member.roles.add(awardRole, "FG award role").catch(() => undefined);
+    if (awardRole && !target.roles.cache.has(awardRole.id)) {
+      await target.roles.add(awardRole, "FG award role").catch(() => undefined);
     }
   }
 
@@ -402,8 +432,67 @@ async function handleColorCommand(
     : "";
   await replyText(
     interaction,
-    `${role} is your FG role now. It's protected, so only whitelisted people can give it to anyone else.${gradientNote}`,
+    forSelf
+      ? `${roleDisplayName(role)} is your FG role now. It's protected, so only whitelisted people can give it to anyone else.${gradientNote}`
+      : `Created FG role ${roleDisplayName(role)} for ${memberDisplayName(target)}. It's protected, so only whitelisted people can give it to anyone else.${gradientNote}`,
     false,
+  );
+}
+
+/** Owner-or-whitelisted gate for FG creation. Returns the caller or null. */
+async function requireFgCreator(
+  interaction: ChatInputCommandInteraction,
+  store: ConfigStore,
+): Promise<GuildMember | null> {
+  const guild = interaction.guild!;
+  const settings = store.get(guild.id);
+  const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+  if (!member) {
+    await replyText(interaction, "You need to be a member of this server first.");
+    return null;
+  }
+  // Wild rule: eligibility is being whitelisted (or the server owner),
+  // not boosting. Bleed gates this on boosting instead.
+  if (interaction.user.id !== guild.ownerId && !isWhitelisted(member, settings)) {
+    await replyText(
+      interaction,
+      "Only the server owner or whitelisted members can create FG roles.",
+    );
+    return null;
+  }
+  return member;
+}
+
+async function handleColorCommand(
+  interaction: ChatInputCommandInteraction,
+  store: ConfigStore,
+): Promise<void> {
+  if (!(await requireFgCreator(interaction, store))) return;
+  await createFgRole(
+    interaction,
+    store,
+    interaction.user.id,
+    interaction.options.getString("color", true),
+    interaction.options.getString("second_color"),
+    interaction.options.getString("name", true),
+    false,
+  );
+}
+
+async function handleCreateCommand(
+  interaction: ChatInputCommandInteraction,
+  store: ConfigStore,
+): Promise<void> {
+  if (!(await requireFgCreator(interaction, store))) return;
+  const target = interaction.options.getUser("member");
+  await createFgRole(
+    interaction,
+    store,
+    target?.id ?? interaction.user.id,
+    interaction.options.getString("color", true),
+    interaction.options.getString("second_color"),
+    interaction.options.getString("name", true),
+    true,
   );
 }
 
@@ -435,7 +524,7 @@ async function handleRenameCommand(
     );
     return;
   }
-  await replyText(interaction, `Your FG role is now called ${own.role}.`, false);
+  await replyText(interaction, `Your FG role is now called ${roleDisplayName(own.role)}.`, false);
 }
 
 async function handleIconCommand(
@@ -628,7 +717,7 @@ async function handleAwardCommand(
     await replyText(
       interaction,
       awardRole
-        ? `The FG award role is ${awardRole}. It's given when someone makes an FG role.`
+        ? `The FG award role is ${roleDisplayName(awardRole)}. It's given when someone makes an FG role.`
         : "No FG award role is set.",
       false,
     );
@@ -655,7 +744,7 @@ async function handleAwardCommand(
     interaction,
     store,
     { ...settings, fgAwardRoleId: role.id },
-    `${role} will be given to members when they make an FG role.`,
+    `${roleDisplayName(role)} will be given to members when they make an FG role.`,
   );
 }
 
@@ -666,13 +755,13 @@ function buildShareEmbed(
   role: Role | null,
   status?: string,
 ): EmbedBuilder {
-  const roleMention = role ? `${role}` : "FG role";
+  const roleMentionText = role ? roleMention(role) : "FG role";
   return new EmbedBuilder()
     .setColor(BOT_BLACK)
     .setTitle(title)
     .setDescription(
       status ??
-        `<@${requesterId}> wants to share ${roleMention} with <@${targetId}>.\n\nTap Yes to accept.`,
+        `<@${requesterId}> wants to share ${roleMentionText} with <@${targetId}>.\n\nTap Yes to accept.`,
     );
 }
 
@@ -734,7 +823,7 @@ async function finishShareOffer(
           requesterId,
           targetId,
           role,
-          `<@${targetId}> declined ${role}.`,
+          `<@${targetId}> declined ${roleMention(role)}.`,
         ),
       ],
       components: [],
@@ -795,7 +884,7 @@ async function finishShareOffer(
           requesterId,
           targetId,
           role,
-          `<@${targetId}> already has ${role}.`,
+          `<@${targetId}> already has ${roleMention(role)}.`,
         ),
       ],
       components: [],
@@ -813,7 +902,7 @@ async function finishShareOffer(
           requesterId,
           targetId,
           role,
-          `<@${targetId}> accepted ${role}.`,
+          `<@${targetId}> accepted ${roleMention(role)}.`,
         ),
       ],
       components: [],
@@ -993,6 +1082,9 @@ export async function handleFgCommand(
     case "color":
       await handleColorCommand(interaction, store);
       return;
+    case "create":
+      await handleCreateCommand(interaction, store);
+      return;
     case "rename":
       await handleRenameCommand(interaction, store);
       return;
@@ -1012,6 +1104,6 @@ export async function handleFgCommand(
       await handleShareCommand(interaction, store);
       return;
     default:
-      await replyText(interaction, "That FG command isn't supported.");
+      await replyText(interaction, "Use /help fg to see FG commands.");
   }
 }

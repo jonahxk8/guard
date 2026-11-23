@@ -16,6 +16,7 @@ import {
   whitelistCommand,
 } from "./wild/commands.js";
 import { fgCommand, handleFgCommand } from "./wild/fg-booster.js";
+import { handleHelpCommand, helpCommand } from "./wild/help.js";
 import { handlePrefixMessage } from "./wild/prefix.js";
 import { ConfigStore } from "./wild/config-store.js";
 import { getUnmanageableRoleIds, guardAuditLogEntry } from "./wild/role-guard.js";
@@ -58,6 +59,7 @@ async function main(): Promise<void> {
         setupCommand.toJSON(),
         fgCommand.toJSON(),
         blacklistCommand.toJSON(),
+        helpCommand.toJSON(),
       ]);
     } catch (error) {
       log(`Could not register slash commands: ${describeError(error)}`);
@@ -78,8 +80,8 @@ async function main(): Promise<void> {
 
     log(`Connected as ${readyClient.user.tag}.`);
     log(`Invite the bot to a server: ${installUrl.toString()}`);
-    log("Global /protect, /whitelist, /status, /setup, /fg, and /blacklist commands are registered.");
-    log("Prefix commands also work: ,guard ,whitelist ,status ,logchannel ,fg ,blacklist");
+    log("Global /protect, /whitelist, /status, /setup, /fg, /blacklist, and /help commands are registered.");
+    log("Prefix commands also work: ,guard ,whitelist ,status ,logchannel ,fg ,blacklist ,help");
 
     // Best-effort hierarchy check: warn per server about protected/FG roles
     // the bot cannot manage. Never let this crash startup.
@@ -115,6 +117,8 @@ async function main(): Promise<void> {
     try {
       if (interaction.commandName === "fg") {
         await handleFgCommand(interaction, store);
+      } else if (interaction.commandName === "help") {
+        await handleHelpCommand(interaction);
       } else {
         await handleGuardCommand(interaction, store);
       }

@@ -7,6 +7,12 @@ import {
 import { ConfigStore, GuildSettings, blacklistCount, blacklistEntries, isBlacklisted } from "./config-store.js";
 import { wildEmbed } from "./embeds.js";
 import { isWhitelisted } from "./authorization.js";
+import {
+  channelDisplayName,
+  memberDisplayName,
+  roleDisplayName,
+  roleMention,
+} from "./names.js";
 import { WILD_ERROR_REPLY } from "./reply.js";
 import {
   getUnmanageableRoleIds,
@@ -178,7 +184,7 @@ async function handleProtectCommand(
         ...settings,
         protectedRoleIds: settings.protectedRoleIds.filter((id) => id !== role.id),
       },
-      `${role} is no longer protected.`,
+      `${roleDisplayName(role)} is no longer protected.`,
     );
     return;
   }
@@ -187,7 +193,7 @@ async function handleProtectCommand(
     interaction,
     store,
     { ...settings, protectedRoleIds: [...settings.protectedRoleIds, role.id] },
-    `${role} is now protected.`,
+    `${roleDisplayName(role)} is now protected.`,
   );
 }
 
@@ -209,7 +215,9 @@ async function handleWhitelistCommand(
   let isRole = false;
   if (user) {
     targetId = user.id;
-    targetLabel = `${user}`;
+    // Fetch the member first: the name comes from the member/user, never
+    // from interpolating the option object itself — on the prefix path
+    // that object is a plain { id }, which renders as "[object Object]".
     const member = await guild.members.fetch(user.id).catch(() => null);
     if (!member) {
       await replyText(
@@ -218,6 +226,7 @@ async function handleWhitelistCommand(
       );
       return;
     }
+    targetLabel = memberDisplayName(member, user);
   } else {
     const role = guild.roles.cache.get(selectedRole!.id);
     if (!role || role.id === guild.id) {
@@ -225,7 +234,7 @@ async function handleWhitelistCommand(
       return;
     }
     targetId = role.id;
-    targetLabel = `${role}`;
+    targetLabel = roleDisplayName(role);
     isRole = true;
   }
 
@@ -309,7 +318,7 @@ async function handleSetupCommand(
     interaction,
     store,
     { ...settings, logChannelId: channel.id },
-    `Alerts will go to ${channel}.`,
+    `Alerts will go to ${channelDisplayName(channel)}.`,
   );
 }
 
@@ -333,16 +342,21 @@ async function handleBlacklistAdd(
     return;
   }
   if (isBlacklisted(settings, user.id, role.id)) {
-    await replyText(interaction, `${user} is already blacklisted from ${role}.`);
+    const member = await guild.members.fetch(user.id).catch(() => null);
+    await replyText(
+      interaction,
+      `${memberDisplayName(member, user)} is already blacklisted from ${roleMention(role)}.`,
+    );
     return;
   }
   const blacklist = { ...settings.blacklist };
   blacklist[user.id] = [...(blacklist[user.id] ?? []), role.id];
+  const member = await guild.members.fetch(user.id).catch(() => null);
   await saveSettings(
     interaction,
     store,
     { ...settings, blacklist },
-    `${user} is now blacklisted from ${role}.`,
+    `${memberDisplayName(member, user)} is now blacklisted from ${roleMention(role)}.`,
   );
 }
 
@@ -360,7 +374,11 @@ async function handleBlacklistRemove(
     return;
   }
   if (!isBlacklisted(settings, user.id, role.id)) {
-    await replyText(interaction, `${user} isn't blacklisted from ${role}.`);
+    const member = await guild.members.fetch(user.id).catch(() => null);
+    await replyText(
+      interaction,
+      `${memberDisplayName(member, user)} isn't blacklisted from ${roleMention(role)}.`,
+    );
     return;
   }
   const blacklist = { ...settings.blacklist };
@@ -370,11 +388,12 @@ async function handleBlacklistRemove(
   } else {
     delete blacklist[user.id];
   }
+  const member = await guild.members.fetch(user.id).catch(() => null);
   await saveSettings(
     interaction,
     store,
     { ...settings, blacklist },
-    `${user} is no longer blacklisted from ${role}.`,
+    `${memberDisplayName(member, user)} is no longer blacklisted from ${roleMention(role)}.`,
   );
 }
 
@@ -454,7 +473,6 @@ async function handleStatusCommand(
     unmanageableRoleIds.length > 0
       ? `Bot can't manage: ${unmanageableRoleIds.map((id) => `<@&${id}>`).join(", ")} — move the bot's role above these roles.`
       : null,
-    "Commands: /protect /whitelist /status /setup /fg /blacklist",
   ]
     .filter(Boolean)
     .join("\n");

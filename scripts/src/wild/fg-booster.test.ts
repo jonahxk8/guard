@@ -126,6 +126,21 @@ function createGuild(options: {
       const held = new Set(options.memberRoleIds?.[memberId] ?? []);
       members.set(memberId, {
         id: memberId,
+        displayName:
+          memberId === MEMBER_ID
+            ? "Alex"
+            : memberId === OTHER_ID
+              ? "Sam"
+              : "Owner",
+        user: {
+          id: memberId,
+          username:
+            memberId === MEMBER_ID
+              ? "Alex"
+              : memberId === OTHER_ID
+                ? "Sam"
+                : "Owner",
+        },
         roles: {
           cache: {
             has: (roleId: string) => held.has(roleId),
@@ -182,7 +197,7 @@ function createInteraction(options: {
   const interaction = {
     commandName: "fg",
     guildId: GUILD_ID,
-    user: { id: options.userId ?? MEMBER_ID },
+    user: { id: options.userId ?? MEMBER_ID, username: "Alex" },
     memberPermissions: {
       has: (permission: bigint) =>
         permission === PermissionFlagsBits.ManageGuild &&
@@ -289,7 +304,8 @@ test("/fg color creates an owned FG role under the base with no permissions", as
   assert.ok(settings.protectedRoleIds.includes(createdRoleId));
   assert.ok(settings.fgRoles[createdRoleId]);
   assert.equal(replies[0].ephemeral, true);
-  assert.match(replies[0].content ?? "", /is your FG role now/i);
+  assert.match(replies[0].content ?? "", /My FG is your FG role now/i);
+  assert.doesNotMatch(replies[0].content ?? "", /\[object Object\]/);
   // Wild adaptation: the award role is granted on FG creation.
   assert.equal(
     (getMember(MEMBER_ID)!.roles as { cache: { has: (id: string) => boolean } }).cache.has(AWARD_ROLE_ID),
@@ -340,6 +356,173 @@ test("/fg color rejects non-whitelisted members", async () => {
   assert.match(replies[0].content ?? "", /whitelisted/i);
 });
 
+test("/fg create creates an FG role for a named member (whitelisted caller)", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [MEMBER_ID],
+      fgBaseRoleId: BASE_ROLE_ID,
+      fgAwardRoleId: AWARD_ROLE_ID,
+    }),
+  );
+  const { guild, createdRoles, getMember } = createGuild({
+    roles: [
+      makeRole(BASE_ROLE_ID, "FG Base", 10),
+      makeRole(AWARD_ROLE_ID, "Award", 3),
+    ],
+    memberRoleIds: { [MEMBER_ID]: [], [OTHER_ID]: [] },
+  });
+  const { interaction, replies } = createInteraction({
+    action: "create",
+    memberId: OTHER_ID,
+    strings: { name: "Sam FG", color: "blue" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 1);
+  assert.deepEqual(createdRoles[0].permissions, []);
+  assert.equal(createdRoles[0].position, 9);
+  const settings = config.getSettings();
+  const createdRoleId = Object.keys(settings.fgRoleOwners)[0];
+  assert.equal(settings.fgRoleOwners[createdRoleId], OTHER_ID);
+  assert.ok(settings.protectedRoleIds.includes(createdRoleId));
+  assert.match(replies[0].content ?? "", /Created FG role Sam FG for Sam/i);
+  assert.doesNotMatch(replies[0].content ?? "", /\[object Object\]/);
+  // The award role goes to the target, not the caller.
+  assert.equal(
+    (getMember(OTHER_ID)!.roles as { cache: { has: (id: string) => boolean } }).cache.has(AWARD_ROLE_ID),
+    true,
+  );
+});
+
+test("/fg create for yourself works when whitelisted", async () => {
+  const config = createStore(
+    makeSettings({ allowedUserIds: [MEMBER_ID], fgBaseRoleId: BASE_ROLE_ID }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "create",
+    strings: { name: "My FG", color: "#ff0000" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 1);
+  const createdRoleId = Object.keys(config.getSettings().fgRoleOwners)[0];
+  assert.equal(config.getSettings().fgRoleOwners[createdRoleId], MEMBER_ID);
+  assert.match(replies[0].content ?? "", /My FG is your FG role now/i);
+});
+
+test("/fg create by the server owner works without being whitelisted", async () => {
+  const config = createStore(makeSettings({ fgBaseRoleId: BASE_ROLE_ID }));
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "create",
+    userId: OWNER_ID,
+    strings: { name: "Owner FG", color: "red" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 1);
+  const createdRoleId = Object.keys(config.getSettings().fgRoleOwners)[0];
+  assert.equal(config.getSettings().fgRoleOwners[createdRoleId], OWNER_ID);
+  assert.match(replies[0].content ?? "", /Owner FG is your FG role now/i);
+});
+
+test("/fg create by a member with a whitelisted role works", async () => {
+  const WHITELIST_ROLE_ID = "777777777777777777";
+  const config = createStore(
+    makeSettings({
+      allowedRoleIds: [WHITELIST_ROLE_ID],
+      fgBaseRoleId: BASE_ROLE_ID,
+    }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+    memberRoleIds: { [MEMBER_ID]: [WHITELIST_ROLE_ID] },
+  });
+  const { interaction } = createInteraction({
+    action: "create",
+    strings: { name: "Role FG", color: "green" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 1);
+});
+
+test("/fg create rejects a non-whitelisted member", async () => {
+  const config = createStore(makeSettings({ fgBaseRoleId: BASE_ROLE_ID }));
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "create",
+    strings: { name: "Nope", color: "blue" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 0);
+  assert.match(
+    replies[0].content ?? "",
+    /Only the server owner or whitelisted members can create FG roles/i,
+  );
+});
+
+test("/fg create rejects a second FG role for the same target", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [MEMBER_ID],
+      fgBaseRoleId: BASE_ROLE_ID,
+      fgRoleOwners: { [FG_ROLE_ID]: OTHER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [
+      makeRole(BASE_ROLE_ID, "FG Base", 10),
+      makeRole(FG_ROLE_ID, "Old FG", 9),
+    ],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "create",
+    memberId: OTHER_ID,
+    strings: { name: "Second FG", color: "blue" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 0);
+  assert.match(replies[0].content ?? "", /already have an FG role/i);
+});
+
+test("/fg create errors when no base role is set", async () => {
+  const config = createStore(makeSettings({ allowedUserIds: [MEMBER_ID] }));
+  const { guild, createdRoles } = createGuild({ roles: [] });
+  const { interaction, replies } = createInteraction({
+    action: "create",
+    strings: { name: "No Base", color: "blue" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 0);
+  assert.match(replies[0].content ?? "", /Set an FG base role first/i);
+});
+
 test("/fg rename only works on your own FG role", async () => {
   const config = createStore(
     makeSettings({ fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID } }),
@@ -354,7 +537,8 @@ test("/fg rename only works on your own FG role", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(fgRole.name, "New Name");
-  assert.match(replies[0].content ?? "", /now called/i);
+  assert.match(replies[0].content ?? "", /Your FG role is now called New Name/i);
+  assert.doesNotMatch(replies[0].content ?? "", /\[object Object\]/);
 
   const other = createInteraction({
     action: "rename",

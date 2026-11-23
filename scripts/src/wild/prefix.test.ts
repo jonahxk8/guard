@@ -68,6 +68,7 @@ function createMessage(options: {
       const entry = {
         id: role.id,
         name: "Role",
+        position: 10,
         managed: role.managed ?? false,
         permissions: {
           has: (permission: bigint) =>
@@ -102,8 +103,12 @@ function createMessage(options: {
   const getMember = (memberId: string) => {
     if (!members.has(memberId)) {
       const held = new Set(options.memberRoleIds?.[memberId] ?? []);
+      const displayName =
+        memberId === USER_ID ? "Alex" : memberId === OTHER_ID ? "Sam" : "Member";
       members.set(memberId, {
         id: memberId,
+        displayName,
+        user: { id: memberId, username: displayName },
         permissions: {
           has: (permission: bigint) =>
             permission === PermissionFlagsBits.ManageGuild &&
@@ -185,7 +190,7 @@ function createMessage(options: {
       : options.guild;
   const message = {
     content: options.content,
-    author: { id: options.authorId ?? USER_ID, bot: options.authorIsBot ?? false },
+    author: { id: options.authorId ?? USER_ID, username: "Alex", bot: options.authorIsBot ?? false },
     guild,
     member: guild ? getMember(options.authorId ?? USER_ID) : null,
     channel,
@@ -223,6 +228,20 @@ test("parsePrefixMessage parses mentions, raw ids, and fg colour args", () => {
     singleWord && "args" in singleWord && singleWord.args.strings.name,
     "blue",
   );
+  const create = parsePrefixMessage(",fg create My Cool Role #ff0000");
+  assert.equal(create && "args" in create && create.args.subcommand, "create");
+  assert.equal(create && "args" in create && create.args.strings.name, "My Cool Role");
+  assert.equal(create && "args" in create && create.args.strings.color, "#ff0000");
+  const createFor = parsePrefixMessage(",fg create Sam FG blue <@333333333333333333>");
+  assert.equal(createFor && "args" in createFor && createFor.args.strings.name, "Sam FG");
+  assert.equal(createFor && "args" in createFor && createFor.args.strings.color, "blue");
+  assert.equal(createFor && "args" in createFor && createFor.args.users.member, "333333333333333333");
+  const createGradient = parsePrefixMessage(",fg create My Role red blue");
+  assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.color, "red");
+  assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.second_color, "#0000ff");
+  assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.name, "My Role");
+  const help = parsePrefixMessage(",help fg create");
+  assert.equal(help && "args" in help && help.args.strings.topic, "fg create");
   assert.equal(parsePrefixMessage(",boosterrole base"), null);
   assert.equal(parsePrefixMessage(",br"), null);
   assert.equal(parsePrefixMessage(",autorole"), null);
@@ -375,6 +394,96 @@ test("a usage error replies with usage and the command message is deleted", asyn
 
   assert.equal(sent.length, 1);
   assert.match(sent[0].content ?? "", /Usage: ,guard @role/);
+});
+
+test("bare ,fg and ,blacklist point at help instead of a usage wall", async () => {
+  const config = createStore();
+  for (const content of [",fg", ",fg nonsense", ",blacklist", ",blacklist nope"]) {
+    const { message, sent } = createMessage({ content });
+    assert.equal(await handlePrefixMessage(message, config.store), true);
+    assert.equal(sent.length, 1);
+    assert.doesNotMatch(sent[0].content ?? "", /\|/);
+    assert.match(sent[0].content ?? "", /Use ,help (fg|blacklist) to see/);
+  }
+});
+
+test(",whitelist on the prefix path says the name, never [object Object]", async () => {
+  const config = createStore();
+  const addUser = createMessage({ content: ",whitelist <@222222222222222222>" });
+  await handlePrefixMessage(addUser.message, config.store);
+  assert.match(addUser.sent[0].content ?? "", /Alex is now whitelisted/i);
+  assert.doesNotMatch(addUser.sent[0].content ?? "", /\[object Object\]/);
+
+  const addRole = createMessage({ content: ",whitelist <@&444444444444444444>" });
+  await handlePrefixMessage(addRole.message, config.store);
+  assert.match(addRole.sent[0].content ?? "", /Role is now whitelisted/i);
+  assert.doesNotMatch(addRole.sent[0].content ?? "", /\[object Object\]/);
+});
+
+test(",fg create creates an FG role for a named member through the prefix", async () => {
+  const config = createStore(
+    makeSettings({ allowedUserIds: [USER_ID], fgBaseRoleId: ROLE_ID }),
+  );
+  const { message, sent } = createMessage({
+    content: ",fg create Sam FG blue <@333333333333333333>",
+    roles: [{ id: ROLE_ID }],
+  });
+
+  assert.equal(await handlePrefixMessage(message, config.store), true);
+
+  const settings = config.getSettings();
+  assert.deepEqual(settings.fgRoleOwners, { "100000000000000001": OTHER_ID });
+  assert.match(sent[0].content ?? "", /Created FG role Sam FG for Sam/i);
+  assert.doesNotMatch(sent[0].content ?? "", /\[object Object\]/);
+});
+
+test(",fg create by a non-whitelisted member is rejected", async () => {
+  const config = createStore(makeSettings({ fgBaseRoleId: ROLE_ID }));
+  const { message, sent } = createMessage({
+    content: ",fg create Nope blue",
+    roles: [{ id: ROLE_ID }],
+  });
+
+  await handlePrefixMessage(message, config.store);
+
+  assert.deepEqual(config.getSettings().fgRoleOwners, {});
+  assert.match(
+    sent[0].content ?? "",
+    /Only the server owner or whitelisted members can create FG roles/i,
+  );
+});
+
+test(",help shows the main page, a topic page, and one command", async () => {
+  const config = createStore();
+
+  const main = createMessage({ content: ",help" });
+  await handlePrefixMessage(main.message, config.store);
+  assert.equal(main.sent.length, 1);
+  assert.equal(main.sent[0].embeds?.[0].toJSON().color, 0);
+  const mainText = main.sent[0].embeds?.[0].toJSON().description as string;
+  assert.match(mainText, /\*\*Guard\*\*/);
+  assert.match(mainText, /\*\*FG\*\*/);
+  assert.match(mainText, /\*\*Blacklist\*\*/);
+  assert.match(mainText, /\/fg create/);
+  assert.doesNotMatch(mainText, /\|/);
+
+  const fg = createMessage({ content: ",help fg" });
+  await handlePrefixMessage(fg.message, config.store);
+  const fgText = fg.sent[0].embeds?.[0].toJSON().description as string;
+  assert.match(fgText, /\/fg create/);
+  assert.doesNotMatch(fgText, /\/blacklist/);
+
+  const create = createMessage({ content: ",help fg create" });
+  await handlePrefixMessage(create.message, config.store);
+  const createText = create.sent[0].embeds?.[0].toJSON().description as string;
+  assert.match(createText, /\/fg create <name> <color>/);
+  assert.match(createText, /Server owner or whitelisted members/);
+
+  const unknown = createMessage({ content: ",help nonsense" });
+  await handlePrefixMessage(unknown.message, config.store);
+  assert.equal(unknown.sent[0].embeds, undefined);
+  assert.match(unknown.sent[0].content ?? "", /No help for "nonsense"/);
+  assert.match(unknown.sent[0].content ?? "", /Use \/help to see all commands/);
 });
 
 test("an error reply auto-deletes after 10 seconds", async (t) => {

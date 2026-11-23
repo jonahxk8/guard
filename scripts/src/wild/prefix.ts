@@ -5,6 +5,7 @@ import {
 import { ConfigStore } from "./config-store.js";
 import { handleGuardCommand } from "./commands.js";
 import { handleFgCommand, parseFgColor } from "./fg-booster.js";
+import { handleHelpCommand } from "./help.js";
 import { WILD_ERROR_REPLY } from "./reply.js";
 
 /**
@@ -50,6 +51,7 @@ export const PREFIX_COMMANDS = [
   "logchannel",
   "fg",
   "blacklist",
+  "help",
 ] as const;
 
 /** Prefix names that map to a differently-named slash command. */
@@ -175,6 +177,11 @@ export function parsePrefixMessage(
     }
     case "fg":
       return parseFgPrefix(rest, args, usage);
+    case "help": {
+      // ,help, ,help fg, ,help fg create — the topic is everything after.
+      args.strings.topic = rest.join(" ").trim();
+      return { command, args };
+    }
     case "blacklist": {
       const action = rest[0];
       if (action === "list") {
@@ -192,7 +199,7 @@ export function parsePrefixMessage(
         args.roles.role = roleId;
         return { command, args };
       }
-      return usage("Usage: ,blacklist add @user @role | ,blacklist remove @user @role | ,blacklist list");
+      return usage("Use ,help blacklist to see blacklist commands.");
     }
     default:
       return null;
@@ -240,6 +247,55 @@ function parseFgPrefix(
       if (secondColor) args.strings.second_color = secondColor;
       return { command: "fg", args };
     }
+    case "create": {
+      // ,fg create <name> <color> [second_color] [@member]
+      // Name comes first and may contain spaces; the colour is the
+      // hex/name token after it. A trailing @member mention (or a raw
+      // id after a colour) is the member the role is for.
+      let tokens = [...tail];
+      const last = tokens[tokens.length - 1];
+      const memberId = parseUserToken(last);
+      if (memberId && last && /^<@!?\d+>$/.test(last)) {
+        args.users.member = memberId;
+        tokens = tokens.slice(0, -1);
+      } else if (
+        memberId &&
+        tokens.length >= 3 &&
+        parseFgColor(tokens[tokens.length - 2])
+      ) {
+        args.users.member = memberId;
+        tokens = tokens.slice(0, -1);
+      }
+      if (tokens.length < 2) {
+        return usage("Usage: ,fg create <name> <color> [second_color] [@member]");
+      }
+      let secondColor: string | null = null;
+      let colorToken: string | null = null;
+      let nameParts = tokens;
+      // Two trailing colours = colour + second colour; one trailing
+      // colour = just the colour. A name that is one colour word on its
+      // own stays the name (same rule as ,fg color).
+      if (
+        tokens.length >= 3 &&
+        parseFgColor(tokens[tokens.length - 1]) &&
+        parseFgColor(tokens[tokens.length - 2])
+      ) {
+        secondColor = parseFgColor(tokens[tokens.length - 1]);
+        colorToken = tokens[tokens.length - 2];
+        nameParts = tokens.slice(0, -2);
+      } else if (parseFgColor(tokens[tokens.length - 1])) {
+        colorToken = tokens[tokens.length - 1];
+        nameParts = tokens.slice(0, -1);
+      }
+      if (!colorToken || nameParts.length === 0) {
+        return usage("Usage: ,fg create <name> <color> [second_color] [@member]");
+      }
+      args.subcommand = "create";
+      args.strings.name = nameParts.join(" ");
+      args.strings.color = colorToken;
+      if (secondColor) args.strings.second_color = secondColor;
+      return { command: "fg", args };
+    }
     case "rename": {
       const name = tail.join(" ").trim();
       if (!name) return usage("Usage: ,fg rename <name>");
@@ -284,12 +340,12 @@ function parseFgPrefix(
         args.roles.role = roleId;
         return { command: "fg", args };
       }
-      return usage("Usage: ,fg award set @role | ,fg award view | ,fg award remove");
+      return usage("Use ,help fg to see FG commands.");
     }
     default:
-      return usage(
-        "Usage: ,fg base @role | ,fg color <color> <name> | ,fg rename <name> | ,fg icon <url> | ,fg remove | ,fg list | ,fg cleanup | ,fg share @member @role | ,fg award set @role | ,fg award view | ,fg award remove",
-      );
+      // Bare ,fg or an unknown subcommand: point at the help page,
+      // never dump every usage variant as a wall.
+      return usage("Use ,help fg to see FG commands.");
   }
 }
 
@@ -424,6 +480,8 @@ export async function handlePrefixMessage(
   try {
     if (slashCommand === "fg") {
       await handleFgCommand(interaction, store);
+    } else if (slashCommand === "help") {
+      await handleHelpCommand(interaction);
     } else {
       await handleGuardCommand(interaction, store);
     }

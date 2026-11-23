@@ -83,6 +83,7 @@ function createInteraction(options: {
   const role = options.roleId
     ? {
         id: options.roleId,
+        name: "Pic",
         managed: false,
         permissions: {
           has: (permission: bigint) =>
@@ -94,6 +95,7 @@ function createInteraction(options: {
   const channel = options.channelId
     ? {
         id: options.channelId,
+        name: "logs-demo",
         type: ChannelType.GuildText,
         permissionsFor: () => ({ has: () => true }),
       }
@@ -101,7 +103,7 @@ function createInteraction(options: {
   const interaction = {
     commandName: options.commandName,
     guildId: GUILD_ID,
-    user: { id: options.userId ?? "999999999999999999" },
+    user: { id: options.userId ?? "999999999999999999", username: "Alex" },
     guild: {
       id: GUILD_ID,
       ownerId: "999999999999999999",
@@ -109,6 +111,7 @@ function createInteraction(options: {
         me: botMember,
         fetch: async (memberId: string) => ({
           id: memberId,
+          displayName: "Alex",
           roles: { cache: { has: () => false, some: () => false } },
         }),
         fetchMe: async () => botMember,
@@ -154,7 +157,8 @@ test("/protect adds a role with an ephemeral plain-text reply", async () => {
   assert.equal(config.getSaveCount(), 1);
   assert.equal(interaction.replies[0].ephemeral, true);
   assert.equal(interaction.replies[0].embeds, undefined);
-  assert.match(interaction.replies[0].content ?? "", /now protected/i);
+  assert.match(interaction.replies[0].content ?? "", /Pic is now protected/i);
+  assert.doesNotMatch(interaction.replies[0].content ?? "", /\[object Object\]/);
 });
 
 test("/protect removes a role that is already protected", async () => {
@@ -206,7 +210,8 @@ test("/whitelist toggles a user on and then off", async () => {
   await handleGuardCommand(add.interaction, config.store);
 
   assert.deepEqual(config.getSettings().allowedUserIds, [USER_ID]);
-  assert.match(add.replies[0].content ?? "", /now whitelisted/i);
+  assert.match(add.replies[0].content ?? "", /Alex is now whitelisted/i);
+  assert.doesNotMatch(add.replies[0].content ?? "", /\[object Object\]/);
   assert.equal(add.replies[0].ephemeral, true);
 
   const remove = createInteraction({
@@ -216,7 +221,8 @@ test("/whitelist toggles a user on and then off", async () => {
   await handleGuardCommand(remove.interaction, config.store);
 
   assert.deepEqual(config.getSettings().allowedUserIds, []);
-  assert.match(remove.replies[0].content ?? "", /no longer whitelisted/i);
+  assert.match(remove.replies[0].content ?? "", /Alex is no longer whitelisted/i);
+  assert.doesNotMatch(remove.replies[0].content ?? "", /\[object Object\]/);
 });
 
 test("/whitelist toggles a role", async () => {
@@ -229,7 +235,8 @@ test("/whitelist toggles a role", async () => {
   await handleGuardCommand(interaction.interaction, config.store);
 
   assert.deepEqual(config.getSettings().allowedRoleIds, [ROLE_ID]);
-  assert.match(interaction.replies[0].content ?? "", /now whitelisted/i);
+  assert.match(interaction.replies[0].content ?? "", /Pic is now whitelisted/i);
+  assert.doesNotMatch(interaction.replies[0].content ?? "", /\[object Object\]/);
 });
 
 test("/whitelist with no target asks for one person or role", async () => {
@@ -252,7 +259,8 @@ test("/setup sets the alert channel", async () => {
   await handleGuardCommand(interaction.interaction, config.store);
 
   assert.equal(config.getSettings().logChannelId, CHANNEL_ID);
-  assert.match(interaction.replies[0].content ?? "", /Alerts will go to/i);
+  assert.match(interaction.replies[0].content ?? "", /Alerts will go to #logs-demo/i);
+  assert.doesNotMatch(interaction.replies[0].content ?? "", /\[object Object\]/);
 });
 
 test("/setup with no channel turns alerts off", async () => {
@@ -265,7 +273,7 @@ test("/setup with no channel turns alerts off", async () => {
   assert.match(interaction.replies[0].content ?? "", /Alerts are turned off/i);
 });
 
-test("/status shows protected, FG, whitelisted, and the command list", async () => {
+test("/status shows protected, FG, whitelisted — and no command list", async () => {
   const config = createStore(
     makeSettings({
       protectedRoleIds: [ROLE_ID],
@@ -294,7 +302,8 @@ test("/status shows protected, FG, whitelisted, and the command list", async () 
   assert.match(embed?.description ?? "", /Protected roles \(1\)/);
   assert.match(embed?.description ?? "", /FG roles: 1/);
   assert.match(embed?.description ?? "", /Whitelisted: 1 members, 0 roles/);
-  assert.match(embed?.description ?? "", /\/protect \/whitelist \/status \/setup \/fg/);
+  assert.doesNotMatch(embed?.description ?? "", /Commands:/);
+  assert.doesNotMatch(embed?.description ?? "", /\/protect \/whitelist \/status \/setup \/fg/);
   assert.doesNotMatch(embed?.description ?? "", /\/wild |\/roles|\/watch/);
 });
 
@@ -340,7 +349,8 @@ test("/blacklist add, duplicate add, remove, and list round-trip", async () => {
   });
   await handleGuardCommand(add.interaction, config.store);
   assert.deepEqual(config.getSettings().blacklist, { [USER_ID]: [ROLE_ID] });
-  assert.match(add.replies[0].content ?? "", /now blacklisted from/i);
+  assert.match(add.replies[0].content ?? "", /Alex is now blacklisted from <@&333333333333333333>/);
+  assert.doesNotMatch(add.replies[0].content ?? "", /\[object Object\]/);
 
   const duplicate = createInteraction({
     commandName: "blacklist",
@@ -350,7 +360,8 @@ test("/blacklist add, duplicate add, remove, and list round-trip", async () => {
   });
   await handleGuardCommand(duplicate.interaction, config.store);
   assert.deepEqual(config.getSettings().blacklist, { [USER_ID]: [ROLE_ID] });
-  assert.match(duplicate.replies[0].content ?? "", /already blacklisted/i);
+  assert.match(duplicate.replies[0].content ?? "", /Alex is already blacklisted/i);
+  assert.doesNotMatch(duplicate.replies[0].content ?? "", /\[object Object\]/);
 
   const list = createInteraction({
     commandName: "blacklist",
@@ -368,7 +379,8 @@ test("/blacklist add, duplicate add, remove, and list round-trip", async () => {
   });
   await handleGuardCommand(remove.interaction, config.store);
   assert.deepEqual(config.getSettings().blacklist, {});
-  assert.match(remove.replies[0].content ?? "", /no longer blacklisted/i);
+  assert.match(remove.replies[0].content ?? "", /Alex is no longer blacklisted/i);
+  assert.doesNotMatch(remove.replies[0].content ?? "", /\[object Object\]/);
 
   const removeAgain = createInteraction({
     commandName: "blacklist",
@@ -439,5 +451,22 @@ test("/status shows the blacklist count", async () => {
 
   const description = interaction.replies[0].embeds?.[0].toJSON().description ?? "";
   assert.match(description, /Blacklisted: 1/);
-  assert.match(description, /\/blacklist/);
+  assert.doesNotMatch(description, /Commands:/);
+});
+
+test("/status shows Blacklisted: 1 after a blacklist add (count is live)", async () => {
+  const config = createStore(makeSettings({ protectedRoleIds: [ROLE_ID] }));
+  const add = createInteraction({
+    commandName: "blacklist",
+    subcommand: "add",
+    userId: USER_ID,
+    roleId: ROLE_ID,
+  });
+  await handleGuardCommand(add.interaction, config.store);
+  assert.deepEqual(config.getSettings().blacklist, { [USER_ID]: [ROLE_ID] });
+
+  const status = createInteraction({ commandName: "status", roleId: ROLE_ID });
+  await handleGuardCommand(status.interaction, config.store);
+  const description = status.replies[0].embeds?.[0].toJSON().description ?? "";
+  assert.match(description, /Blacklisted: 1/);
 });

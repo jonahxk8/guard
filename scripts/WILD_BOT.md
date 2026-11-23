@@ -43,7 +43,7 @@ or whitelisted):
 
 - `/protect @role` / `,guard @role` — protect a role, or stop protecting it (tap again). Prefix is `,guard` because Greed owns `,protect`.
 - `/whitelist @user` or `@role` / `,whitelist @user` or `@role` — whitelist someone, or remove them (tap again).
-- `/status` / `,status` — view protection status, FG roles, blacklist count, and the command list.
+- `/status` / `,status` — view protection status, FG roles, and blacklist count.
 - `/setup #channel` / `,logchannel #channel` or `,logchannel off` — set the alert channel, or turn alerts off. Prefix is `,logchannel` because Greed owns `,setup`.
 
 Blacklist — blocks a member from a protected role. If that role is ever given to them, Wild removes it instantly, whoever gave it — even a whitelisted giver or FG staff. It works for any protected role, not just one ("pic" was only an example). The server owner is the one exception: the owner's own grants are never reverted. If the audit log cannot say who gave the role, the grant is still removed (fail closed).
@@ -56,6 +56,7 @@ FG roles — Bleed booster-role style. Each member makes their own unique, perso
 
 - `/fg base @role` / `,fg base @role` — set the base role FG roles sit under (Manage Server). Keep it above any coloured roles or the colour won't show.
 - `/fg color <color> <name>` / `,fg color <color> <name>` — make your own FG role. Optional second colour for a gradient (`,fg color <color> <name> <second_color>`). Only whitelisted members (or the server owner) can make one, and only one FG role per member (Wild rule — Bleed gates this on boosting instead).
+- `/fg create <name> <color> [second_color] [@member]` / `,fg create <name> <color> [second_color] [@member]` — create an FG role for yourself, or for a named member. Needs an FG base role set first (`/fg base`). Only the server owner or whitelisted members can use it.
 - `/fg rename <name>` / `,fg rename <name>` — rename your own FG role.
 - `/fg icon <url>` / `,fg icon <url>` — set your own FG role's icon: image link, emoji, or custom emoji. Role icons only show on Boost Level 2+ servers.
 - `/fg remove` / `,fg remove` — delete your own FG role.
@@ -63,6 +64,20 @@ FG roles — Bleed booster-role style. Each member makes their own unique, perso
 - `/fg cleanup` / `,fg cleanup` — remove FG roles whose owners left the server (Manage Server).
 - `/fg share @member @role` / `,fg share @member @role` — offer one of your FG roles to a member. Wild-only extra — Bleed documents no share command. You must hold the role and be whitelisted. All errors are invisible (ephemeral) on slash, or auto-deleting on prefix; only the offer itself is public.
 - `/fg award set @role` / `/fg award view` / `/fg award remove` / `,fg award set @role` / `,fg award view` / `,fg award remove` — the shared role given when someone makes an FG role (Manage Server). Wild adaptation: Bleed grants its award when someone boosts; Wild grants it on FG creation instead, because Wild has no boost event to hook.
+
+## Help
+
+`/help` / `,help` shows the commands in one black embed, grouped by
+category (Guard, FG, Blacklist), one command per line with a one-line
+purpose. `/help fg`, `/help guard`, or `/help blacklist` (`,help fg`
+and so on) shows one category, with each command's exact slash and
+prefix syntax. `/help fg create`, `/help blacklist add`, or
+`/help protect` shows just that command: its syntax, purpose, and who
+can use it. An unknown topic gets a short error pointing at `/help`.
+
+A bare `,fg` or `,blacklist` (or an unknown subcommand) no longer
+dumps every usage variant — it just says "Use ,help fg" (or
+",help blacklist"). There is no usage wall anywhere now.
 
 ## No clash with Greed
 
@@ -96,4 +111,4 @@ Deploy this repository as a long-running worker service, using the repository ro
 
 Configuration is stored in `data/wild-config.json` by default and can be relocated with `WILD_CONFIG_PATH`. A `wild-config.json.bak` backup of the previous settings is written on every save.
 
-The token is `DISCORD_BOT_TOKEN` (not `DISCORD_TOKEN`). Slash commands are registered globally, so `/protect`, `/whitelist`, `/status`, `/setup`, `/fg`, and `/blacklist` can take up to an hour to appear in Discord. Prefix commands work as soon as the bot is online and Message Content Intent is enabled — no wait.
+The token is `DISCORD_BOT_TOKEN` (not `DISCORD_TOKEN`). Slash commands are registered globally, so `/protect`, `/whitelist`, `/status`, `/setup`, `/fg`, `/blacklist`, and `/help` can take up to an hour to appear in Discord. Prefix commands work as soon as the bot is online and Message Content Intent is enabled — no wait.

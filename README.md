@@ -260,14 +260,15 @@ menu — and the buttons stop working after 5 minutes.
 Every other Wild embed uses the same style: no color, plain
 title, no footer, no timestamp, one field per item — /status (one
 field per section), /fg list (one line per FG role, with its owner),
-the guard log embed (Role / Assigned by / Reason fields), and the FG
-share offer (one line, with its Yes / No buttons). The
+and the guard log embed (Role / Assigned by / Reason fields). The
 guard DM is an embed in the same style (Role / Member / Server /
 Reason fields) that states what was removed and why — it never asks
-you to get whitelisted. The FG share offer and the FG remove
-confirmation are the exception: each is a single one-line embed with
-no fields ("@sharer is offering @role to @member — tap Yes to accept."
-and "Delete @role for good? Tap Yes to delete it.").
+you to get whitelisted. The FG remove confirmation is the exception:
+a single one-line embed with no fields ("Delete @role for good? Tap
+Yes to delete it."). The FG share offer is not an embed at all — it
+is a plain message, two lines ("@member @role" then "Would you like
+to accept @owner's FG role?"), with green Approve and red Decline
+buttons.
 
 ## Prefix commands — read this first
 
@@ -369,14 +370,21 @@ Wild adaptations (these are Wild rules, not Bleed behaviour):
   The old `/fg assign` command was removed: sharing is the only way
   to give someone an existing FG role.
 - **Share is Wild-only.** Bleed documents no share command. In Wild,
-  `/fg share` lets someone authorised to share an FG role offer it to
-  a friend; the friend accepts or declines with buttons. All share
-  errors are invisible (ephemeral) — only the offer itself is public,
-  because the friend needs to see it, and the offer pings them (the
-  accepted/declined/expired message pings them too). When someone
-  other than the owner shares the role and the friend accepts, the
-  owner gets a one-line DM about it ("Sam shared your FG role My FG
-  to Alex.").
+  `/fg share @member` lets someone authorised to share an FG role
+  offer it to a friend — the role is auto-detected from the sharer,
+  there is no role argument. The offer is a plain message (no
+  embed), Greed-style: line 1 is the friend and the role
+  ("@member @role"), line 2 is "Would you like to accept @owner's
+  FG role?" (the owner's username), with green **Approve** and red
+  **Decline** buttons below. Approve adds the role; Decline adds
+  nothing. The offer lasts 5 minutes, then it expires. On slash the
+  bot defers first, so the offer can never be cut off by the
+  3-second interaction window. All share errors are invisible
+  (ephemeral) — only the offer itself is public, because the friend
+  needs to see it, and the offer pings them (the accepted/declined/
+  expired message pings them too). When someone other than the
+  owner shares the role and the friend accepts, the owner gets a
+  one-line DM about it ("Sam shared your FG role My FG to Alex.").
 
 FG roles are created with no permissions, are automatically protected,
 and the audit-log guard applies to them like any other protected role —
@@ -450,16 +458,18 @@ Deploy as a long-running worker service from the repository root:
 - If a prefix command answers "The bot couldn't complete that command",
   check the Railway logs for `[wild] prefix command failed:` — the log
   line names the real error, with its Discord error code and HTTP
-  status. A stale deploy is not the cause for `,fg share`: the share
-  handler is identical across the last several builds (verified by
-  diffing them), the offer payload resolves cleanly through discord.js,
-  and the failures seen were Discord API failures on sending the offer
-  itself (worked once, failed three times, with full permissions). The
-  offer send is now retried once for retryable errors (a 4xx is never
-  retried), and the share path names the failed step in its own reply
-  instead ("Couldn't send the FG role offer...") and logs
-  `[wild] fg share: ...` with the error code. Nothing on the live bot
-  changes until you redeploy, so do still redeploy after a push to get
-  the new build — but redeploying alone does not fix a share failure.
+  status. `,fg share` was rebuilt Greed-style: the offer is a plain
+  message ("@member @role" then "Would you like to accept @owner's
+  FG role?") with green Approve and red Decline buttons, and on slash
+  the bot defers first so slow fetches can't expire the interaction.
+  The failures seen before the rebuild were Discord API failures on
+  sending the offer itself (worked once, failed three times, with full
+  permissions). The offer send is now retried once for retryable
+  errors (a 4xx is never retried), and the share path names the failed
+  step in its own reply instead ("Couldn't send the FG role offer...")
+  and logs `[wild] fg share: ...` with the error code. Nothing on the
+  live bot changes until you redeploy, so do still redeploy after a
+  push to get the new build — but redeploying alone does not fix a
+  share failure.
 
 Full setup and troubleshooting: see `scripts/WILD_BOT.md`.

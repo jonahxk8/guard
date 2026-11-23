@@ -645,7 +645,7 @@ test("help buttons: parse round-trips the owner and target", () => {
     ownerId: "111111111111111111",
     target: "category:fg:2",
   });
-  assert.equal(parseHelpButton("fg-share:yes"), null);
+  assert.equal(parseHelpButton("fg-share:approve"), null);
   assert.equal(parseHelpButton("wild-help:bad"), null);
 });
 

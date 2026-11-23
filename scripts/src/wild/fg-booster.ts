@@ -57,7 +57,7 @@ import {
  * fails, the just-created role is deleted again so no orphan FG role
  * is left recorded that nobody actually has. It is shared with /fg share — the bot works out which FG role from
  * the caller (their own role, or the one role they are authorised to
- * share) — and the target taps Yes to accept. When someone other than
+ * share) — and the target taps Approve to accept. When someone other than
  * the owner shares the role and the target accepts, the owner gets a
  * one-line DM about it. A holder can give a shared role back with
  * /fg drop, and the owner (or an authorised sharer) can see who holds
@@ -71,8 +71,9 @@ import {
  * members who already hold more than one keep them.
  *
  * All slash replies are ephemeral embeds (short text in the description
- * of a colorless embed), except /fg list and the public share offer
- * (colorless field embeds, no footer/timestamp). Errors are never public.
+ * of a colorless embed), except /fg list (colorless field embeds, no
+ * footer/timestamp) and the public share offer, which is a plain
+ * message, Greed-style — no embed at all. Errors are never public.
  */
 
 const SHARE_TIMEOUT_MS = 5 * 60 * 1_000;
@@ -1086,7 +1087,7 @@ async function handleRemoveCommand(
   const role = own?.role ?? guild.roles.cache.get(roleId);
   const roleName = role ? roleDisplayName(role) : "your FG role";
 
-  // Ask first, delete after — same Yes/No pattern as the share offer.
+  // Ask first, delete after — Yes/No confirmation with its own buttons.
   // Slash: ephemeral. Prefix: public (the fake interaction ignores the
   // ephemeral flag and sends to the channel).
   await interaction.reply({
@@ -1617,12 +1618,23 @@ async function handleAuthCommand(
 }
 
 /**
- * The share offer embed, sleek: title + one description line, no
- * fields. The line carries everything — who is offering which role to
- * whom, or what happened to the offer.
+ * The share offer's buttons, Greed-style: green Approve, red Decline.
+ * (The /fg remove confirmation keeps its own Yes/No buttons — see
+ * buildDecisionButtons below.)
  */
-function buildShareEmbed(title: string, description: string): EmbedBuilder {
-  return wildEmbed(title, description);
+function buildShareButtons(disabled = false): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId("fg-share:approve")
+      .setLabel("Approve")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(disabled),
+    new ButtonBuilder()
+      .setCustomId("fg-share:decline")
+      .setLabel("Decline")
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(disabled),
+  );
 }
 
 /**
@@ -1699,35 +1711,25 @@ async function finishShareOffer(
     return false;
   }
 
+  // Every end state edits the offer message to a plain one-line message
+  // (no embed, no buttons) — the same plain style as the offer itself.
+  // The target is the only person ever pinged.
+  const endOffer = (content: string) =>
+    button.update({
+      content,
+      components: [],
+      allowedMentions: { parse: ["users"], users: [targetId] },
+    });
+
   const role = guild.roles.cache.get(roleId);
   const settings = store.get(guild.id);
   if (!role || !settings.fgRoles[roleId]) {
-    await button.update({
-      content: `<@${targetId}>`,
-      embeds: [
-        buildShareEmbed(
-          "fg share ended",
-          "This FG role is no longer available.",
-        ),
-      ],
-      components: [],
-      allowedMentions: { parse: ["users"], users: [targetId] },
-    });
+    await endOffer("This FG role is no longer available.");
     return true;
   }
 
-  if (button.customId === "fg-share:no") {
-    await button.update({
-      content: `<@${targetId}>`,
-      embeds: [
-        buildShareEmbed(
-          "fg share declined",
-          `<@${targetId}> declined ${roleMention(role)}.`,
-        ),
-      ],
-      components: [],
-      allowedMentions: { parse: ["users"], users: [targetId] },
-    });
+  if (button.customId === "fg-share:decline") {
+    await endOffer(`<@${targetId}> declined <@&${roleId}>.`);
     return true;
   }
 
@@ -1736,17 +1738,7 @@ async function finishShareOffer(
     !requester ||
     (!isBotAdmin(requester, guild.ownerId) && !isFgSharer(requester, roleId, settings))
   ) {
-    await button.update({
-      content: `<@${targetId}>`,
-      embeds: [
-        buildShareEmbed(
-          "fg share ended",
-          "The person who shared this role no longer has share access.",
-        ),
-      ],
-      components: [],
-      allowedMentions: { parse: ["users"], users: [targetId] },
-    });
+    await endOffer("The person who shared this role no longer has share access.");
     return true;
   }
 
@@ -1757,34 +1749,16 @@ async function finishShareOffer(
     !botMember?.permissions.has(PermissionFlagsBits.ManageRoles) ||
     botMember.roles.highest.comparePositionTo(role) <= 0
   ) {
-    await button.update({
-      content: `<@${targetId}>`,
-      embeds: [
-        buildShareEmbed(
-          "fg share could not be applied",
-          "The bot can't manage this role right now. Ask server staff to check its role order and permissions.",
-        ),
-      ],
-      components: [],
-      allowedMentions: { parse: ["users"], users: [targetId] },
-    });
+    await endOffer(
+      "The bot can't manage this role right now. Ask server staff to check its role order and permissions.",
+    );
     return true;
   }
 
   // One FG role per member, re-checked at accept time: the target
   // may have gained an FG role since the offer was sent.
   if (memberHoldsAnyFgRole(target, store.get(guild.id))) {
-    await button.update({
-      content: `<@${targetId}>`,
-      embeds: [
-        buildShareEmbed(
-          "fg share already assigned",
-          `<@${targetId}> already has an FG role.`,
-        ),
-      ],
-      components: [],
-      allowedMentions: { parse: ["users"], users: [targetId] },
-    });
+    await endOffer(`<@${targetId}> already has an FG role.`);
     return true;
   }
 
@@ -1810,29 +1784,11 @@ async function finishShareOffer(
           .catch(() => undefined);
       }
     }
-    await button.update({
-      content: `<@${targetId}>`,
-      embeds: [
-        buildShareEmbed(
-          "fg share accepted",
-          `<@${targetId}> accepted ${roleMention(role)}.`,
-        ),
-      ],
-      components: [],
-      allowedMentions: { parse: ["users"], users: [targetId] },
-    });
+    await endOffer(`<@${targetId}> accepted <@&${roleId}>.`);
   } catch {
-    await button.update({
-      content: `<@${targetId}>`,
-      embeds: [
-        buildShareEmbed(
-          "fg share could not be applied",
-          "The bot couldn't give them this role. Ask server staff to check its permissions.",
-        ),
-      ],
-      components: [],
-      allowedMentions: { parse: ["users"], users: [targetId] },
-    });
+    await endOffer(
+      "The bot couldn't give them this role. Ask server staff to check its permissions.",
+    );
   }
   return true;
 }
@@ -1858,15 +1814,29 @@ const OFFER_SEND_RETRY_DELAY_MS = 1_000;
 async function sendOfferWithRetry(
   interaction: ChatInputCommandInteraction,
   options: Parameters<ChatInputCommandInteraction["reply"]>[0],
+  deferred: boolean,
 ): Promise<void> {
+  // After a public defer the offer is sent by editing the deferred
+  // reply; otherwise it is a fresh reply (prefix, or slash when the
+  // defer was skipped). The retry is unchanged: one retry for
+  // retryable errors, never for a 4xx.
+  const send = async (): Promise<void> => {
+    if (deferred) {
+      await interaction.editReply(
+        options as Parameters<ChatInputCommandInteraction["editReply"]>[0],
+      );
+    } else {
+      await interaction.reply(options);
+    }
+  };
   try {
-    await interaction.reply(options);
+    await send();
   } catch (error) {
     if (!isRetryableDiscordError(error)) throw error;
     await new Promise((resolve) =>
       setTimeout(resolve, OFFER_SEND_RETRY_DELAY_MS),
     );
-    await interaction.reply(options);
+    await send();
   }
 }
 
@@ -1886,25 +1856,53 @@ async function handleShareCommand(
     return;
   }
 
+  // Slash defer-first: answer the interaction immediately, before the
+  // three pre-send REST fetches below (requester, target, bot member).
+  // Discord gives a slash interaction 3 seconds before it expires, and
+  // those fetches can exceed that on a slow connection. The defer is
+  // public, not ephemeral: the offer itself is a public message, so it
+  // is sent by editing the deferred reply. The prefix fake has no
+  // deferReply, so this is a no-op there — the prefix path replies
+  // exactly as before.
+  let deferred = false;
+  if (typeof interaction.deferReply === "function") {
+    await interaction.deferReply();
+    deferred = true;
+  }
+  // Errors after the defer (slash) must be follow-ups: replying again
+  // would throw "already acknowledged". Before the defer, or on prefix,
+  // replyText works as before.
+  const shareError = async (content: string): Promise<void> => {
+    if (deferred) {
+      await interaction.followUp({
+        embeds: [wildMessageEmbed(content)],
+        ephemeral: true,
+        [WILD_ERROR_REPLY]: true,
+      } as Parameters<ChatInputCommandInteraction["followUp"]>[0]);
+    } else {
+      await replyText(interaction, content);
+    }
+  };
+
   // Fresh fetch for the requester: their share access is an
   // authorisation decision, so a cached member could still show an
   // admin role or whitelisted role that was already removed.
   const requester = await fetchMemberFresh(guild, interaction.user.id);
   const target = await guild.members.fetch(memberUser.id).catch(() => null);
   if (!requester || !target) {
-    await replyText(interaction, "Both people need to be members of this server.");
+    await shareError("Both people need to be members of this server.");
     return;
   }
   const resolved = resolveShareRole(guild, requester, settings);
   if ("error" in resolved) {
-    await replyText(interaction, resolved.error);
+    await shareError(resolved.error);
     return;
   }
   const role = resolved.role;
   // One FG role per member: the target may not already hold any FG
   // role, owned or shared.
   if (memberHoldsAnyFgRole(target, settings)) {
-    await replyText(interaction, "They already have an FG role.");
+    await shareError("They already have an FG role.");
     return;
   }
 
@@ -1914,12 +1912,31 @@ async function handleShareCommand(
     !botMember?.permissions.has(PermissionFlagsBits.ManageRoles) ||
     botMember.roles.highest.comparePositionTo(role) <= 0
   ) {
-    await replyText(
-      interaction,
+    await shareError(
       "The bot can't manage that FG role. Move its role above it first.",
     );
     return;
   }
+
+  // The offer names the FG role's OWNER by username — not the sharer:
+  // an authorised sharer may be offering someone else's role, as in
+  // Greed's screenshot, where isabell shares ss0bs's role and the
+  // question names ss0bs. Fall back to the requester's username when
+  // the owner can't be fetched.
+  const ownerId = settings.fgRoleOwners[role.id];
+  const ownerMember = ownerId
+    ? await guild.members.fetch(ownerId).catch(() => null)
+    : null;
+  const ownerName = ownerMember?.user?.username ?? requester.user.username;
+
+  // Greed-style offer, plain message, no embed: line 1 pings the
+  // target and mentions the role; line 2 asks whether they want to
+  // accept the owner's FG role. No emoji (standing rule — Greed's
+  // warning emoji is deliberately not copied). Only the target user
+  // is pinged — never the role, never @everyone.
+  const offerContent =
+    `<@${target.id}> <@&${role.id}>\n` +
+    `Would you like to accept ${ownerName}'s FG role?`;
 
   // Sending the offer is the one Discord API call in this handler with
   // no specific reply of its own. It failed intermittently live
@@ -1937,22 +1954,17 @@ async function handleShareCommand(
   let offer: Message;
   let replied = false;
   try {
-    await sendOfferWithRetry(interaction, {
-      // The target is pinged in the message content, not just the embed:
-      // a mention in the embed alone was not notifying them. Only the
-      // target user is pinged — never the role, never @everyone.
-      content: `<@${target.id}>`,
-      embeds: [
-        buildShareEmbed(
-          "fg share",
-          `<@${requester.id}> is offering ${roleMention(role)} to <@${target.id}> — tap Yes to accept.`,
-        ),
-      ],
-      components: [buildDecisionButtons()],
-      allowedMentions: { parse: ["users"], users: [target.id] },
-      // Offer with a live collector (5 minutes): never auto-delete.
-      [WILD_KEEP_REPLY]: true,
-    } as Parameters<ChatInputCommandInteraction["reply"]>[0]);
+    await sendOfferWithRetry(
+      interaction,
+      {
+        content: offerContent,
+        components: [buildShareButtons()],
+        allowedMentions: { parse: ["users"], users: [target.id] },
+        // Offer with a live collector (5 minutes): never auto-delete.
+        [WILD_KEEP_REPLY]: true,
+      } as Parameters<ChatInputCommandInteraction["reply"]>[0],
+      deferred,
+    );
     replied = true;
     offer = await interaction.fetchReply();
   } catch (error) {
@@ -1961,8 +1973,7 @@ async function handleShareCommand(
       describeDiscordError(error),
       error instanceof Error ? (error.stack ?? error.message) : String(error),
     );
-    await replyText(
-      interaction,
+    await shareError(
       replied
         ? "The offer went out but its buttons couldn't be set up. Try again."
         : "Couldn't send the FG role offer. Check the bot can send messages in this channel and try again.",
@@ -1980,8 +1991,7 @@ async function handleShareCommand(
       "[wild] fg share: could not set up the offer buttons:",
       error instanceof Error ? (error.stack ?? error.message) : String(error),
     );
-    await replyText(
-      interaction,
+    await shareError(
       "The offer went out but its buttons couldn't be set up. Try again.",
     ).catch(() => undefined);
     return;
@@ -1989,7 +1999,10 @@ async function handleShareCommand(
 
   let finishing = false;
   collector.on("collect", async (button) => {
-    if (button.customId !== "fg-share:yes" && button.customId !== "fg-share:no") {
+    if (
+      button.customId !== "fg-share:approve" &&
+      button.customId !== "fg-share:decline"
+    ) {
       await button.deferUpdate();
       return;
     }
@@ -2034,14 +2047,8 @@ async function handleShareCommand(
     if (reason !== "time") return;
     await offer
       .edit({
-        content: `<@${target.id}>`,
-        embeds: [
-          buildShareEmbed(
-            "fg share expired",
-            `<@${requester.id}>'s offer of ${roleMention(role)} to <@${target.id}> expired without a response.`,
-          ),
-        ],
-        components: [buildDecisionButtons("fg-share", true)],
+        content: `<@${requester.id}>'s offer of <@&${role.id}> to <@${target.id}> expired without a response.`,
+        components: [],
         allowedMentions: { parse: ["users"], users: [target.id] },
       })
       .catch(() => undefined);

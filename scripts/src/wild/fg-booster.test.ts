@@ -52,13 +52,13 @@ function makeButton(customId: string, userId: string) {
   return button;
 }
 
-/** Text of a button update's embed, for assertions. */
+/** Text of a button update: embed description/title, or the plain content. */
 function buttonTextOf(button: ReturnType<typeof makeButton>): string {
   const update = button.updates[0];
   const embed = update?.embeds?.[0]?.toJSON() as
     | { description?: string; title?: string }
     | undefined;
-  return embed?.description ?? embed?.title ?? "";
+  return embed?.description ?? embed?.title ?? (update?.content as string) ?? "";
 }
 
 function makeSettings(partial: Partial<GuildSettings> = {}): GuildSettings {
@@ -328,6 +328,11 @@ function createInteraction(options: {
   // makes on a real slash interaction (no error reply).
   const defers: Array<{ ephemeral?: boolean }> = [];
   const deletes: number[] = [];
+  // /fg share defers first on slash, then sends the offer by editing
+  // the deferred reply; errors after the defer go out as ephemeral
+  // follow-ups instead of replies.
+  const editReplies: Reply[] = [];
+  const followUps: Reply[] = [];
   const offerEdits: Reply[] = [];
   const collectorHandlers: Record<string, Array<(...args: unknown[]) => unknown>> = {};
   const collector = {
@@ -370,6 +375,12 @@ function createInteraction(options: {
     deferReply: async (deferOptions: { ephemeral?: boolean }) => {
       defers.push(deferOptions);
     },
+    editReply: async (reply: Reply) => {
+      editReplies.push(reply);
+    },
+    followUp: async (reply: Reply) => {
+      followUps.push(reply);
+    },
     deleteReply: async () => {
       deletes.push(1);
     },
@@ -384,7 +395,7 @@ function createInteraction(options: {
       createMessageComponentCollector: () => collector,
     }),
   } as unknown as ChatInputCommandInteraction;
-  return { interaction, replies, collector, offerEdits, defers, deletes };
+  return { interaction, replies, collector, offerEdits, defers, deletes, editReplies, followUps };
 }
 
 function withGuild(
@@ -1443,6 +1454,132 @@ test("/fg remove No keeps the role", async () => {
   assert.match(buttonTextOf(no), /was kept/i);
 });
 
+test("/fg share defers first, then sends the Greed-style offer by editing the deferred reply", async () => {
+  // Slash: the interaction is answered (deferred) before the three
+  // pre-send fetches, then the offer goes out as an edit of the
+  // deferred reply — never as a fresh reply, which would throw
+  // "already acknowledged" on real Discord.
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "My FG", 9);
+  const { guild, addedByMember } = createGuild({
+    roles: [fgRole],
+    memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID] },
+  });
+  const { interaction, collector, defers, replies, editReplies, followUps } =
+    createInteraction({ action: "share", memberId: OTHER_ID });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  // One defer with no options (public, not ephemeral), no fresh reply,
+  // no follow-up.
+  assert.equal(defers.length, 1);
+  assert.equal(defers[0], undefined);
+  assert.equal(replies.length, 0);
+  assert.equal(followUps.length, 0);
+  // The offer itself: plain message, target + role on line 1, the
+  // question naming the owner on line 2, Approve/Decline buttons.
+  assert.equal(editReplies.length, 1);
+  assert.equal(editReplies[0].embeds, undefined);
+  assert.equal(
+    editReplies[0].content,
+    `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
+  );
+  assert.deepEqual(editReplies[0].allowedMentions, {
+    parse: ["users"],
+    users: [OTHER_ID],
+  });
+  const buttons = (editReplies[0].components ?? []).flatMap((row) =>
+    (row.toJSON() as { components: Array<Record<string, unknown>> }).components,
+  );
+  assert.deepEqual(
+    buttons.map((b) => ({ customId: b.custom_id, label: b.label, style: b.style })),
+    [
+      { customId: "fg-share:approve", label: "Approve", style: 3 },
+      { customId: "fg-share:decline", label: "Decline", style: 4 },
+    ],
+  );
+
+  // The target taps Approve: the role is added, the offer edits to accepted.
+  const approve = makeButton("fg-share:approve", OTHER_ID);
+  await collector.fireCollect(approve);
+  assert.deepEqual(addedByMember.get(OTHER_ID), [FG_ROLE_ID]);
+  assert.equal(approve.updates.length, 1);
+  assert.equal(
+    approve.updates[0].content,
+    `<@${OTHER_ID}> accepted <@&${FG_ROLE_ID}>.`,
+  );
+});
+
+test("/fg share defers before slow pre-send fetches finish", async () => {
+  // The three pre-send fetches (requester, target, owner) each take
+  // 150ms here; the defer must happen before any of them resolves —
+  // that is what keeps the interaction inside Discord's 3-second
+  // window on a slow connection.
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "My FG", 9);
+  const { guild } = createGuild({
+    roles: [fgRole],
+    memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID] },
+  });
+  const { interaction, defers, editReplies } = createInteraction({
+    action: "share",
+    memberId: OTHER_ID,
+  });
+  const order: string[] = [];
+  const fetchImpl = guild.members.fetch as (
+    arg?: string | { user?: string },
+  ) => Promise<unknown>;
+  (guild.members as unknown as { fetch: unknown }).fetch = (async (
+    arg?: string | { user?: string },
+  ) => {
+    const result = await fetchImpl(arg);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    order.push("fetch-done");
+    return result;
+  }) as typeof fetchImpl;
+  const deferImpl = interaction.deferReply;
+  (interaction as unknown as { deferReply: unknown }).deferReply = (async (
+    options?: { ephemeral?: boolean },
+  ) => {
+    order.push("defer");
+    return deferImpl(options);
+  }) as typeof deferImpl;
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(order[0], "defer");
+  assert.equal(
+    order.filter((step) => step === "fetch-done").length,
+    3,
+  );
+  assert.equal(defers.length, 1);
+  assert.equal(editReplies.length, 1);
+});
+
+test("/fg share error after the defer goes out as an ephemeral follow-up", async () => {
+  // The target already holds an FG role: the error must be an
+  // ephemeral follow-up, not a fresh reply (which would throw
+  // "already acknowledged" once the interaction is deferred).
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "My FG", 9);
+  const { guild } = createGuild({
+    roles: [fgRole],
+    memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [OTHER_ID]: [FG_ROLE_ID] },
+  });
+  const { interaction, defers, replies, followUps, editReplies } =
+    createInteraction({ action: "share", memberId: OTHER_ID });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(editReplies.length, 0);
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0].ephemeral, true);
+  const error = followUps[0].embeds?.[0]?.toJSON() as { description?: string };
+  assert.match(error.description ?? "", /already have an FG role/i);
+});
+
 test("/fg remove timeout keeps the role", async () => {
   const config = createStore(
     makeSettings({
@@ -1825,17 +1962,22 @@ test("/fg share succeeds for an assigned member who is not whitelisted", async (
     roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
     memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, editReplies } = createInteraction({
     action: "share",
     memberId: targetId,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  // An offer was sent (public embed), not an error reply.
-  assert.equal(replies[0].ephemeral, undefined);
-  assert.ok(replies[0].embeds?.length === 1);
-  assert.match(replies[0].embeds?.[0].toJSON().title ?? "", /fg share/);
+  // An offer was sent (public plain message), not an error reply.
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(editReplies.length, 1);
+  assert.equal(editReplies[0].embeds, undefined);
+  assert.equal(
+    editReplies[0].content,
+    `<@${targetId}> <@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
+  );
 });
 
 test("/fg share succeeds for an authed member who does not hold the role", async () => {
@@ -1858,15 +2000,20 @@ test("/fg share succeeds for an authed member who does not hold the role", async
     roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
     memberRoleIds: { [MEMBER_ID]: [], [targetId]: [] },
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, editReplies } = createInteraction({
     action: "share",
     memberId: targetId,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(replies[0].ephemeral, undefined);
-  assert.ok(replies[0].embeds?.length === 1);
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(editReplies.length, 1);
+  assert.equal(
+    editReplies[0].content,
+    `<@${targetId}> <@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
+  );
 });
 
 test("/fg share rejects a member who holds the role but was never assigned or authed", async () => {
@@ -1888,16 +2035,19 @@ test("/fg share rejects a member who holds the role but was never assigned or au
     roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
     memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, followUps } = createInteraction({
     action: "share",
     memberId: targetId,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(replies[0].ephemeral, true);
-  assert.equal(replies[0].embeds?.length, 1);
-  assert.match(replyTextOf(replies[0]), /aren't authorised to share an FG role/i);
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0].ephemeral, true);
+  assert.equal(followUps[0].embeds?.length, 1);
+  assert.match(replyTextOf(followUps[0]), /aren't authorised to share an FG role/i);
 });
 
 test("/fg list shows FG roles with owners in a colorless embed", async () => {
@@ -1976,15 +2126,18 @@ test("/fg share errors are ephemeral plain text", async () => {
     memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [OTHER_ID]: [FG_ROLE_ID] },
   });
   // Target already has the role: error path, no offer, no collector.
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, followUps } = createInteraction({
     action: "share",
     memberId: OTHER_ID,
   });
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(replies[0].ephemeral, true);
-  assert.equal(replies[0].embeds?.length, 1);
-  assert.match(replyTextOf(replies[0]), /already have an FG role/i);
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0].ephemeral, true);
+  assert.equal(followUps[0].embeds?.length, 1);
+  assert.match(replyTextOf(followUps[0]), /already have an FG role/i);
 });
 
 test("/fg share rejects a caller who has no FG role to share", async () => {
@@ -1992,15 +2145,18 @@ test("/fg share rejects a caller who has no FG role to share", async () => {
   // no role argument anymore, so there is nothing to offer.
   const config = createStore(makeSettings({ allowedUserIds: [MEMBER_ID] }));
   const { guild } = createGuild({ roles: [makeRole(FG_ROLE_ID, "Plain", 9)] });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, followUps } = createInteraction({
     action: "share",
     memberId: OTHER_ID,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(replies[0].ephemeral, true);
-  assert.match(replyTextOf(replies[0]), /aren't authorised to share an FG role/i);
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0].ephemeral, true);
+  assert.match(replyTextOf(followUps[0]), /aren't authorised to share an FG role/i);
 });
 
 test("/fg assign no longer exists", async () => {
@@ -2249,7 +2405,7 @@ test("/fg share by a non-whitelisted admin who owns an FG role works", async () 
     roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
     memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
   });
-  const { interaction, replies, defers, collector } = createInteraction({
+  const { interaction, replies, defers, editReplies, collector } = createInteraction({
     action: "share",
     userId: MEMBER_ID,
     memberId: targetId,
@@ -2258,15 +2414,20 @@ test("/fg share by a non-whitelisted admin who owns an FG role works", async () 
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  // The offer goes out (not ignored): one reply, no defer.
-  assert.equal(replies.length, 1);
-  assert.deepEqual(defers, []);
-  assert.equal(replies[0].content, `<@${targetId}>`);
+  // The offer goes out (not ignored): one public defer, then the offer
+  // as an edit of the deferred reply — no fresh reply.
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(editReplies.length, 1);
+  assert.equal(
+    editReplies[0].content,
+    `<@${targetId}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
+  );
 
-  const yes = makeButton("fg-share:yes", targetId);
-  await collector.fireCollect(yes);
+  const approve = makeButton("fg-share:approve", targetId);
+  await collector.fireCollect(approve);
 
-  assert.match(buttonTextOf(yes), /accepted/i);
+  assert.match(buttonTextOf(approve), /accepted/i);
   assert.equal(
     (getMember(targetId)!.roles as { cache: { has: (id: string) => boolean } }).cache.has(FG_ROLE_ID),
     true,
@@ -2298,7 +2459,7 @@ function twoFgRolesSettings(
   });
 }
 
-test("/fg share offer is one sleek line with no fields", async () => {
+test("/fg share offer is a plain Greed-style message with Approve/Decline buttons", async () => {
   const config = createStore(
     makeSettings({
       fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
@@ -2317,32 +2478,45 @@ test("/fg share offer is one sleek line with no fields", async () => {
     roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
     memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, editReplies } = createInteraction({
     action: "share",
     memberId: targetId,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  const embed = replies[0].embeds?.[0]?.toJSON() as {
-    title?: string;
-    description?: string;
-    fields?: unknown[];
-  };
-  assert.equal(embed.title, "fg share");
-  assert.equal(embed.fields, undefined);
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(editReplies.length, 1);
+  // Plain message, no embed: target + role on line 1, the question
+  // naming the owner on line 2.
+  assert.equal(editReplies[0].embeds, undefined);
   assert.equal(
-    embed.description,
-    `<@${MEMBER_ID}> is offering <@&${FG_ROLE_ID}> to <@${targetId}> — tap Yes to accept.`,
+    editReplies[0].content,
+    `<@${targetId}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
   );
   // The offer actually pings the target: their mention is in the
-  // message content (an embed-only mention was not notifying them),
-  // and only that one user is allowed to ping — never the role.
-  assert.equal(replies[0].content, `<@${targetId}>`);
-  assert.deepEqual(replies[0].allowedMentions, {
+  // message content, and only that one user is allowed to ping — never
+  // the role.
+  assert.deepEqual(editReplies[0].allowedMentions, {
     parse: ["users"],
     users: [targetId],
   });
+  const buttons = (editReplies[0].components ?? []).flatMap((row) =>
+    (row.toJSON() as { components: Array<Record<string, unknown>> }).components,
+  );
+  assert.deepEqual(
+    buttons.map((b) => ({ customId: b.custom_id, label: b.label, style: b.style })),
+    [
+      { customId: "fg-share:approve", label: "Approve", style: 3 },
+      { customId: "fg-share:decline", label: "Decline", style: 4 },
+    ],
+  );
+  // Plain text only: no emoji anywhere in the offer.
+  assert.doesNotMatch(
+    editReplies[0].content ?? "",
+    /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{25A0}-\u{25FF}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{FE0F}\u{200D}]/u,
+  );
 });
 
 test("/fg share accept pings the target on the accepted message", async () => {
@@ -2371,12 +2545,12 @@ test("/fg share accept pings the target on the accepted message", async () => {
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  const yes = makeButton("fg-share:yes", targetId);
-  await collector.fireCollect(yes);
+  const approve = makeButton("fg-share:approve", targetId);
+  await collector.fireCollect(approve);
 
-  assert.match(buttonTextOf(yes), /accepted/i);
-  assert.equal(yes.updates[0].content, `<@${targetId}>`);
-  assert.deepEqual(yes.updates[0].allowedMentions, {
+  assert.match(buttonTextOf(approve), /accepted/i);
+  assert.equal(approve.updates[0].content, `<@${targetId}> accepted <@&${FG_ROLE_ID}>.`);
+  assert.deepEqual(approve.updates[0].allowedMentions, {
     parse: ["users"],
     users: [targetId],
   });
@@ -2659,10 +2833,10 @@ test("/fg share accept DMs the FG owner when someone else shares their role", as
   });
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  const yes = makeButton("fg-share:yes", MEMBER_ID);
-  await collector.fireCollect(yes);
+  const approve = makeButton("fg-share:approve", MEMBER_ID);
+  await collector.fireCollect(approve);
 
-  assert.match(buttonTextOf(yes), /accepted/i);
+  assert.match(buttonTextOf(approve), /accepted/i);
   assert.deepEqual(addedByMember.get(MEMBER_ID), [FG_ROLE_ID]);
   const dms = (
     getMember(OWNER_ID)! as unknown as { sentDMs: Reply[] }
@@ -2698,10 +2872,10 @@ test("/fg share accept sends no DM when the owner shares their own role", async 
   });
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  const yes = makeButton("fg-share:yes", OTHER_ID);
-  await collector.fireCollect(yes);
+  const approve = makeButton("fg-share:approve", OTHER_ID);
+  await collector.fireCollect(approve);
 
-  assert.match(buttonTextOf(yes), /accepted/i);
+  assert.match(buttonTextOf(approve), /accepted/i);
   const dms = (
     getMember(MEMBER_ID)! as unknown as { sentDMs: Reply[] }
   ).sentDMs;
@@ -2735,10 +2909,10 @@ test("/fg share still completes when the owner DM fails", async () => {
   });
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  const yes = makeButton("fg-share:yes", MEMBER_ID);
-  await collector.fireCollect(yes);
+  const approve = makeButton("fg-share:approve", MEMBER_ID);
+  await collector.fireCollect(approve);
 
-  assert.match(buttonTextOf(yes), /accepted/i);
+  assert.match(buttonTextOf(approve), /accepted/i);
   assert.deepEqual(addedByMember.get(MEMBER_ID), [FG_ROLE_ID]);
 });
 
@@ -2770,19 +2944,21 @@ test("/fg share with no role argument offers the caller's own FG role", async ()
     ],
     memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, editReplies } = createInteraction({
     action: "share",
     memberId: targetId,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  // An offer was sent (public embed), for the caller's own role even
+  // An offer was sent (public plain message), for the caller's own role even
   // though another FG role exists.
-  assert.equal(replies[0].ephemeral, undefined);
-  const embed = replies[0].embeds?.[0]?.toJSON() as { description?: string };
-  assert.match(embed.description ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
-  assert.doesNotMatch(embed.description ?? "", new RegExp(`<@&${SECOND_FG_ROLE_ID}>`));
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(editReplies.length, 1);
+  assert.equal(editReplies[0].embeds, undefined);
+  assert.match(editReplies[0].content ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
+  assert.doesNotMatch(editReplies[0].content ?? "", new RegExp(`<@&${SECOND_FG_ROLE_ID}>`));
 });
 
 test("/fg share offers the one FG role an authed member can share", async () => {
@@ -2815,16 +2991,17 @@ test("/fg share offers the one FG role an authed member can share", async () => 
     ],
     memberRoleIds: { [MEMBER_ID]: [], [targetId]: [] },
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, editReplies } = createInteraction({
     action: "share",
     memberId: targetId,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(replies[0].ephemeral, undefined);
-  const embed = replies[0].embeds?.[0]?.toJSON() as { description?: string };
-  assert.match(embed.description ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(editReplies.length, 1);
+  assert.match(editReplies[0].content ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
 });
 
 test("/fg share errors when the caller can share more than one FG role", async () => {
@@ -2841,17 +3018,20 @@ test("/fg share errors when the caller can share more than one FG role", async (
     ],
     memberRoleIds: { [MEMBER_ID]: [], [targetId]: [] },
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, followUps } = createInteraction({
     action: "share",
     memberId: targetId,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(replies[0].ephemeral, true);
-  assert.match(replyTextOf(replies[0]), /can share more than one FG role/i);
-  assert.match(replyTextOf(replies[0]), new RegExp(`<@&${FG_ROLE_ID}>`));
-  assert.match(replyTextOf(replies[0]), new RegExp(`<@&${SECOND_FG_ROLE_ID}>`));
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0].ephemeral, true);
+  assert.match(replyTextOf(followUps[0]), /can share more than one FG role/i);
+  assert.match(replyTextOf(followUps[0]), new RegExp(`<@&${FG_ROLE_ID}>`));
+  assert.match(replyTextOf(followUps[0]), new RegExp(`<@&${SECOND_FG_ROLE_ID}>`));
 });
 
 test("/fg share refuses a target who already holds a different FG role", async () => {
@@ -2885,15 +3065,18 @@ test("/fg share refuses a target who already holds a different FG role", async (
       [targetId]: [SECOND_FG_ROLE_ID],
     },
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, followUps } = createInteraction({
     action: "share",
     memberId: targetId,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(replies[0].ephemeral, true);
-  assert.match(replyTextOf(replies[0]), /already have an FG role/i);
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(followUps.length, 1);
+  assert.equal(followUps[0].ephemeral, true);
+  assert.match(replyTextOf(followUps[0]), /already have an FG role/i);
 });
 
 test("/fg share refuses at accept time when the target gained an FG role", async () => {
@@ -2924,25 +3107,27 @@ test("/fg share refuses at accept time when the target gained an FG role", async
     ],
     memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
   });
-  const { interaction, replies, collector } = createInteraction({
+  const { interaction, replies, defers, editReplies, collector } = createInteraction({
     action: "share",
     memberId: targetId,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  // Offer was sent.
-  assert.equal(replies[0].ephemeral, undefined);
+  // Offer was sent (deferred, then edited with the offer).
+  assert.equal(defers.length, 1);
+  assert.equal(replies.length, 0);
+  assert.equal(editReplies.length, 1);
   // Between offer and accept, the target gains the other FG role.
   await (
     getMember(targetId)!.roles as {
       add: (role: unknown) => Promise<void>;
     }
   ).add(guild.roles.cache.get(SECOND_FG_ROLE_ID)!);
-  const yes = makeButton("fg-share:yes", targetId);
-  await collector.fireCollect(yes);
+  const approve = makeButton("fg-share:approve", targetId);
+  await collector.fireCollect(approve);
 
-  assert.match(buttonTextOf(yes), /already has an FG role/i);
+  assert.match(buttonTextOf(approve), /already has an FG role/i);
   assert.equal(
     (
       getMember(targetId)!.roles as {

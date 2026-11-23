@@ -50,6 +50,7 @@ function createStore(
 interface SentMessage {
   content?: string;
   embeds?: Array<{ toJSON: () => Record<string, unknown> }>;
+  components?: Array<{ toJSON: () => Record<string, unknown> }>;
   deleted: boolean;
 }
 
@@ -82,13 +83,29 @@ function makeButton(customId: string, userId: string) {
   return button;
 }
 
+/** The offer's buttons, as plain data: custom id, label, style. */
+function offerButtons(sentMessage: SentMessage): Array<{
+  customId: string;
+  label: string;
+  style: number;
+}> {
+  const rows = (sentMessage.components ?? []) as Array<{
+    toJSON: () => { components: Array<Record<string, unknown>> };
+  }>;
+  return rows.flatMap((row) => row.toJSON().components).map((c) => ({
+    customId: c.custom_id as string,
+    label: c.label as string,
+    style: c.style as number,
+  }));
+}
+
 /** Text of a button interaction's update (or reply): embed description. */
 function buttonTextOf(button: ReturnType<typeof makeButton>): string {
   const update = button.updates[0];
   const embed = update?.embeds as
     | Array<{ toJSON: () => { description?: string } }>
     | undefined;
-  return embed?.[0]?.toJSON().description ?? "";
+  return embed?.[0]?.toJSON().description ?? (update?.content as string) ?? "";
 }
 
 function createMessage(options: {
@@ -220,6 +237,7 @@ function createMessage(options: {
       const sentMessage: SentMessage = {
         content: messageOptions.content as string | undefined,
         embeds: messageOptions.embeds as SentMessage["embeds"],
+        components: messageOptions.components as SentMessage["components"],
         deleted: false,
       };
       const record = sentMessage as unknown as Record<string, unknown>;
@@ -621,23 +639,25 @@ test(",fg rename and ,fg share route to the shared FG handler", async () => {
   assert.match(sentTextOf(rename.sent[0]), /now called/i);
 
   // ,fg share takes only @member: the bot offers the caller's own FG role.
+  // Greed-style offer, plain message: target + role on line 1, the
+  // question naming the owner on line 2, Approve/Decline buttons.
   const share = createMessage({
     content: ",fg share <@333333333333333333>",
     roles: [{ id: FG_ROLE_ID }],
   });
   await handlePrefixMessage(share.message, config.store);
-  const embed = share.sent[0].embeds?.[0]?.toJSON() as {
-    title?: string;
-    description?: string;
-    fields?: unknown[];
-  };
-  assert.equal(embed.title, "fg share");
-  assert.equal(embed.fields, undefined);
-  assert.match(embed.description ?? "", /is offering/);
-  assert.match(embed.description ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
+  assert.equal(share.sent[0].embeds, undefined);
+  assert.equal(
+    share.sent[0].content,
+    `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
+  );
+  assert.deepEqual(offerButtons(share.sent[0]), [
+    { customId: "fg-share:approve", label: "Approve", style: 3 },
+    { customId: "fg-share:decline", label: "Decline", style: 4 },
+  ]);
 });
 
-test(",fg share end-to-end: offer, Yes accept, role added, owner DM only for non-owner sharers", async () => {
+test(",fg share end-to-end: offer, Approve accept, role added, owner DM only for non-owner sharers", async () => {
   // The caller owns the FG role; the target accepts the offer.
   const config = createStore(
     makeSettings({
@@ -660,30 +680,30 @@ test(",fg share end-to-end: offer, Yes accept, role added, owner DM only for non
   });
   assert.equal(await handlePrefixMessage(share.message, config.store), true);
 
-  // The offer went out: content pings the target, embed names the role.
+  // The offer went out: plain message, target + role on line 1, the
+  // question naming the owner on line 2, Approve/Decline buttons.
   assert.equal(share.sent.length, 1);
-  assert.equal(share.sent[0].content, `<@${OTHER_ID}>`);
-  const offerEmbed = share.sent[0].embeds?.[0]?.toJSON() as {
-    title?: string;
-    description?: string;
-  };
-  assert.equal(offerEmbed.title, "fg share");
-  assert.match(offerEmbed.description ?? "", /is offering/);
+  assert.equal(share.sent[0].embeds, undefined);
+  assert.equal(
+    share.sent[0].content,
+    `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
+  );
+  assert.deepEqual(offerButtons(share.sent[0]), [
+    { customId: "fg-share:approve", label: "Approve", style: 3 },
+    { customId: "fg-share:decline", label: "Decline", style: 4 },
+  ]);
 
-  // The target taps Yes: the role is added, the offer edits to accepted.
+  // The target taps Approve: the role is added, the offer edits to accepted.
   assert.equal(share.collectors.length, 1);
-  const yes = makeButton("fg-share:yes", OTHER_ID);
-  await share.collectors[0].fireCollect(yes);
-  assert.equal(yes.updates.length, 1);
-  const acceptedEmbeds = yes.updates[0].embeds as Array<{
-    toJSON: () => { title?: string; description?: string };
-  }>;
-  const accepted = acceptedEmbeds[0]?.toJSON() as {
-    title?: string;
-    description?: string;
-  };
-  assert.equal(accepted.title, "fg share accepted");
-  assert.match(accepted.description ?? "", /accepted/);
+  const approve = makeButton("fg-share:approve", OTHER_ID);
+  await share.collectors[0].fireCollect(approve);
+  assert.equal(approve.updates.length, 1);
+  assert.equal(
+    approve.updates[0].content,
+    `<@${OTHER_ID}> accepted <@&${FG_ROLE_ID}>.`,
+  );
+  assert.deepEqual(approve.updates[0].components, []);
+  assert.equal(approve.updates[0].embeds, undefined);
   // No generic error reply was sent at any point.
   assert.equal(
     share.sent.filter((message) => /couldn't complete that command/i.test(sentTextOf(message)))
@@ -720,14 +740,21 @@ test(",fg share by an authed non-owner DMs the FG owner on accept", async () => 
   assert.equal(await handlePrefixMessage(share.message, config.store), true);
   assert.equal(share.sent.length, 1);
   assert.equal(share.collectors.length, 1);
+  // The offer question names the FG role's owner (Alex), not the
+  // sharer (Sam) — as in Greed's screenshot, where isabell shares
+  // ss0bs's role and the question names ss0bs.
+  assert.equal(
+    share.sent[0].content,
+    `<@${TARGET_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
+  );
 
-  const yes = makeButton("fg-share:yes", TARGET_ID);
-  await share.collectors[0].fireCollect(yes);
-  const acceptedEmbeds = yes.updates[0].embeds as Array<{
-    toJSON: () => { title?: string };
-  }>;
-  const accepted = acceptedEmbeds[0]?.toJSON() as { title?: string };
-  assert.equal(accepted.title, "fg share accepted");
+  const approve = makeButton("fg-share:approve", TARGET_ID);
+  await share.collectors[0].fireCollect(approve);
+  assert.equal(approve.updates.length, 1);
+  assert.equal(
+    approve.updates[0].content,
+    `<@${TARGET_ID}> accepted <@&${FG_ROLE_ID}>.`,
+  );
   // The FG owner hears about it: one DM, naming the sharer and the role.
   assert.equal(share.dms.length, 1);
   assert.equal(share.dms[0].to, USER_ID);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ButtonStyle,
   ChannelType,
   Collection,
   DiscordAPIError,
@@ -141,6 +142,49 @@ interface Harness {
   }>;
   loggedErrors: string[];
   restoreConsole: () => void;
+  /** Does this member currently hold this role? */
+  holdsRole: (memberId: string, roleId: string) => boolean;
+}
+
+/** A fake button press, recording what the handler replies/updates with. */
+function makeButton(customId: string, userId: string) {
+  const button = {
+    customId,
+    user: { id: userId },
+    replied: false,
+    deferred: false,
+    replies: [] as Array<Record<string, unknown>>,
+    updates: [] as Array<Record<string, unknown>>,
+    reply: async (options: Record<string, unknown>) => {
+      button.replied = true;
+      button.replies.push(options);
+    },
+    update: async (options: Record<string, unknown>) => {
+      button.replied = true;
+      button.updates.push(options);
+    },
+    deferUpdate: async () => {
+      button.deferred = true;
+    },
+  };
+  return button;
+}
+
+/** The offer's buttons, as plain data: custom id, label, style. */
+function offerButtons(sentMessage: Record<string, unknown>): Array<{
+  customId: string;
+  label: string;
+  style: number;
+}> {
+  const rows =
+    (sentMessage.components as Array<{
+      toJSON: () => { components: Array<Record<string, unknown>> };
+    }>) ?? [];
+  return rows.flatMap((row) => row.toJSON().components).map((c) => ({
+    customId: c.custom_id as string,
+    label: c.label as string,
+    style: c.style as number,
+  }));
 }
 
 function createHarness(options: {
@@ -250,10 +294,14 @@ function createHarness(options: {
         embeds: messageOptions.embeds,
         components: messageOptions.components,
         deleted: false,
+        edits: [] as Array<Record<string, unknown>>,
         delete: async () => {
           sentMessage.deleted = true;
         },
-        edit: async () => sentMessage,
+        edit: async (editOptions: Record<string, unknown>) => {
+          (sentMessage.edits as Array<Record<string, unknown>>).push(editOptions);
+          return sentMessage;
+        },
         createMessageComponentCollector: () => collector,
       };
       sent.push(sentMessage);
@@ -314,6 +362,8 @@ function createHarness(options: {
     restoreConsole: () => {
       console.error = originalError;
     },
+    holdsRole: (memberId: string, roleId: string) =>
+      members.get(memberId)?.roles.cache.has(roleId) ?? false,
   };
 }
 
@@ -355,11 +405,155 @@ test("repro: owner shares their own FG role via ,fg share (real Collection + rea
     assert.equal(await handlePrefixMessage(harness.message as never, store), true);
     assertNoGenericError(harness);
     assert.equal(harness.sent.length, 1);
-    const embed = (
-      harness.sent[0].embeds as Array<{ toJSON: () => { title?: string } }>
-    )[0].toJSON();
-    assert.equal(embed.title, "fg share");
+    // Greed-style offer, plain message, no embed: line 1 pings the
+    // target and mentions the role; line 2 asks whether they want to
+    // accept the owner's FG role. No emoji anywhere.
+    assert.equal(harness.sent[0].embeds, undefined);
+    assert.equal(
+      harness.sent[0].content,
+      `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
+    );
+    assert.deepEqual(offerButtons(harness.sent[0]), [
+      { customId: "fg-share:approve", label: "Approve", style: ButtonStyle.Success },
+      { customId: "fg-share:decline", label: "Decline", style: ButtonStyle.Danger },
+    ]);
     assert.equal(harness.collectors.length, 1);
+  } finally {
+    harness.restoreConsole();
+  }
+});
+
+test("repro: target taps Approve → role added, offer edits to accepted, owner gets no DM for their own share", async () => {
+  const { store } = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoles: { [FG_ROLE_ID]: fgAccess() },
+    }),
+  );
+  const harness = createHarness({
+    content: `,fg share <@${OTHER_ID}>`,
+    authorId: OWNER_ID,
+    settings: makeSettings(),
+  });
+  try {
+    assert.equal(await handlePrefixMessage(harness.message as never, store), true);
+    assertNoGenericError(harness);
+    assert.equal(harness.collectors.length, 1);
+    const approve = makeButton("fg-share:approve", OTHER_ID);
+    await harness.collectors[0].fireCollect(approve);
+    assert.equal(approve.updates.length, 1);
+    assert.equal(
+      approve.updates[0].content,
+      `<@${OTHER_ID}> accepted <@&${FG_ROLE_ID}>.`,
+    );
+    assert.deepEqual(approve.updates[0].components, []);
+    assert.equal(approve.updates[0].embeds, undefined);
+    assert.equal(harness.holdsRole(OTHER_ID, FG_ROLE_ID), true);
+    // The owner shared their own role, so no owner DM about their own action.
+    assert.equal(harness.dms.length, 0);
+  } finally {
+    harness.restoreConsole();
+  }
+});
+
+test("repro: target taps Decline → no role added, offer edits to declined", async () => {
+  const { store } = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoles: { [FG_ROLE_ID]: fgAccess() },
+    }),
+  );
+  const harness = createHarness({
+    content: `,fg share <@${OTHER_ID}>`,
+    authorId: OWNER_ID,
+    settings: makeSettings(),
+  });
+  try {
+    assert.equal(await handlePrefixMessage(harness.message as never, store), true);
+    assertNoGenericError(harness);
+    assert.equal(harness.collectors.length, 1);
+    const decline = makeButton("fg-share:decline", OTHER_ID);
+    await harness.collectors[0].fireCollect(decline);
+    assert.equal(decline.updates.length, 1);
+    assert.equal(
+      decline.updates[0].content,
+      `<@${OTHER_ID}> declined <@&${FG_ROLE_ID}>.`,
+    );
+    assert.deepEqual(decline.updates[0].components, []);
+    assert.equal(harness.holdsRole(OTHER_ID, FG_ROLE_ID), false);
+  } finally {
+    harness.restoreConsole();
+  }
+});
+
+test("repro: offer expires after 5 minutes → plain expired message, buttons gone", async () => {
+  const { store } = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoles: { [FG_ROLE_ID]: fgAccess() },
+    }),
+  );
+  const harness = createHarness({
+    content: `,fg share <@${OTHER_ID}>`,
+    authorId: OWNER_ID,
+    settings: makeSettings(),
+  });
+  try {
+    assert.equal(await handlePrefixMessage(harness.message as never, store), true);
+    assertNoGenericError(harness);
+    assert.equal(harness.collectors.length, 1);
+    await harness.collectors[0].fireEnd("time");
+    const edits = harness.sent[0].edits as Array<Record<string, unknown>>;
+    assert.equal(edits.length, 1);
+    assert.equal(
+      edits[0].content,
+      `<@${OWNER_ID}>'s offer of <@&${FG_ROLE_ID}> to <@${OTHER_ID}> expired without a response.`,
+    );
+    assert.deepEqual(edits[0].components, []);
+    assert.equal(edits[0].embeds, undefined);
+  } finally {
+    harness.restoreConsole();
+  }
+});
+
+test("repro: authed non-owner shares someone else's role → question names the OWNER, owner DM on accept", async () => {
+  // USER_ID is authed to share OWNER_ID's FG role; the target accepts.
+  // The offer question names the role's owner ("Owner"), not the
+  // sharer ("Member") — as in Greed's screenshot, where isabell shares
+  // ss0bs's role and the question names ss0bs.
+  const { store } = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoleSharers: { [FG_ROLE_ID]: [USER_ID] },
+      fgRoles: { [FG_ROLE_ID]: fgAccess() },
+    }),
+  );
+  const harness = createHarness({
+    content: `,fg share <@${OTHER_ID}>`,
+    authorId: USER_ID,
+    settings: makeSettings(),
+  });
+  try {
+    assert.equal(await handlePrefixMessage(harness.message as never, store), true);
+    assertNoGenericError(harness);
+    assert.equal(harness.sent.length, 1);
+    assert.equal(
+      harness.sent[0].content,
+      `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
+    );
+    const approve = makeButton("fg-share:approve", OTHER_ID);
+    await harness.collectors[0].fireCollect(approve);
+    assert.equal(harness.holdsRole(OTHER_ID, FG_ROLE_ID), true);
+    assert.equal(harness.dms.length, 1);
+    assert.equal(harness.dms[0].to, OWNER_ID);
+    const dmText = (
+      harness.dms[0].options.embeds as Array<{
+        toJSON: () => { description?: string };
+      }>
+    )[0]
+      .toJSON()
+      .description;
+    assert.match(dmText ?? "", /shared your FG role/);
   } finally {
     harness.restoreConsole();
   }
@@ -572,10 +766,15 @@ test("regression: offer send fails once with a retryable error → retried and t
     assertNoGenericError(harness);
     assert.equal(harness.offerAttempts, 2);
     assert.equal(harness.sent.length, 1);
-    const embed = (
-      harness.sent[0].embeds as Array<{ toJSON: () => { title?: string } }>
-    )[0].toJSON();
-    assert.equal(embed.title, "fg share");
+    assert.equal(harness.sent[0].embeds, undefined);
+    assert.equal(
+      harness.sent[0].content,
+      `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
+    );
+    assert.deepEqual(offerButtons(harness.sent[0]), [
+      { customId: "fg-share:approve", label: "Approve", style: ButtonStyle.Success },
+      { customId: "fg-share:decline", label: "Decline", style: ButtonStyle.Danger },
+    ]);
     assert.equal(harness.collectors.length, 1);
   } finally {
     harness.restoreConsole();

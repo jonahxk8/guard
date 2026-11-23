@@ -23,11 +23,13 @@ The bot protects selected server roles. It checks Discord's audit log when a pro
 
 The bot listens for Discord audit-log events. If the actor is not whitelisted, it removes the protected role. Discord's role hierarchy must let the bot manage that role.
 
-When a grant is removed, the bot DMs the assigner to explain which role was removed and how to get whitelisted. After 3 unauthorised assignments by the same person in the same server, the log embed flags them as a repeat offender. If no alert channel is set, the removal and DM still happen — nothing is silently skipped.
+When a grant is removed, the bot DMs the assigner an embed (Role /
+Member / Server / Reason fields) stating which role was removed and
+why. The DM never asks to get whitelisted. After 3 unauthorised assignments by the same person in the same server, the log embed flags them as a repeat offender. If no alert channel is set, the removal and DM still happen — nothing is silently skipped.
 
 The bot also corroborates each audit-log event against the guild's recent audit log (up to 10 entries, matched by target, role, and time). When it can't verify who assigned a role, it removes the role by default.
 
-All replies are short invisible (ephemeral) plain text, except `/status`, `/fg list`, the log embed, and the share offer, which are black embeds (colour 0, plain title and description, no footer, no timestamp). `/status` lists any protected or FG roles the bot can't manage and shows "Needs setup" until the bot's role is moved above them; the same check runs at startup and logs a warning per server.
+All replies are short invisible (ephemeral) plain text, except `/status`, `/fg list`, the log embed, and the share offer, which are colourless embeds (no colour set, so they blend in with no accent bar; plain title and description, no footer, no timestamp). `/status` lists any protected or FG roles the bot can't manage and shows "Needs setup" until the bot's role is moved above them; the same check runs at startup and logs a warning per server.
 
 Prefix (",") replies cannot be invisible — Discord has no ephemeral message replies, so a `,` reply is always visible in the channel. That is a Discord limitation, not a bug. Wild mitigates it: your `,` command message is deleted after handling (best-effort), and error replies auto-delete after 10 seconds (best-effort). Success replies stay. If you need invisible errors, use the slash versions. Unknown `,` commands get no reply at all, and the message is never deleted — it may belong to Greed or another bot.
 
@@ -67,14 +69,27 @@ FG roles — Bleed booster-role style. Each member makes their own unique, perso
 
 ## Help
 
-`/help` / `,help` opens a paged help menu — one black embed per page,
-one field per command, plain text only, no emojis. The main page lists
-the three categories (Guard, FG, Blacklist) with buttons to jump to
-each one. Each category page lists its commands the same way: one
-field per command, slash syntax first, prefix syntax second, then one
-purpose line and a "Who: ..." line. FG has 12 subcommands, so it
+`/help` / `,help` opens a paged help menu — one colourless embed per
+page, one field per command, plain text only, no emojis. Help shows
+only the syntax for the form it was opened with: `/help` shows slash
+forms, `,help` shows prefix forms. Each command is one field: the
+syntax in backticks, then a short purpose line and a short "Who: ..."
+tag.
+
+Who sees what: the server owner, anyone with the Discord
+Administrator permission, and whitelisted users / roles see the full
+menu (Guard, FG, Blacklist). A normal user sees FG only — no Guard or
+Blacklist buttons, fields, or syntax — and the FG pages hide the
+admin-only subcommands (base, list, cleanup, award). Asking for an
+admin-only command as a normal user gets a short error, never the
+command's syntax. The privilege check runs again on every button
+press, so a member who lost their whitelist cannot reach
+Guard/Blacklist pages through a menu they opened earlier.
+
+FG has 12 subcommands for privileged users, so it
 splits into 2 pages of 6 ("Wild help - FG (1/2)" and "(2/2)") with
-Prev/Next buttons and a Back button to the main page; Guard and
+Prev/Next buttons and a Back button to the main page; a normal user
+sees only 6 FG commands, so FG fits on one page for them. Guard and
 Blacklist fit on one page each. `/help fg create`, `/help blacklist
 add`, or `/help protect` shows just that command — Syntax, What it
 does, Who can use it, and an Example — with a Back button to its
@@ -82,11 +97,14 @@ category page. An unknown topic gets a short error pointing at `/help`.
 Only the person who ran /help can use its buttons, and they stop
 working after 5 minutes.
 
-Every other Wild embed uses the same style: black (colour 0), plain
+Every other Wild embed uses the same style: no colour, plain
 title, no footer, no timestamp, one field per item — /status (one
 field per section), /fg list (one field per FG role, with its owner),
 the guard log embed (Role / Assigned by / Reason fields), and the FG
-share offer (Role / From / To fields, with its Yes / No buttons).
+share offer (Role / From / To fields, with its Yes / No buttons). The
+guard DM is an embed in the same style (Role / Member / Server /
+Reason fields) that states what was removed and why — it never asks
+you to get whitelisted.
 
 A bare `,fg` or `,blacklist` (or an unknown subcommand) no longer
 dumps every usage variant — it just says "Use ,help fg" (or

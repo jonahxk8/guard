@@ -22,7 +22,7 @@ import {
 // Wild has six slash commands: /protect, /whitelist, /status,
 // /setup, /fg, and /blacklist. Confirmations and errors are short ephemeral
 // plain text — no embeds, no titles, no footers. Only /status uses an embed
-// (one black embed, short lines). /blacklist list is plain text.
+// (one colourless embed, short lines). /blacklist list is plain text.
 
 export const protectCommand = new SlashCommandBuilder()
   .setName("protect")

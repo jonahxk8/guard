@@ -9,6 +9,10 @@ import {
   TextChannel,
 } from "discord.js";
 import { ConfigStore, GuildSettings, isBlacklisted } from "./config-store.js";
+import {
+  memberDisplayName,
+  roleDisplayName,
+} from "./names.js";
 import { wildFieldEmbed } from "./embeds.js";
 import { canAssignFgRole, memberMatchesWhitelist } from "./authorization.js";
 import {
@@ -248,14 +252,25 @@ async function notifyActor(
 ): Promise<void> {
   const actor = await guild.members.fetch(actorId).catch(() => null);
   if (!actor || typeof actor.send !== "function") return;
-  const roleMentions = roleIds.map((roleId) => `<@&${roleId}>`).join(", ");
-  await actor
-    .send(
-      `Wild removed ${roleMentions} from <@${memberId}> in ${guild.name} because ` +
-        `you aren't whitelisted to assign protected roles. ` +
-        `Ask a server admin with Manage Server to whitelist you with ` +
-        `/whitelist add.`,
+  const target = await guild.members.fetch(memberId).catch(() => null);
+  const roleNames = roleIds
+    .map((roleId) =>
+      roleDisplayName(
+        guild.roles.cache.get(roleId) as { id: string; name?: string | null } | undefined,
+      ),
     )
+    .join(", ");
+  const embed = wildFieldEmbed("Role removed", [
+    { name: "Role", value: roleNames },
+    { name: "Member", value: memberDisplayName(target, null) },
+    { name: "Server", value: guild.name },
+    {
+      name: "Reason",
+      value: "You aren't whitelisted to assign protected roles.",
+    },
+  ]);
+  await actor
+    .send({ embeds: [embed], allowedMentions: { parse: [] } })
     .catch(() => undefined);
 }
 
@@ -272,14 +287,25 @@ async function notifyBlacklistedActor(
 ): Promise<void> {
   const actor = await guild.members.fetch(actorId).catch(() => null);
   if (!actor || typeof actor.send !== "function") return;
-  const roleMentions = roleIds.map((roleId) => `<@&${roleId}>`).join(", ");
-  await actor
-    .send(
-      `Wild removed ${roleMentions} from <@${memberId}> in ${guild.name} because ` +
-        `<@${memberId}> is blacklisted from that role. ` +
-        `Ask a server admin with Manage Server to remove them from the blacklist with ` +
-        `/blacklist remove.`,
+  const target = await guild.members.fetch(memberId).catch(() => null);
+  const roleNames = roleIds
+    .map((roleId) =>
+      roleDisplayName(
+        guild.roles.cache.get(roleId) as { id: string; name?: string | null } | undefined,
+      ),
     )
+    .join(", ");
+  const embed = wildFieldEmbed("Role removed", [
+    { name: "Role", value: roleNames },
+    { name: "Member", value: memberDisplayName(target, null) },
+    { name: "Server", value: guild.name },
+    {
+      name: "Reason",
+      value: "The member is blacklisted from this role.",
+    },
+  ]);
+  await actor
+    .send({ embeds: [embed], allowedMentions: { parse: [] } })
     .catch(() => undefined);
 }
 

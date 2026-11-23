@@ -33,7 +33,7 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  *  - /fg share is Wild-only. Bleed documents no share command.
  *
  * All slash replies are ephemeral plain text, except /fg list and the
- * public share offer (black embeds, no footer/timestamp). Errors are
+ * public share offer (colourless embeds, no footer/timestamp). Errors are
  * never public.
  */
 

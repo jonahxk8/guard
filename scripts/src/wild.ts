@@ -118,7 +118,7 @@ async function main(): Promise<void> {
       if (interaction.commandName === "fg") {
         await handleFgCommand(interaction, store);
       } else if (interaction.commandName === "help") {
-        await handleHelpCommand(interaction);
+        await handleHelpCommand(interaction, store);
       } else {
         await handleGuardCommand(interaction, store);
       }

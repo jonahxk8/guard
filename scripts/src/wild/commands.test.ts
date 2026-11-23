@@ -296,7 +296,7 @@ test("/status shows protected, FG, whitelisted — and no command list", async (
   await handleGuardCommand(interaction.interaction, config.store);
 
   const embed = interaction.replies[0].embeds?.[0].toJSON();
-  assert.equal(embed?.color, 0);
+  assert.equal(embed?.color, undefined); // No colour set: the embed blends in.
   assert.equal(embed?.footer, undefined);
   assert.equal(embed?.timestamp, undefined);
   const fields = Object.fromEntries(

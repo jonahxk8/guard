@@ -14,7 +14,8 @@ the log.
 Wild is simple on purpose: seven slash commands, each with a "," prefix
 version that works the same way. Confirmations and errors are short
 invisible (ephemeral) plain-text replies — only you can see them. All
-embeds are black (colour 0, no footer, no timestamp).
+embeds use no colour at all (no accent bar, so they blend into the chat
+background and look invisible), no footer, no timestamp.
 
 ## Discord setup
 
@@ -90,39 +91,50 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
 
 ## Help
 
-`/help` / `,help` opens a paged help menu — one black embed per page,
-one field per command, plain text only, no emojis. The main page lists
-the three categories (Guard, FG, Blacklist) with buttons to jump to
+`/help` / `,help` opens a paged help menu — one colourless embed per
+page, one field per command, plain text only, no emojis. Help shows
+only the syntax for the form it was opened with: `/help` shows slash
+forms, `,help` shows prefix forms. Each command is one field: the
+syntax in backticks, then a short purpose line and a short "Who: ..."
+tag.
+
+Who sees what: the server owner, anyone with the Discord Administrator
+permission, and whitelisted users / roles see the full menu (Guard, FG,
+Blacklist). A normal user sees FG only — no Guard or Blacklist buttons,
+fields, or syntax — and the FG pages hide the admin-only subcommands
+(base, list, cleanup, award). Asking for an admin-only command as a
+normal user gets a short error, never the command's syntax.
+
+The main page lists the visible categories with buttons to jump to
 each one:
 
 ```
 Wild help
-  Guard — Protect roles and whitelist the people who can assign them
-          Use /help guard - 4 commands
-  FG — Personal FG roles - make, colour, rename, icon, share
-       Use /help fg - 12 commands
-  Blacklist — Block members from protected roles
-              Use /help blacklist - 3 commands
+  Guard — Protect roles and whitelist assigners
+          4 commands
+  FG — Personal FG roles
+       12 commands
+  Blacklist — Block members from roles
+              3 commands
   [Guard] [FG] [Blacklist]
 ```
 
 Each category page lists its commands the same way — one field per
-command, slash syntax first, prefix syntax second, then one purpose
-line and a "Who: ..." line:
+command, one purpose line, one "Who: ..." tag:
 
 ```
 Wild help - FG (1/2)
-  /fg base @role
-  ,fg base @role
-  Set the base role FG roles sit under
+  `/fg base @role`
+  Set the FG base role
   Who: Manage Server
   ...
   [Next] [Back]
 ```
 
-FG has 12 subcommands, so it splits into 2 pages of 6
-("Wild help - FG (1/2)" and "(2/2)") with Prev/Next buttons. Guard
-and Blacklist fit on one page each. `/help fg create` or
+FG has 12 subcommands for privileged users, so it splits into 2 pages
+of 6 ("Wild help - FG (1/2)" and "(2/2)") with Prev/Next buttons; a
+normal user sees only 6 FG commands, so FG fits on one page for them.
+Guard and Blacklist fit on one page each. `/help fg create` or
 `/help blacklist add` (`,help fg create` and so on) shows just that
 one command: Syntax, What it does, Who can use it, and an Example,
 with a Back button to its category page. Unknown topics get a short
@@ -130,11 +142,14 @@ error pointing at `/help`. Only the person who ran /help can use its
 buttons — anyone else gets told to run /help for their own menu — and
 the buttons stop working after 5 minutes.
 
-Every other Wild embed uses the same style: black (colour 0), plain
+Every other Wild embed uses the same style: no colour, plain
 title, no footer, no timestamp, one field per item — /status (one
 field per section), /fg list (one field per FG role, with its owner),
 the guard log embed (Role / Assigned by / Reason fields), and the FG
-share offer (Role / From / To fields, with its Yes / No buttons).
+share offer (Role / From / To fields, with its Yes / No buttons). The
+guard DM is an embed in the same style (Role / Member / Server /
+Reason fields) that states what was removed and why — it never asks
+you to get whitelisted.
 
 ## Prefix commands — read this first
 

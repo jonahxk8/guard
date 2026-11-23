@@ -487,7 +487,7 @@ export async function handlePrefixMessage(
     if (slashCommand === "fg") {
       await handleFgCommand(interaction, store);
     } else if (slashCommand === "help") {
-      await handleHelpCommand(interaction);
+      await handleHelpCommand(interaction, store, "prefix");
     } else {
       await handleGuardCommand(interaction, store);
     }

@@ -622,7 +622,7 @@ test("/fg award set, view, and remove", async () => {
   assert.equal(config.getSettings().fgAwardRoleId, null);
 });
 
-test("/fg list shows FG roles with owners in a black embed", async () => {
+test("/fg list shows FG roles with owners in a colourless embed", async () => {
   const config = createStore(
     makeSettings({ fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID } }),
   );
@@ -632,7 +632,7 @@ test("/fg list shows FG roles with owners in a black embed", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   const embed = replies[0].embeds?.[0].toJSON();
-  assert.equal(embed?.color, 0);
+  assert.equal(embed?.color, undefined); // No colour set: the embed blends in.
   assert.equal(embed?.footer, undefined);
   assert.equal(embed?.timestamp, undefined);
   assert.equal(embed?.fields?.length, 1);

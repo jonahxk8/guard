@@ -280,14 +280,14 @@ test(",whitelist toggles a user and a role", async () => {
   assert.deepEqual(config.getSettings().allowedUserIds, [USER_ID, OTHER_ID]);
 });
 
-test(",status sends the black embed and ,logchannel off turns alerts off", async () => {
+test(",status sends the colourless embed and ,logchannel off turns alerts off", async () => {
   const config = createStore(
     makeSettings({ protectedRoleIds: [ROLE_ID], logChannelId: CHANNEL_ID }),
   );
   const status = createMessage({ content: ",status" });
   await handlePrefixMessage(status.message, config.store);
   assert.equal(status.sent.length, 1);
-  assert.equal(status.sent[0].embeds?.[0].toJSON().color, 0);
+  assert.equal(status.sent[0].embeds?.[0].toJSON().color, undefined); // No colour set.
   const statusFields = Object.fromEntries(
     (
       (status.sent[0].embeds?.[0].toJSON().fields ?? []) as {
@@ -459,13 +459,13 @@ test(",fg create by a non-whitelisted member is rejected", async () => {
   );
 });
 
-test(",help shows the main page, a topic page, and one command", async () => {
+test(",help for a normal user shows FG only, with prefix syntax", async () => {
   const config = createStore();
 
   const main = createMessage({ content: ",help" });
   await handlePrefixMessage(main.message, config.store);
   assert.equal(main.sent.length, 1);
-  assert.equal(main.sent[0].embeds?.[0].toJSON().color, 0);
+  assert.equal(main.sent[0].embeds?.[0].toJSON().color, undefined); // No colour set.
   const mainEmbed = main.sent[0].embeds?.[0].toJSON();
   const mainFields = (mainEmbed?.fields ?? []) as {
     name: string;
@@ -473,18 +473,19 @@ test(",help shows the main page, a topic page, and one command", async () => {
   }[];
   assert.deepEqual(
     mainFields.map((field) => field.name),
-    ["Guard", "FG", "Blacklist"],
+    ["FG"],
   );
   const mainText = mainFields
     .map((field) => `${field.name}\n${field.value}`)
     .join("\n");
-  assert.match(mainText, /\/help fg/);
+  assert.match(mainText, /6 commands/);
   assert.doesNotMatch(mainText, /\|/);
+  assert.doesNotMatch(mainText, /Guard|Blacklist/);
 
   const fg = createMessage({ content: ",help fg" });
   await handlePrefixMessage(fg.message, config.store);
   const fgEmbed = fg.sent[0].embeds?.[0].toJSON();
-  assert.equal(fgEmbed?.title, "Wild help - FG (1/2)");
+  assert.equal(fgEmbed?.title, "Wild help - FG");
   const fgFields = (fgEmbed?.fields ?? []) as {
     name: string;
     value: string;
@@ -492,7 +493,8 @@ test(",help shows the main page, a topic page, and one command", async () => {
   const fgText = fgFields
     .map((field) => `${field.name}\n${field.value}`)
     .join("\n");
-  assert.match(fgText, /\/fg create/);
+  assert.match(fgText, /,fg create/);
+  assert.doesNotMatch(fgText, /\/fg create/);
   assert.doesNotMatch(fgText, /\/blacklist/);
 
   const create = createMessage({ content: ",help fg create" });
@@ -505,14 +507,53 @@ test(",help shows the main page, a topic page, and one command", async () => {
   const createText = createFields
     .map((field) => `${field.name}\n${field.value}`)
     .join("\n");
-  assert.match(createText, /\/fg create <name> <color>/);
-  assert.match(createText, /Server owner or whitelisted members/);
+  assert.match(createText, /,fg create <name> <color>/);
+  assert.doesNotMatch(createText, /\/fg create/);
+  assert.match(createText, /Owner \/ whitelisted/);
+
+  const guarded = createMessage({ content: ",help fg base" });
+  await handlePrefixMessage(guarded.message, config.store);
+  assert.equal(guarded.sent[0].embeds, undefined);
+  assert.match(
+    guarded.sent[0].content ?? "",
+    /That command is for admins and whitelisted members/,
+  );
 
   const unknown = createMessage({ content: ",help nonsense" });
   await handlePrefixMessage(unknown.message, config.store);
   assert.equal(unknown.sent[0].embeds, undefined);
   assert.match(unknown.sent[0].content ?? "", /No help for "nonsense"/);
   assert.match(unknown.sent[0].content ?? "", /Use \/help to see all commands/);
+});
+
+test(",help for a whitelisted user shows all categories, prefix syntax", async () => {
+  const config = createStore(makeSettings({ allowedUserIds: [USER_ID] }));
+
+  const main = createMessage({ content: ",help" });
+  await handlePrefixMessage(main.message, config.store);
+  const mainEmbed = main.sent[0].embeds?.[0].toJSON();
+  const mainFields = (mainEmbed?.fields ?? []) as {
+    name: string;
+    value: string;
+  }[];
+  assert.deepEqual(
+    mainFields.map((field) => field.name),
+    ["Guard", "FG", "Blacklist"],
+  );
+
+  const fg = createMessage({ content: ",help fg" });
+  await handlePrefixMessage(fg.message, config.store);
+  const fgEmbed = fg.sent[0].embeds?.[0].toJSON();
+  assert.equal(fgEmbed?.title, "Wild help - FG (1/2)");
+  const fgFields = (fgEmbed?.fields ?? []) as {
+    name: string;
+    value: string;
+  }[];
+  const fgText = fgFields
+    .map((field) => `${field.name}\n${field.value}`)
+    .join("\n");
+  assert.match(fgText, /,fg base @role/);
+  assert.doesNotMatch(fgText, /\/fg base/);
 });
 
 test("an error reply auto-deletes after 10 seconds", async (t) => {

@@ -30,12 +30,17 @@ interface SentMessage {
   embeds: EmbedBuilder[];
 }
 
+interface DmMessage {
+  embeds?: EmbedBuilder[];
+  content?: string;
+}
+
 interface GuardSetup {
   guild: Guild;
   settings: GuildSettings;
   removedRoleIds: string[][];
   sentMessages: SentMessage[];
-  dms: string[];
+  dms: DmMessage[];
   memberFetchCount: number;
 }
 
@@ -69,7 +74,7 @@ function createSetup(
   };
   const removedRoleIds: string[][] = [];
   const sentMessages: SentMessage[] = [];
-  const dms: string[] = [];
+  const dms: DmMessage[] = [];
   let memberFetchCount = 0;
 
   const member = {
@@ -88,7 +93,7 @@ function createSetup(
           (options.actorRoleIds ?? []).some((roleId) => predicate({ id: roleId })),
       },
     },
-    send: async (message: string) => {
+    send: async (message: DmMessage) => {
       dms.push(message);
     },
   };
@@ -176,6 +181,21 @@ function createEntry(
 function getLoggedEmbed(setup: GuardSetup): ReturnType<EmbedBuilder["toJSON"]> {
   assert.equal(setup.sentMessages.length, 1, "expected one moderation log");
   return setup.sentMessages[0].embeds[0].toJSON();
+}
+
+function getDmEmbed(setup: GuardSetup): ReturnType<EmbedBuilder["toJSON"]> {
+  assert.equal(setup.dms.length, 1, "expected one DM");
+  const embed = setup.dms[0].embeds?.[0];
+  assert.ok(embed, "expected the DM to be an embed");
+  return embed.toJSON();
+}
+
+function dmText(setup: GuardSetup): string {
+  const embed = getDmEmbed(setup);
+  return [
+    embed.title ?? "",
+    ...(embed.fields ?? []).map((field) => `${field.name}\n${field.value}`),
+  ].join("\n");
 }
 
 test("keeps watched roles assigned by a whitelisted actor", async () => {
@@ -332,8 +352,23 @@ test("DMs the unapproved actor even with no log channel set", async () => {
   assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
   assert.equal(setup.sentMessages.length, 0);
   assert.equal(setup.dms.length, 1);
-  assert.match(setup.dms[0], new RegExp(ROLE_ID));
-  assert.match(setup.dms[0], /whitelist/i);
+  const dm = getDmEmbed(setup);
+  assert.equal(dm.title, "Role removed");
+  assert.equal(dm.color, undefined);
+  assert.equal(dm.footer, undefined);
+  assert.equal(dm.timestamp, undefined);
+  const fields = Object.fromEntries(
+    (dm.fields ?? []).map((field) => [field.name, field.value]),
+  );
+  assert.match(fields["Role"] ?? "", new RegExp(ROLE_ID));
+  assert.match(fields["Member"] ?? "", new RegExp(MEMBER_ID));
+  assert.equal(fields["Server"], "Test Server");
+  assert.match(
+    fields["Reason"] ?? "",
+    /aren't whitelisted to assign protected roles/,
+  );
+  assert.doesNotMatch(dmText(setup), /Ask a server admin/);
+  assert.doesNotMatch(dmText(setup), /whitelist you/);
 });
 
 test("flags a repeat offender on the third unauthorised assignment", async () => {
@@ -448,8 +483,14 @@ test("removes a blacklisted grant even when the giver is whitelisted", async () 
   // The giver was authorised, so this is not recorded as an offence —
   // the DM explains the blacklist instead of the whitelist.
   assert.equal(setup.dms.length, 1);
-  assert.match(setup.dms[0], /blacklisted/i);
-  assert.doesNotMatch(setup.dms[0], /whitelisted to assign/i);
+  const dm = getDmEmbed(setup);
+  assert.equal(dm.title, "Role removed");
+  assert.equal(
+    dm.fields?.find((field) => field.name === "Reason")?.value,
+    "The member is blacklisted from this role.",
+  );
+  assert.doesNotMatch(dmText(setup), /Ask a server admin/);
+  assert.doesNotMatch(dmText(setup), /whitelisted to assign/i);
 });
 
 test("does not remove a blacklisted grant given by the server owner", async () => {

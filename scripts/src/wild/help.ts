@@ -7,7 +7,6 @@ import {
   ComponentType,
   GuildMember,
   Message,
-  PermissionFlagsBits,
   SlashCommandBuilder,
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
@@ -24,8 +23,8 @@ import { WILD_ERROR_REPLY, WILD_KEEP_REPLY } from "./reply.js";
  * Personalised help: there are no "Who:" lines anywhere. Instead, every
  * listing shows only the commands THAT user can actually use right now,
  * evaluated live from the member, their roles, fgRoleOwners,
- * fgRoleSharers, the whitelist, the staff admin roles, Manage Server,
- * and the server owner. A normal member sees FG only; an FG owner also sees
+ * fgRoleSharers, the whitelist, the staff admin roles, and the server
+ * owner. A normal member sees FG only; an FG owner also sees
  * rename/icon/remove/share/auth; whitelisted staff see Guard, Blacklist,
  * and more. A plain member with no FG role sees the FG category
  * with a short note and no commands they can't touch. Capability is
@@ -71,9 +70,14 @@ export type HelpMode = "slash" | "prefix";
 /**
  * What one user can actually do, evaluated live from their member
  * object, their roles, fgRoleOwners, fgRoleSharers, the whitelist,
- * the staff admin roles, Manage Server, and the server owner. Every help
- * listing is filtered through these flags — there are no "Who:" lines
- * anymore, because a command you can't use never appears at all.
+ * the staff admin roles, and the server owner. Every help listing is
+ * filtered through these flags — there are no "Who:" lines anymore,
+ * because a command you can't use never appears at all.
+ *
+ * Discord permissions NEVER feed into these flags — not even Manage
+ * Server. A member with the Discord Administrator permission (or
+ * Manage Server) who is not the owner, does not hold a staff admin
+ * role, and is not whitelisted sees exactly what a plain member sees.
  */
 export interface HelpCapabilities {
   /** Server owner. */
@@ -82,7 +86,7 @@ export interface HelpCapabilities {
   admin: boolean;
   /** Whitelisted user, or holding a whitelisted role. */
   whitelisted: boolean;
-  /** Has Manage Server (owners and staff admins count). */
+  /** Server owner or holder of a staff admin role. Discord permissions never grant it. */
   manageServer: boolean;
   /** Currently owns an FG role. */
   ownsFgRole: boolean;
@@ -146,26 +150,6 @@ export const DEFAULT_HELP_CONTEXT: HelpContext = {
   mode: "slash",
 };
 
-type PermissionsLike =
-  | { has: (permission: bigint, checkAdmin?: boolean) => boolean }
-  | null
-  | undefined;
-
-function permissionHas(
-  permissions: PermissionsLike,
-  permission: bigint,
-): boolean {
-  if (!permissions || typeof permissions.has !== "function") return false;
-  try {
-    // checkAdmin = false: discord.js `has` returns true for a member
-    // with the Administrator permission by default, and an
-    // Administrator without an admin role is an ordinary member here.
-    return permissions.has(permission, false);
-  } catch {
-    return false;
-  }
-}
-
 function memberHasRole(member: unknown, roleId: string): boolean {
   const cache = (member as { roles?: { cache?: unknown } } | null)?.roles?.cache as
     | { has?: unknown; some?: unknown }
@@ -194,11 +178,13 @@ function memberHasRole(member: unknown, roleId: string): boolean {
  * Compute one user's capabilities live from their member object and
  * the server's settings. When there is no member to check (DMs, test
  * doubles), treat the user as able to do everything — there is no
- * server to gate against.
+ * server to gate against. Discord permissions are never read here:
+ * `manageServer` is the server owner or a staff admin role holder
+ * only — a Discord Administrator (or a member with Manage Server)
+ * who is neither sees exactly what a plain member sees.
  */
 export function computeHelpCapabilities(
   member: unknown,
-  permissions: PermissionsLike,
   guildOwnerId: string | null | undefined,
   settings: GuildSettings | null | undefined,
 ): HelpCapabilities {
@@ -222,8 +208,13 @@ export function computeHelpCapabilities(
       whitelisted = false;
     }
   }
-  const manageServer =
-    owner || admin || permissionHas(permissions, PermissionFlagsBits.ManageGuild);
+  // Owner or staff admin role only — never derived from Discord
+  // permissions. Discord sends the member's *effective* permissions in
+  // the interaction payload, and ADMINISTRATOR expands to ALL
+  // permissions there, so a ManageGuild check would leak fg base, fg
+  // cleanup, and fg list to any Discord Administrator (that is how
+  // the leak in his screenshot happened).
+  const manageServer = owner || admin;
   const ownsFgRole = settings
     ? Object.values(settings.fgRoleOwners ?? {}).includes(userId)
     : false;
@@ -260,13 +251,7 @@ export function isHelpPrivileged(
   guildOwnerId: string | null | undefined,
   settings: GuildSettings | null | undefined,
 ): boolean {
-  return computeHelpCapabilities(
-    member,
-    (member as { permissions?: PermissionsLike } | null | undefined)
-      ?.permissions ?? null,
-    guildOwnerId,
-    settings,
-  ).privileged;
+  return computeHelpCapabilities(member, guildOwnerId, settings).privileged;
 }
 
 /** Which capability a command needs. One gate per command entry. */
@@ -972,7 +957,6 @@ export async function handleHelpCommand(
   const settings = helpSettingsFor(interaction, store);
   const caps = computeHelpCapabilities(
     interaction.member,
-    interaction.memberPermissions ?? null,
     interaction.guild?.ownerId ?? null,
     settings,
   );
@@ -1030,7 +1014,6 @@ export async function handleHelpCommand(
     const freshSettings = helpSettingsFor(interaction, store);
     const freshCaps = computeHelpCapabilities(
       button.member,
-      button.memberPermissions ?? null,
       interaction.guild?.ownerId ?? null,
       freshSettings,
     );

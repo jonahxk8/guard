@@ -95,6 +95,14 @@ function createMessage(options: {
   content: string;
   settings?: GuildSettings;
   canManageServer?: boolean;
+  /**
+   * The author holds a role with the Discord Administrator permission
+   * (literal role bits: Administrator only — Manage Server is false
+   * unless canManageServer is also set). Models a Discord-Admin-only
+   * member on the prefix path, where the fake interaction carries the
+   * member's literal role bits.
+   */
+  authorIsAdmin?: boolean;
   botAboveRole?: boolean;
   authorId?: string;
   authorIsBot?: boolean;
@@ -165,8 +173,10 @@ function createMessage(options: {
         user: { id: memberId, username: displayName },
         permissions: {
           has: (permission: bigint) =>
-            permission === PermissionFlagsBits.ManageGuild &&
-            (options.canManageServer ?? true),
+            (permission === PermissionFlagsBits.Administrator &&
+              (options.authorIsAdmin ?? false)) ||
+            (permission === PermissionFlagsBits.ManageGuild &&
+              (options.canManageServer ?? true)),
         },
         roles: {
           cache: {
@@ -449,6 +459,40 @@ test(",guard routes to the same handler as /protect and deletes the command", as
   assert.equal(sent.length, 1);
   assert.match(sentTextOf(sent[0]), /now protected/i);
   assert.equal(sent[0].deleted, false, "success replies stay");
+});
+
+test(",guard by a non-whitelisted admin is silently ignored", async () => {
+  // An authorisation failure on the prefix path sends NO reply at
+  // all — not even an error embed. The user's command message is
+  // still deleted, as with every other prefix command.
+  const config = createStore();
+  const created = createMessage({
+    content: ",guard <@&444444444444444444>",
+    authorIsAdmin: true,
+    canManageServer: false,
+  });
+
+  assert.equal(await handlePrefixMessage(created.message, config.store), true);
+
+  assert.deepEqual(config.getSettings().protectedRoleIds, []);
+  assert.deepEqual(created.sent, []);
+  assert.equal(created.commandDeleted, true);
+});
+
+test(",guard by an authorised caller still works", async () => {
+  // The ignore is only for authorisation failures: a whitelisted
+  // member without Manage Server can still use ,guard.
+  const config = createStore(makeSettings({ allowedUserIds: [USER_ID] }));
+  const { message, sent } = createMessage({
+    content: ",guard <@&444444444444444444>",
+    canManageServer: false,
+  });
+
+  assert.equal(await handlePrefixMessage(message, config.store), true);
+
+  assert.deepEqual(config.getSettings().protectedRoleIds, [ROLE_ID]);
+  assert.equal(sent.length, 1);
+  assert.match(sentTextOf(sent[0]), /now protected/i);
 });
 
 test(",whitelist toggles a user and a role", async () => {
@@ -1005,23 +1049,29 @@ test(",fg create creates an FG role for a named member through the prefix", asyn
   assert.doesNotMatch(sentTextOf(sent[0]), /\[object Object\]/);
 });
 
-test(",fg create by a non-whitelisted member is rejected", async () => {
+test(",fg create by a non-whitelisted member is silently ignored", async () => {
   const config = createStore(makeSettings({ fgBaseRoleId: ROLE_ID }));
-  const { message, sent } = createMessage({
+  const created = createMessage({
     content: ",fg create Nope",
     roles: [{ id: ROLE_ID }],
+    canManageServer: false,
   });
 
-  await handlePrefixMessage(message, config.store);
+  await handlePrefixMessage(created.message, config.store);
 
   assert.deepEqual(config.getSettings().fgRoleOwners, {});
-  assert.match(
-    sentTextOf(sent[0]),
-    /Only the server owner, administrators, or whitelisted members can create FG roles/i,
-  );
+  // No reply at all — not even an error embed. The user's command
+  // message is still deleted, as with every other prefix command.
+  assert.deepEqual(created.sent, []);
+  assert.equal(created.commandDeleted, true);
 });
 
-test(",help for a Manage Server member shows FG only, with prefix syntax", async () => {
+test(",help for a Manage Server member shows what everyone sees, with prefix syntax", async () => {
+  // Manage Server alone grants nothing in help: a member with it (but
+  // no staff admin role and not whitelisted) sees exactly what a plain
+  // member sees — the FG category with the no-FG-role note, no Guard,
+  // no Blacklist, and no fg base / fg cleanup / fg list. (The mock
+  // member has Manage Server by default.)
   const config = createStore();
 
   const main = createMessage({ content: ",help" });
@@ -1040,28 +1090,29 @@ test(",help for a Manage Server member shows FG only, with prefix syntax", async
   const mainText = mainFields
     .map((field) => `${field.name}\n${field.value}`)
     .join("\n");
-  // Manage Server alone sees base, list, and cleanup — nothing else.
-  assert.match(mainText, /3 commands/);
+  assert.match(mainText, /don't have an FG role yet/i);
+  assert.doesNotMatch(mainText, /commands/);
   assert.doesNotMatch(mainText, /\|/);
   assert.doesNotMatch(mainText, /Guard|Blacklist/);
+  assert.doesNotMatch(mainText, /fg base|fg cleanup|fg list/i);
 
   const fg = createMessage({ content: ",help fg" });
   await handlePrefixMessage(fg.message, config.store);
   const fgEmbed = fg.sent[0].embeds?.[0].toJSON();
   assert.equal(fgEmbed?.title, "Help - FG");
+  assert.match(
+    (fgEmbed?.description as string | undefined) ?? "",
+    /don't have an FG role yet/i,
+  );
   const fgFields = (fgEmbed?.fields ?? []) as {
     name: string;
     value: string;
   }[];
+  assert.equal(fgFields.length, 0);
   const fgText = fgFields
     .map((field) => `${field.name}\n${field.value}`)
     .join("\n");
-  assert.deepEqual(
-    fgFields.map((field) => field.name),
-    ["`,fg base @role`", "`,fg list`", "`,fg cleanup`"],
-  );
-  assert.doesNotMatch(fgText, /\/fg create/);
-  assert.doesNotMatch(fgText, /\/blacklist/);
+  assert.doesNotMatch(fgText, /fg base|fg cleanup|fg list/i);
 
   // fg create is owner-or-whitelisted only, so this member gets the
   // short error, never the syntax.
@@ -1070,10 +1121,12 @@ test(",help for a Manage Server member shows FG only, with prefix syntax", async
   assert.equal(create.sent[0].embeds?.length, 1);
   assert.equal(sentTextOf(create.sent[0]), "You can't use that command.");
 
-  // fg base is Manage Server, so this member CAN see it.
+  // fg base is owner-or-staff-admin only now, so a Manage Server
+  // member gets the short error too — they can no longer see it.
   const guarded = createMessage({ content: ",help fg base" });
   await handlePrefixMessage(guarded.message, config.store);
-  assert.equal(guarded.sent[0].embeds?.[0].toJSON().title, "fg base");
+  assert.equal(guarded.sent[0].embeds?.length, 1);
+  assert.equal(sentTextOf(guarded.sent[0]), "You can't use that command.");
 
   const unknown = createMessage({ content: ",help nonsense" });
   await handlePrefixMessage(unknown.message, config.store);
@@ -1108,7 +1161,13 @@ test(",help for a whitelisted user shows all categories, prefix syntax", async (
   const fgText = fgFields
     .map((field) => `${field.name}\n${field.value}`)
     .join("\n");
-  assert.match(fgText, /,fg base @role/);
+  // fg base and fg cleanup are owner-or-staff-admin only in help now:
+  // Manage Server alone (which this member has) grants nothing there,
+  // so a whitelisted member sees the other 9 FG commands, not these.
+  assert.doesNotMatch(fgText, /,fg base @role/);
+  assert.doesNotMatch(fgText, /,fg cleanup/);
+  assert.match(fgText, /,fg list/);
+  assert.match(fgText, /,fg create/);
   assert.doesNotMatch(fgText, /\/fg base/);
 });
 

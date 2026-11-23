@@ -28,7 +28,7 @@ import {
   isWhitelisted,
 } from "./authorization.js";
 import { memberDisplayName, roleDisplayName, roleMention } from "./names.js";
-import { WILD_ERROR_REPLY, WILD_KEEP_REPLY } from "./reply.js";
+import { WILD_ERROR_REPLY, WILD_KEEP_REPLY, ignoreUnauthorized } from "./reply.js";
 
 /**
  * FG roles, Bleed booster-role style.
@@ -391,31 +391,51 @@ async function replyText(
 }
 
 function hasManageServer(interaction: ChatInputCommandInteraction): boolean {
-  // checkAdmin = false: discord.js `PermissionsBitField.has` returns
-  // true for a member with the Administrator permission by default, and
-  // an Administrator without an admin role is an ordinary member here —
-  // they must not pass through the Manage Server bit.
+  // Discord sends the member's *effective* permissions in the slash
+  // interaction payload, and ADMINISTRATOR expands to ALL permissions
+  // there — so `has(ManageGuild, false)` is TRUE for any Administrator
+  // on the slash path, even though checkAdmin=false. (The checkAdmin
+  // defence only works against GuildMember.permissions, which holds
+  // literal role bits — the payload does not.) A raw Administrator
+  // must never pass through the Manage Server bit, so exclude them
+  // explicitly. The same conjunction works on the prefix path, where
+  // the fake interaction carries the member's literal role bits
+  // (Administrator is just the 0x8 bit there, so ManageGuild is false
+  // already). Literal Manage Server without Administrator is still a
+  // staff signal.
   try {
+    const permissions = interaction.memberPermissions;
+    if (!permissions) return false;
     return Boolean(
-      interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild, false),
+      permissions.has(PermissionFlagsBits.ManageGuild, false) &&
+        !permissions.has(PermissionFlagsBits.Administrator, false),
     );
   } catch {
     return false;
   }
 }
 
+/**
+ * Gate for /fg base and /fg cleanup: the server owner, a holder of one
+ * of the six staff admin roles, or a member with literal Manage Server.
+ * The Discord Administrator permission alone grants nothing (see
+ * hasManageServer). Fetch the member fresh: a cached member could still
+ * show a staff admin role that was already removed. (Whitelisted
+ * members are NOT admitted here — help shows fg base and fg cleanup
+ * to owner/admin only, and the handler matches.)
+ *
+ * An authorisation failure is SILENTLY IGNORED — no reply at all, not
+ * even an ephemeral error (see ignoreUnauthorized). The gate is still
+ * enforced server-side: ignoring is reply-only and nothing happens.
+ */
 async function requireManageServer(
   interaction: ChatInputCommandInteraction,
 ): Promise<boolean> {
-  // Bot admins are the server owner or a holder of one of the six staff
-  // admin roles — the Discord Administrator permission alone grants
-  // nothing. Fetch the member fresh: a cached member could still show
-  // a staff admin role that was already removed.
   const guild = interaction.guild!;
   const member = await fetchMemberFresh(guild, interaction.user.id);
   if (member && isBotAdmin(member, guild.ownerId)) return true;
   if (hasManageServer(interaction)) return true;
-  await replyText(interaction, "You need Manage Server for that.");
+  await ignoreUnauthorized(interaction);
   return false;
 }
 
@@ -729,12 +749,12 @@ async function requireFgCreator(
   }
   // Wild rule: eligibility is being whitelisted (or the server owner
   // or a staff admin), not boosting. Bleed gates this on boosting
-  // instead.
+  // instead. An authorisation failure is silently ignored — no reply
+  // at all, not even an ephemeral error (see ignoreUnauthorized). The
+  // gate is still enforced server-side: ignoring is reply-only and
+  // nothing happens.
   if (!isBotAdmin(member, guild.ownerId) && !isWhitelisted(member, settings)) {
-    await replyText(
-      interaction,
-      "Only the server owner, administrators, or whitelisted members can create FG roles.",
-    );
+    await ignoreUnauthorized(interaction);
     return null;
   }
   return member;
@@ -1188,6 +1208,11 @@ async function handleListCommand(
   const settings = store.get(guild.id);
   // Fresh fetch: a cached member could still show an admin role
   // or whitelisted role that was already removed.
+  // NOTE: /fg list is deliberately NOT part of the silent-ignore rule
+  // (its authorisation failure still replies with this error), and it
+  // is gated to owner / staff admin / Manage Server / whitelisted —
+  // it is not open to everyone. If /fg list is meant to be open to
+  // everyone, that is a separate change to this gate and to help.
   const member = await fetchMemberFresh(guild, interaction.user.id);
   if (
     !isBotAdmin(member, guild.ownerId) &&
@@ -1469,16 +1494,32 @@ async function handleAuthCommand(
     await replyText(interaction, "You need to be a member of this server first.");
     return;
   }
+  // Authorisation first, before resolving which role this is about:
+  // the caller must be the server owner, a staff admin, whitelisted,
+  // or own an FG role — otherwise they cannot auth for any role, and
+  // the failure is silently ignored (no reply at all, not even an
+  // ephemeral error — see ignoreUnauthorized). The gate is still
+  // enforced server-side: ignoring is reply-only and nothing happens.
+  // Functional errors below (that role isn't an FG role, a target who
+  // already shares it, ...) still reply as before.
+  const ownsAnyFgRole = Object.values(settings.fgRoleOwners ?? {}).includes(
+    member.id,
+  );
+  if (
+    !isBotAdmin(member, guild.ownerId) &&
+    !isWhitelisted(member, settings) &&
+    !ownsAnyFgRole
+  ) {
+    await ignoreUnauthorized(interaction);
+    return;
+  }
   const role = await resolveAuthRole(interaction, member, settings, action);
   if (!role) return;
   if (
     !isBotAdmin(member, guild.ownerId) &&
     !canAuthFgRole(member, role.id, settings)
   ) {
-    await replyText(
-      interaction,
-      "Only the FG role owner, the server owner, administrators, or whitelisted members can do that.",
-    );
+    await ignoreUnauthorized(interaction);
     return;
   }
 

@@ -756,9 +756,14 @@ test("no help page, category, or entry contains an emoji or a usage wall", () =>
 });
 
 // Admin help is the server owner or a holder of one of the six staff
-// admin roles. The Discord Administrator permission alone grants
-// nothing — including through the Manage Server bit, which discord.js
-// would otherwise imply from Administrator.
+// admin roles. Discord permissions grant NOTHING in help — not even
+// Manage Server: a member with the Discord Administrator permission
+// (or Manage Server) who is not the owner, holds no staff admin role,
+// and is not whitelisted sees exactly what a plain member sees.
+// (Discord sends the member's *effective* permissions in the
+// interaction payload, and ADMINISTRATOR expands to ALL permissions
+// there, so any permission check would leak fg base, fg cleanup, and
+// fg list to them — that is how the leak in his screenshot happened.)
 
 function helpMember(roleIds: string[]): unknown {
   return {
@@ -773,11 +778,30 @@ function helpMember(roleIds: string[]): unknown {
   };
 }
 
+/**
+ * A Discord-Admin-only member: no staff admin role, not whitelisted,
+ * but carrying a real expanded Administrator bitfield — exactly what
+ * Discord sends in the interaction payload for a Discord
+ * Administrator. Help must ignore those permissions entirely.
+ */
+function adminOnlyMember(roleIds: string[] = []): unknown {
+  return {
+    id: "222222222222222222",
+    permissions: new PermissionsBitField(PermissionsBitField.All),
+    roles: {
+      cache: {
+        has: (roleId: string) => roleIds.includes(roleId),
+        some: (predicate: (role: { id: string }) => boolean) =>
+          roleIds.some((roleId) => predicate({ id: roleId })),
+      },
+    },
+  };
+}
+
 test("computeHelpCapabilities: each of the six staff admin roles grants admin help", () => {
   for (const roleId of ADMIN_ROLE_IDS) {
     const caps = computeHelpCapabilities(
       helpMember([roleId]),
-      new PermissionsBitField(),
       "999999999999999999",
       null,
     );
@@ -788,8 +812,7 @@ test("computeHelpCapabilities: each of the six staff admin roles grants admin he
 
 test("computeHelpCapabilities: the Discord Administrator permission alone grants no admin help", () => {
   const caps = computeHelpCapabilities(
-    helpMember([]),
-    new PermissionsBitField(PermissionFlagsBits.Administrator),
+    adminOnlyMember(),
     "999999999999999999",
     null,
   );
@@ -799,22 +822,130 @@ test("computeHelpCapabilities: the Discord Administrator permission alone grants
   assert.equal(caps.manageServer, false);
 });
 
-test("computeHelpCapabilities: the server owner is an admin, and real Manage Server still counts", () => {
+test("computeHelpCapabilities: the server owner is an admin, and real Manage Server alone grants nothing", () => {
   const ownerCaps = computeHelpCapabilities(
     { id: "999999999999999999", roles: { cache: { has: () => false, some: () => false } } },
-    new PermissionsBitField(),
     "999999999999999999",
     null,
   );
   assert.equal(ownerCaps.admin, true);
   assert.equal(ownerCaps.privileged, true);
 
+  // A member with literal Manage Server — but no staff admin role and
+  // not whitelisted — gets nothing in help: manageServer is owner or
+  // staff admin role only, never derived from Discord permissions.
+  // (Their permissions bitfield is ignored entirely, so it is modelled
+  // with a real expanded ManageGuild bitfield here.)
   const managerCaps = computeHelpCapabilities(
-    helpMember([]),
-    new PermissionsBitField(PermissionFlagsBits.ManageGuild),
+    {
+      id: "222222222222222222",
+      permissions: new PermissionsBitField(PermissionFlagsBits.ManageGuild),
+      roles: { cache: { has: () => false, some: () => false } },
+    },
     "999999999999999999",
     null,
   );
   assert.equal(managerCaps.admin, false);
-  assert.equal(managerCaps.manageServer, true);
+  assert.equal(managerCaps.privileged, false);
+  assert.equal(managerCaps.manageServer, false);
+});
+
+test("a Discord-Admin-only member's help is identical to a plain member's help", () => {
+  // Same member id, same (empty) settings: the only difference is the
+  // expanded Administrator bitfield, which help must ignore.
+  const settings = makeSettings();
+  const adminCaps = computeHelpCapabilities(
+    adminOnlyMember(),
+    "999999999999999999",
+    settings,
+  );
+  const plainCaps = computeHelpCapabilities(
+    helpMember([]),
+    "999999999999999999",
+    settings,
+  );
+  assert.deepEqual(adminCaps, plainCaps);
+
+  for (const mode of ["slash", "prefix"] as const) {
+    for (const topic of [null, "fg"] as const) {
+      const adminResult = resolveHelpTopic(topic, { caps: adminCaps, mode });
+      const plainResult = resolveHelpTopic(topic, { caps: plainCaps, mode });
+      assert.equal(adminResult.kind, "embed", `${mode} ${topic}`);
+      assert.equal(plainResult.kind, "embed", `${mode} ${topic}`);
+      if (adminResult.kind !== "embed" || plainResult.kind !== "embed") {
+        continue;
+      }
+      assert.deepEqual(
+        adminResult.page,
+        plainResult.page,
+        `${mode} ${topic} must be identical`,
+      );
+    }
+    // No admin FG commands anywhere: no fg base, no fg cleanup, no
+    // fg list — just the FG category with the no-FG-role note.
+    const main = resolveHelpTopic(null, { caps: adminCaps, mode });
+    assert.equal(main.kind, "embed");
+    if (main.kind === "embed") {
+      assert.deepEqual(
+        main.page.fields.map((field) => field.name),
+        ["FG"],
+      );
+      assert.equal(main.page.fields[0]?.value, NO_FG_ROLE_NOTE);
+      assert.doesNotMatch(fieldTextFromPage(main.page), /fg base/i);
+      assert.doesNotMatch(fieldTextFromPage(main.page), /fg cleanup/i);
+      assert.doesNotMatch(fieldTextFromPage(main.page), /fg list/i);
+      assert.doesNotMatch(fieldTextFromPage(main.page), /Guard|Blacklist/);
+    }
+    const fg = resolveHelpTopic("fg", { caps: adminCaps, mode });
+    assert.equal(fg.kind, "embed");
+    if (fg.kind === "embed") {
+      assert.equal(fg.page.description, NO_FG_ROLE_NOTE);
+      assert.doesNotMatch(fieldTextFromPage(fg.page), /fg base/i);
+      assert.doesNotMatch(fieldTextFromPage(fg.page), /fg cleanup/i);
+      assert.doesNotMatch(fieldTextFromPage(fg.page), /fg list/i);
+    }
+  }
+});
+
+test("a Discord-Admin-only member holding an FG role sees exactly what a plain holder sees", () => {
+  const FG_ROLE_ID = "666666666666666666";
+  const OTHER_ID = "333333333333333333";
+  const settings = makeSettings({
+    fgRoleOwners: { [FG_ROLE_ID]: OTHER_ID },
+    fgRoleSharers: { [FG_ROLE_ID]: ["222222222222222222"] },
+  });
+  const adminCaps = computeHelpCapabilities(
+    adminOnlyMember([FG_ROLE_ID]),
+    "999999999999999999",
+    settings,
+  );
+  const plainCaps = computeHelpCapabilities(
+    helpMember([FG_ROLE_ID]),
+    "999999999999999999",
+    settings,
+  );
+  assert.deepEqual(adminCaps, plainCaps);
+  // Same as a plain holder: can drop, see members, and share — and
+  // nothing admin (no fg base, no fg cleanup, no fg list).
+  assert.equal(adminCaps.holdsFgRole, true);
+  assert.equal(adminCaps.listedSharer, true);
+  assert.equal(adminCaps.manageServer, false);
+  assert.equal(adminCaps.privileged, false);
+
+  for (const mode of ["slash", "prefix"] as const) {
+    for (const topic of [null, "fg"] as const) {
+      const adminResult = resolveHelpTopic(topic, { caps: adminCaps, mode });
+      const plainResult = resolveHelpTopic(topic, { caps: plainCaps, mode });
+      assert.equal(adminResult.kind, "embed", `${mode} ${topic}`);
+      assert.equal(plainResult.kind, "embed", `${mode} ${topic}`);
+      if (adminResult.kind !== "embed" || plainResult.kind !== "embed") {
+        continue;
+      }
+      assert.deepEqual(
+        adminResult.page,
+        plainResult.page,
+        `${mode} ${topic} must be identical`,
+      );
+    }
+  }
 });

@@ -5,6 +5,7 @@ import {
   ChatInputCommandInteraction,
   EmbedBuilder,
   PermissionFlagsBits,
+  PermissionsBitField,
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
 import { handleFgCommand, parseFgColor } from "./fg-booster.js";
@@ -314,8 +315,19 @@ function createInteraction(options: {
   roleId?: string;
   memberId?: string;
   strings?: Record<string, string>;
+  /**
+   * Real PermissionsBitField to use as memberPermissions, instead of
+   * the literal-bit mock. Use a real expanded bitfield
+   * (PermissionsBitField.All) to model what Discord actually sends in
+   * the interaction payload for a Discord Administrator.
+   */
+  memberPermissionsOverride?: PermissionsBitField;
 }) {
   const replies: Reply[] = [];
+  // Silent-ignore bookkeeping: the defer+delete calls the ignore path
+  // makes on a real slash interaction (no error reply).
+  const defers: Array<{ ephemeral?: boolean }> = [];
+  const deletes: number[] = [];
   const offerEdits: Reply[] = [];
   const collectorHandlers: Record<string, Array<(...args: unknown[]) => unknown>> = {};
   const collector = {
@@ -334,13 +346,14 @@ function createInteraction(options: {
     commandName: "fg",
     guildId: GUILD_ID,
     user: { id: options.userId ?? MEMBER_ID, username: "Alex" },
-    memberPermissions: {
-      has: (permission: bigint) =>
-        (permission === PermissionFlagsBits.Administrator &&
-          (options.isAdmin ?? false)) ||
-        (permission === PermissionFlagsBits.ManageGuild &&
-          (options.canManageServer ?? true)),
-    },
+    memberPermissions:
+      options.memberPermissionsOverride ?? {
+        has: (permission: bigint) =>
+          (permission === PermissionFlagsBits.Administrator &&
+            (options.isAdmin ?? false)) ||
+          (permission === PermissionFlagsBits.ManageGuild &&
+            (options.canManageServer ?? true)),
+      },
     options: {
       getSubcommandGroup: () => options.group ?? null,
       getSubcommand: () => options.action,
@@ -354,6 +367,12 @@ function createInteraction(options: {
     reply: async (reply: Reply) => {
       replies.push(reply);
     },
+    deferReply: async (deferOptions: { ephemeral?: boolean }) => {
+      defers.push(deferOptions);
+    },
+    deleteReply: async () => {
+      deletes.push(1);
+    },
     // Share offers and the remove confirmation call fetchReply() to
     // start a button collector. The fake collector records its handlers
     // so tests can fire button presses and timeouts at will.
@@ -365,7 +384,7 @@ function createInteraction(options: {
       createMessageComponentCollector: () => collector,
     }),
   } as unknown as ChatInputCommandInteraction;
-  return { interaction, replies, collector, offerEdits };
+  return { interaction, replies, collector, offerEdits, defers, deletes };
 }
 
 function withGuild(
@@ -896,12 +915,16 @@ test("/fg create uses the default color when the avatar can't be read", async ()
   assert.match(replyTextOf(replies[0]), /My FG is your FG role now/i);
 });
 
-test("/fg create rejects a non-whitelisted member", async () => {
+test("/fg create by a non-whitelisted member is silently ignored", async () => {
+  // An authorisation failure sends NO reply at all — not even an
+  // ephemeral error. Slash interactions are deferred ephemerally and
+  // the deferred reply deleted, so the user briefly sees "thinking"
+  // and then nothing.
   const config = createStore(makeSettings({ fgBaseRoleId: BASE_ROLE_ID }));
   const { guild, createdRoles } = createGuild({
     roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, deletes } = createInteraction({
     action: "create",
     strings: { name: "Nope" },
   });
@@ -909,10 +932,9 @@ test("/fg create rejects a non-whitelisted member", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(createdRoles.length, 0);
-  assert.match(
-    replyTextOf(replies[0]),
-    /Only the server owner, administrators, or whitelisted members can create FG roles/i,
-  );
+  assert.deepEqual(replies, []);
+  assert.deepEqual(defers, [{ ephemeral: true }]);
+  assert.equal(deletes.length, 1);
 });
 
 test("/fg create rejects a second FG role for the same target", async () => {
@@ -939,7 +961,7 @@ test("/fg create rejects a second FG role for the same target", async () => {
     // The target owns the role and actually holds it in the guild.
     memberRoleIds: { [OTHER_ID]: [FG_ROLE_ID] },
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers } = createInteraction({
     action: "create",
     memberId: OTHER_ID,
     strings: { name: "Second FG" },
@@ -948,6 +970,9 @@ test("/fg create rejects a second FG role for the same target", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(createdRoles.length, 0);
+  // A functional error still replies — only authorisation failures
+  // are silently ignored.
+  assert.deepEqual(defers, []);
   assert.match(replyTextOf(replies[0]), /already have an FG role/i);
 });
 
@@ -1261,12 +1286,12 @@ test("/fg add does not register the role when giving it fails", async () => {
   assert.match(replyTextOf(replies[0]), /Manage Roles/i);
 });
 
-test("/fg add refuses a non-whitelisted member", async () => {
+test("/fg add by a non-whitelisted member is silently ignored", async () => {
   const config = createStore(makeSettings({ fgBaseRoleId: BASE_ROLE_ID }));
   const { guild, addedByMember } = createGuild({
     roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), makeRole(EXISTING_ROLE_ID, "Old Role", 8)],
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, deletes } = createInteraction({
     action: "add",
     roleId: EXISTING_ROLE_ID,
     memberId: OTHER_ID,
@@ -1276,10 +1301,9 @@ test("/fg add refuses a non-whitelisted member", async () => {
 
   assert.deepEqual(config.getSettings().fgRoleOwners, {});
   assert.deepEqual(addedByMember.get(OTHER_ID) ?? [], []);
-  assert.match(
-    replyTextOf(replies[0]),
-    /Only the server owner, administrators, or whitelisted members can create FG roles/i,
-  );
+  assert.deepEqual(replies, []);
+  assert.deepEqual(defers, [{ ephemeral: true }]);
+  assert.equal(deletes.length, 1);
 });
 
 test("/fg rename only works on your own FG role", async () => {
@@ -1582,11 +1606,10 @@ test("/fg auth add works for whitelisted staff and rejects a random member", asy
   await handleFgCommand(withGuild(guild, random.interaction), config.store);
   // OTHER_ID was just authed in the first half, so they CAN share the
   // role and auto-detection succeeds — but sharing is not authing:
-  // the auth gate still rejects them.
-  assert.match(
-    replyTextOf(random.replies[0]),
-    /Only the FG role owner, the server owner, administrators, or whitelisted members/i,
-  );
+  // the auth gate still rejects them, silently (no reply at all).
+  assert.deepEqual(random.replies, []);
+  assert.deepEqual(random.defers, [{ ephemeral: true }]);
+  assert.equal(random.deletes.length, 1);
   assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
 });
 
@@ -2045,7 +2068,7 @@ test("/fg auth add by a staff admin works without being whitelisted", async () =
   assert.match(replyTextOf(replies[0]), /can now share/i);
 });
 
-test("/fg base by a staff admin works via the Manage Server gate", async () => {
+test("/fg base by a staff admin works via the staff admin role", async () => {
   const config = createStore();
   const { guild } = createGuild({
     roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
@@ -2063,24 +2086,191 @@ test("/fg base by a staff admin works via the Manage Server gate", async () => {
   assert.match(replyTextOf(replies[0]), /base role/i);
 });
 
-test("/fg base by a Discord Administrator without an admin role is refused", async () => {
-  // The Discord Administrator permission alone grants nothing: without
-  // an admin role and without Manage Server, the gate refuses them.
+test("/fg base by a Discord Administrator is silently ignored (real expanded payload)", async () => {
+  // The key regression test for the payload-expansion leak: Discord
+  // sends the member's *effective* permissions in the interaction
+  // payload, and ADMINISTRATOR expands to ALL permissions there — so
+  // a literal-bit mock would not catch a has(ManageGuild) leak. A real
+  // PermissionsBitField.All models the production payload: the old
+  // hasManageServer would have let this through and set the base.
   const config = createStore();
   const { guild } = createGuild({
     roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers, deletes } = createInteraction({
     action: "base",
     roleId: BASE_ROLE_ID,
+    memberPermissionsOverride: new PermissionsBitField(
+      PermissionsBitField.All,
+    ),
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(config.getSettings().fgBaseRoleId, null);
+  assert.deepEqual(replies, []);
+  assert.deepEqual(defers, [{ ephemeral: true }]);
+  assert.equal(deletes.length, 1);
+});
+
+test("/fg base by a literal Manage Server holder works", async () => {
+  // The Administrator exclusion must not break the real Manage Server
+  // path: a member with literal Manage Server (and no Administrator)
+  // still passes. Modelled with a real bitfield, as Discord sends it.
+  const config = createStore();
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  });
+  const { interaction, replies, defers } = createInteraction({
+    action: "base",
+    roleId: BASE_ROLE_ID,
+    memberPermissionsOverride: new PermissionsBitField(
+      PermissionFlagsBits.ManageGuild,
+    ),
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(config.getSettings().fgBaseRoleId, BASE_ROLE_ID);
+  assert.deepEqual(defers, []);
+  assert.match(replyTextOf(replies[0]), /base role/i);
+});
+
+test("/fg auth add by a non-whitelisted admin with no FG role is silently ignored", async () => {
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const { guild } = createGuild({ roles: [makeRole(FG_ROLE_ID, "My FG", 9)] });
+  const { interaction, replies, defers, deletes } = createInteraction({
+    group: "auth",
+    action: "add",
+    userId: OTHER_ID,
+    memberId: MEMBER_ID,
     isAdmin: true,
     canManageServer: false,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(config.getSettings().fgBaseRoleId, null);
-  assert.match(replyTextOf(replies[0]), /need Manage Server/i);
+  assert.deepEqual(config.getSettings().fgRoleSharers, {});
+  assert.deepEqual(replies, []);
+  assert.deepEqual(defers, [{ ephemeral: true }]);
+  assert.equal(deletes.length, 1);
+});
+
+test("/fg auth add by a non-whitelisted admin who owns an FG role works", async () => {
+  // FG-owner access is not admin access: a Discord Administrator who
+  // owns an FG role can still auth for their OWN role.
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const { guild } = createGuild({ roles: [makeRole(FG_ROLE_ID, "My FG", 9)] });
+  const { interaction, replies, defers } = createInteraction({
+    group: "auth",
+    action: "add",
+    userId: MEMBER_ID,
+    memberId: OTHER_ID,
+    isAdmin: true,
+    canManageServer: false,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
+  assert.deepEqual(defers, []);
+  assert.match(replyTextOf(replies[0]), /Sam can now share My FG/i);
+});
+
+test("/fg list by a non-whitelisted admin still replies with the error (not ignored)", async () => {
+  // SCOPE BOUNDARY: /fg list is deliberately NOT part of the
+  // silent-ignore rule — its authorisation failure still replies.
+  // NOTE: the handler also still GATES /fg list (owner / staff admin
+  // / Manage Server / whitelisted only), so a non-whitelisted admin
+  // does not see the list. If /fg list is meant to be open to
+  // everyone, that is a separate change to this gate and to help.
+  const config = createStore(
+    makeSettings({ fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID } }),
+  );
+  const { guild } = createGuild({ roles: [makeRole(FG_ROLE_ID, "My FG", 9)] });
+  const { interaction, replies, defers } = createInteraction({
+    action: "list",
+    userId: OTHER_ID,
+    isAdmin: true,
+    canManageServer: false,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.deepEqual(defers, []);
+  assert.match(
+    replyTextOf(replies[0]),
+    /Only Manage Server members or whitelisted members can list FG roles/i,
+  );
+});
+
+test("/fg share by a non-whitelisted admin who owns an FG role works", async () => {
+  // FG-owner access is not admin access: a Discord Administrator who
+  // owns an FG role can still share it.
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const targetId = "444444444444444444";
+  const { guild, getMember } = createGuild({
+    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
+    memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
+  });
+  const { interaction, replies, defers, collector } = createInteraction({
+    action: "share",
+    userId: MEMBER_ID,
+    memberId: targetId,
+    isAdmin: true,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  // The offer goes out (not ignored): one reply, no defer.
+  assert.equal(replies.length, 1);
+  assert.deepEqual(defers, []);
+  assert.equal(replies[0].content, `<@${targetId}>`);
+
+  const yes = makeButton("fg-share:yes", targetId);
+  await collector.fireCollect(yes);
+
+  assert.match(buttonTextOf(yes), /accepted/i);
+  assert.equal(
+    (getMember(targetId)!.roles as { cache: { has: (id: string) => boolean } }).cache.has(FG_ROLE_ID),
+    true,
+  );
 });
 
 const SECOND_FG_ROLE_ID = "777777777777777777";
@@ -2785,7 +2975,7 @@ test("/fg create refuses a target who holds a shared FG role", async () => {
     roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), makeRole(FG_ROLE_ID, "My FG", 9)],
     memberRoleIds: { [OTHER_ID]: [FG_ROLE_ID] },
   });
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, defers } = createInteraction({
     action: "create",
     memberId: OTHER_ID,
     strings: { name: "Second FG" },
@@ -2794,5 +2984,8 @@ test("/fg create refuses a target who holds a shared FG role", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(createdRoles.length, 0);
+  // A functional error still replies — only authorisation failures
+  // are silently ignored.
+  assert.deepEqual(defers, []);
   assert.match(replyTextOf(replies[0]), /already have an FG role/i);
 });

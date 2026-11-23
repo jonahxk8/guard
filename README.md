@@ -47,13 +47,37 @@ their buttons expire (5 minutes).
 
 Administrator roles can never be protected or assigned through the bot.
 The server owner and holders of the six staff admin roles can use the
-bot fully, exactly like each other. All commands need Manage
-Server, except `/fg create`, `/fg rename`, `/fg icon`,
-`/fg remove`, and `/fg share`, which any whitelisted member (or the
-server owner or a staff admin) can use, and `/fg color`, which anyone
-who owns an FG role can use. `/fg create` needs an FG base role set
-first. `/blacklist list` can also be used by whitelisted
-members; `/blacklist add` and `/blacklist remove` need Manage Server.
+bot fully, exactly like each other. Who can use what: the guard
+commands (`/protect`, `/whitelist`, `/status`, `/setup`,
+`/blacklist add`, `/blacklist remove`, `/blacklist list`) need the
+server owner, a staff admin role, a whitelisted member, or literal
+Manage Server. `/fg base` and `/fg cleanup` need the server owner, a
+staff admin role, or literal Manage Server. `/fg list` needs the
+server owner, a staff admin role, a whitelisted member, or literal
+Manage Server. `/fg create` and `/fg add` need the server owner, a
+staff admin role, or a whitelisted member. `/fg color` needs an FG
+role of your own. `/fg rename`, `/fg icon`, `/fg remove`,
+`/fg share`, `/fg drop`, `/fg members`, and `/fg auth` work on your
+own FG role (or one you can share). The Discord Administrator
+permission alone grants nothing anywhere — see \"Who is an admin\"
+below.
+
+### Silent ignore
+
+When someone who is not allowed uses an admin command, the bot sends
+no reply at all — not even an ephemeral error. On slash it briefly
+shows \"thinking\" (it defers, then deletes the deferred reply) and
+then nothing; on prefix it simply never replies, and your command
+message is still deleted as usual. This covers only authorisation
+failures on admin commands (`/protect`, `/whitelist`, `/status`,
+`/setup`, `/blacklist`, `/fg base`, `/fg create`, `/fg add`,
+`/fg cleanup`, `/fg auth`). Functional errors still reply as before
+(wrong usage, \"you don't have an FG role\", \"that role isn't an FG
+role\", \"that member already has an FG role\", ...), and FG-owner
+commands used by someone who qualifies for them still work — a
+non-whitelisted admin who owns an FG role can still `/fg share` /
+`/fg color` / `/fg auth` for their own role. Ignoring is reply-only:
+the gates are still enforced server-side and nothing happens.
 
 ## Who is an admin
 
@@ -71,7 +95,8 @@ Those roles grant admin access wherever they exist. A server without
 them has owner-only admin access. The Discord Administrator permission
 alone grants nothing — a member with Administrator but no staff admin
 role (and not the owner) is an ordinary member: their unauthorised
-grants are reverted, and they see only the plain-member help. There is
+grants are reverted, they are silently ignored on admin commands (see
+\"Silent ignore\" above), and they see only the plain-member help. There is
 no command to change the six roles (a future option).
 
 ## Commands
@@ -91,7 +116,7 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
   alerts off. The prefix is `,logchannel`, not `,setup`, because
   Greed owns `,setup`.
 - `/fg base @role` / `,fg base @role` — set the base role FG roles sit
-  under (Manage Server).
+  under (owner, staff admin, or Manage Server).
 - `/fg color <color> [second_color]` / `,fg color <color> [second_color]` —
   recolor your own FG role. One hex = solid, two = gradient, separated
   by a space or a comma. Colors are hex codes only: `#rrggbb`, `rrggbb`,
@@ -130,9 +155,10 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
   owner first, plain names, one per line (25 max with a "+N more"
   line). The role is worked out from you, like `/fg share`.
 - `/fg list` / `,fg list` — list all FG roles and their owners, one
-  line per role: the role itself, then the owner's name.
+  line per role: the role itself, then the owner's name (owner, staff
+  admin, whitelisted, or Manage Server).
 - `/fg cleanup` / `,fg cleanup` — remove FG roles whose owners left
-  the server.
+  the server (owner, staff admin, or Manage Server).
 - `/fg share @member` / `,fg share @member` — offer an FG role to a
   member (see "Sharing FG roles" below). The role is picked for you:
   your own FG role first, otherwise the one FG role you can share.
@@ -149,11 +175,13 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
   an FG role, owner first (same gate as auth add). The role is optional:
   leave it out and the bot uses your FG role.
 - `/blacklist add @user @role` / `,blacklist add @user @role` —
-  blacklist a member from a protected role (Manage Server).
+  blacklist a member from a protected role (owner, staff admin,
+  whitelisted, or Manage Server).
 - `/blacklist remove @user @role` / `,blacklist remove @user @role` —
-  unblacklist them (Manage Server).
+  unblacklist them (owner, staff admin, whitelisted, or Manage Server).
 - `/blacklist list` / `,blacklist list` — list the blacklist, 10 users
-  per page with Prev/Next buttons (Manage Server or whitelisted).
+  per page with Prev/Next buttons (owner, staff admin, whitelisted, or
+  Manage Server).
 - `/help` / `,help` — show all commands, grouped by category.
   `/help fg` (or `,help fg`) shows one category; `/help fg create`
   shows just that command. A bare `,fg` or `,blacklist` just points at
@@ -168,15 +196,23 @@ forms, `,help` shows prefix forms. Each command is one field: the
 syntax in backticks, then a short purpose line. There are no "Who:"
 lines — help only ever shows the commands *you* can actually use,
 worked out from your roles, your FG roles, and whether you are
-whitelisted or an admin. If you cannot use a command, it is not on
+whitelisted or an admin. Discord permissions never count: a member
+with the Discord Administrator permission (or Manage Server) who is
+not the owner, holds no staff admin role, and is not whitelisted sees
+exactly what a plain member sees. If you cannot use a command, it is not on
 your menu at all.
 
 Who sees what: the server owner, holders of a staff admin role,
 and whitelisted users / roles see the full menu (Guard, FG,
-Blacklist). An FG owner sees only FG — their own role's commands
+Blacklist). A member with the Discord Administrator permission but no
+staff admin role and not whitelisted sees exactly what a plain member
+sees — the FG category with the no-FG-role note when they hold no FG
+role, no Guard, no Blacklist, and no fg base / fg cleanup / fg list;
+if they hold an FG role or are a listed sharer, they see exactly what
+a plain member holding that FG role sees, nothing more. An FG owner sees only FG — their own role's commands
 (rename, icon, remove, drop), sharing, members, and auth. Someone
 holding a shared FG role sees FG share, FG drop, and FG members;
-someone authed to share one sees FG share and FG holders. A normal member with no FG
+someone authed to share one sees FG share and FG members. A normal member with no FG
 role sees the FG category with the note "You don't have an FG role
 yet — ask an admin or whitelisted member to create one for you." and no
 commands they can't touch. Asking for a command you can't use gets
@@ -242,7 +278,9 @@ your `,` command message is deleted after handling (best-effort), and
 error replies auto-delete after 10 seconds (best-effort). Success
 replies stay. Every reply is an embed, in the same colorless style as
 the slash replies. If you need invisible errors, use the slash versions
-instead.
+instead. Unauthorised use of an admin `,` command gets no reply at
+all (see \"Silent ignore\" above) — the command message is still
+deleted.
 
 Unknown `,` commands get no reply at all — the bot stays silent, so
 it never spams errors and never deletes a message that belongs to

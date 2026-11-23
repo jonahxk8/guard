@@ -19,7 +19,7 @@ import {
   roleDisplayName,
   roleMention,
 } from "./names.js";
-import { WILD_ERROR_REPLY, WILD_KEEP_REPLY } from "./reply.js";
+import { WILD_ERROR_REPLY, WILD_KEEP_REPLY, ignoreUnauthorized } from "./reply.js";
 import {
   getUnmanageableRoleIds,
   isDangerousRole,
@@ -93,34 +93,53 @@ export const blacklistCommand = new SlashCommandBuilder()
 const ADMIN_PERMISSION = PermissionFlagsBits.ManageGuild;
 
 function hasManageServer(interaction: ChatInputCommandInteraction): boolean {
-  // checkAdmin = false: discord.js `PermissionsBitField.has` returns
-  // true for a member with the Administrator permission by default, and
-  // an Administrator without an admin role is an ordinary member here —
-  // they must not pass through the Manage Server bit.
+  // Discord sends the member's *effective* permissions in the slash
+  // interaction payload, and ADMINISTRATOR expands to ALL permissions
+  // there — so `has(ManageGuild, false)` is TRUE for any Administrator
+  // on the slash path, even though checkAdmin=false. (The checkAdmin
+  // defence only works against GuildMember.permissions, which holds
+  // literal role bits — the payload does not.) A raw Administrator
+  // must never pass through the Manage Server bit, so exclude them
+  // explicitly. The same conjunction works on the prefix path, where
+  // the fake interaction carries the member's literal role bits
+  // (Administrator is just the 0x8 bit there, so ManageGuild is false
+  // already). Literal Manage Server without Administrator is still a
+  // staff signal.
   try {
+    const permissions = interaction.memberPermissions;
+    if (!permissions) return false;
     return Boolean(
-      interaction.memberPermissions?.has(ADMIN_PERMISSION, false),
+      permissions.has(ADMIN_PERMISSION, false) &&
+        !permissions.has(PermissionFlagsBits.Administrator, false),
     );
   } catch {
     return false;
   }
 }
 
-async function requireManageServer(
+/**
+ * Gate for the guard commands (/protect, /whitelist, /status, /setup,
+ * /blacklist add/remove): the server owner, a holder of one of the six
+ * staff admin roles, a whitelisted member, or a member with literal
+ * Manage Server. The Discord Administrator permission alone grants
+ * nothing (see hasManageServer). Fetch the member fresh: a cached
+ * member could still show a staff admin role or whitelisted role that
+ * was already removed.
+ *
+ * An authorisation failure is SILENTLY IGNORED — no reply at all, not
+ * even an ephemeral error (see ignoreUnauthorized). The gate is still
+ * enforced server-side: ignoring is reply-only and nothing happens.
+ */
+async function requireGuardAccess(
   interaction: ChatInputCommandInteraction,
+  settings: GuildSettings,
 ): Promise<boolean> {
-  // Bot admins are the server owner or a holder of one of the six staff
-  // admin roles — the Discord Administrator permission alone grants
-  // nothing. Fetch the member fresh: a cached member could still show
-  // a staff admin role that was already removed.
   const guild = interaction.guild!;
   const member = await fetchMemberFresh(guild, interaction.user.id);
   if (member && isBotAdmin(member, guild.ownerId)) return true;
+  if (member && isWhitelisted(member, settings)) return true;
   if (hasManageServer(interaction)) return true;
-  await interaction.reply({
-    embeds: [wildMessageEmbed("You need Manage Server for that.")],
-    ephemeral: true,
-  });
+  await ignoreUnauthorized(interaction);
   return false;
 }
 
@@ -440,17 +459,16 @@ async function handleBlacklistList(
   const settings = store.get(guild.id);
   // Manage Server or whitelisted (the server owner and staff admin
   // roles bypass too). Fresh fetch: a cached member could still show an
-  // admin role or whitelisted role that was already removed.
+  // admin role or whitelisted role that was already removed. An
+  // authorisation failure is silently ignored — no reply at all, not
+  // even an ephemeral error (see ignoreUnauthorized).
   const member = await fetchMemberFresh(guild, interaction.user.id);
   if (
     !isBotAdmin(member, guild.ownerId) &&
     !hasManageServer(interaction) &&
     !(member && isWhitelisted(member, settings))
   ) {
-    await replyText(
-      interaction,
-      "Only Manage Server members or whitelisted members can list the blacklist.",
-    );
+    await ignoreUnauthorized(interaction);
     return;
   }
   const entries = blacklistEntries(settings);
@@ -721,14 +739,20 @@ export async function handleGuardCommand(
     return;
   }
 
-  // Every guard command requires Manage Server, except /blacklist list,
-  // which Manage Server members or whitelisted members can use (the list
-  // handler itself enforces that — the owner and staff admin roles
-  // bypass too).
+  // Every guard command requires guard access (owner, staff admin
+  // role, whitelisted, or literal Manage Server — see
+  // requireGuardAccess), except /blacklist list, which Manage Server
+  // members or whitelisted members can use (the list handler itself
+  // enforces that — the owner and staff admin roles bypass too).
+  // An authorisation failure is silently ignored, never an error.
   const isBlacklistList =
     interaction.commandName === "blacklist" &&
     interaction.options.getSubcommand() === "list";
-  if (!isBlacklistList && !(await requireManageServer(interaction))) return;
+  if (
+    !isBlacklistList &&
+    !(await requireGuardAccess(interaction, store.get(interaction.guildId!)))
+  )
+    return;
 
   switch (interaction.commandName) {
     case "protect":

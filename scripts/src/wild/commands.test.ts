@@ -5,6 +5,7 @@ import {
   ChatInputCommandInteraction,
   EmbedBuilder,
   PermissionFlagsBits,
+  PermissionsBitField,
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
 import {
@@ -79,8 +80,19 @@ function createInteraction(options: {
   roleId?: string;
   channelId?: string;
   subcommand?: string;
+  /**
+   * Real PermissionsBitField to use as memberPermissions, instead of
+   * the literal-bit mock. Use a real expanded bitfield
+   * (PermissionsBitField.All) to model what Discord actually sends in
+   * the interaction payload for a Discord Administrator.
+   */
+  memberPermissionsOverride?: PermissionsBitField;
 }) {
   const replies: Reply[] = [];
+  // Silent-ignore bookkeeping: the defer+delete calls the ignore path
+  // makes on a real slash interaction (no error reply).
+  const defers: Array<{ ephemeral?: boolean }> = [];
+  const deletes: number[] = [];
   const botMember = {
     permissions: {
       has: (permission: bigint) =>
@@ -140,11 +152,12 @@ function createInteraction(options: {
         ),
       },
     },
-    memberPermissions: {
-      has: (permission: bigint) =>
-        permission === PermissionFlagsBits.ManageGuild &&
-        (options.canManageServer ?? true),
-    },
+    memberPermissions:
+      options.memberPermissionsOverride ?? {
+        has: (permission: bigint) =>
+          permission === PermissionFlagsBits.ManageGuild &&
+          (options.canManageServer ?? true),
+      },
     options: {
       getUser: (_name: string) =>
         options.userId ? { id: options.userId } : null,
@@ -155,9 +168,15 @@ function createInteraction(options: {
     reply: async (reply: Reply) => {
       replies.push(reply);
     },
+    deferReply: async (deferOptions: { ephemeral?: boolean }) => {
+      defers.push(deferOptions);
+    },
+    deleteReply: async () => {
+      deletes.push(1);
+    },
   } as unknown as ChatInputCommandInteraction;
 
-  return { interaction, replies };
+  return { interaction, replies, defers, deletes };
 }
 
 test("/protect adds a role with an ephemeral plain-text reply", async () => {
@@ -205,6 +224,9 @@ test("/protect refuses to unprotect an FG role", async () => {
 
   assert.equal(config.getSaveCount(), 0);
   assert.deepEqual(config.getSettings().protectedRoleIds, [ROLE_ID]);
+  // A functional error still replies — only authorisation failures
+  // are silently ignored.
+  assert.deepEqual(interaction.defers, []);
   assert.match(replyTextOf(interaction.replies[0]), /always protected/i);
 });
 
@@ -247,7 +269,11 @@ test("/protect rejects an Administrator role", async () => {
   assert.match(replyTextOf(interaction.replies[0]), /Administrator/i);
 });
 
-test("/protect without Manage Server is rejected", async () => {
+test("/protect without Manage Server is silently ignored", async () => {
+  // An authorisation failure sends NO reply at all — not even an
+  // ephemeral error. Slash interactions are deferred ephemerally and
+  // the deferred reply deleted, so the user briefly sees "thinking"
+  // and then nothing.
   const config = createStore();
   const interaction = createInteraction({
     commandName: "protect",
@@ -259,7 +285,53 @@ test("/protect without Manage Server is rejected", async () => {
   await handleGuardCommand(interaction.interaction, config.store);
 
   assert.equal(config.getSaveCount(), 0);
-  assert.match(replyTextOf(interaction.replies[0]), /Manage Server/i);
+  assert.deepEqual(interaction.replies, []);
+  assert.deepEqual(interaction.defers, [{ ephemeral: true }]);
+  assert.equal(interaction.deletes.length, 1);
+});
+
+test("/protect by a Discord Administrator is silently ignored (real expanded payload)", async () => {
+  // The key regression test for the payload-expansion leak: Discord
+  // sends the member's *effective* permissions in the interaction
+  // payload, and ADMINISTRATOR expands to ALL permissions there — so
+  // a literal-bit mock would not catch a has(ManageGuild) leak. A
+  // real PermissionsBitField.All models the production payload.
+  const config = createStore();
+  const interaction = createInteraction({
+    commandName: "protect",
+    roleId: ROLE_ID,
+    userId: USER_ID,
+    memberPermissionsOverride: new PermissionsBitField(
+      PermissionsBitField.All,
+    ),
+  });
+
+  await handleGuardCommand(interaction.interaction, config.store);
+
+  assert.equal(config.getSaveCount(), 0);
+  assert.deepEqual(interaction.replies, []);
+  assert.deepEqual(interaction.defers, [{ ephemeral: true }]);
+  assert.equal(interaction.deletes.length, 1);
+});
+
+test("/protect by a whitelisted user without Manage Server works", async () => {
+  // Help shows guard commands to whitelisted members ("privileged"),
+  // so the handler admits them too — they do not also need Manage
+  // Server.
+  const config = createStore(makeSettings({ allowedUserIds: [USER_ID] }));
+  const interaction = createInteraction({
+    commandName: "protect",
+    roleId: ROLE_ID,
+    userId: USER_ID,
+    canManageServer: false,
+  });
+
+  await handleGuardCommand(interaction.interaction, config.store);
+
+  assert.deepEqual(config.getSettings().protectedRoleIds, [ROLE_ID]);
+  assert.equal(config.getSaveCount(), 1);
+  assert.deepEqual(interaction.defers, []);
+  assert.match(replyTextOf(interaction.replies[0]), /Pic is now protected/i);
 });
 
 test("/whitelist toggles a user on and then off", async () => {
@@ -496,7 +568,7 @@ test("/blacklist list works for a whitelisted member without Manage Server", asy
   assert.equal(embed?.fields?.[0].value, "Blacklisted from Pic");
 });
 
-test("/blacklist list rejects a non-whitelisted member without Manage Server", async () => {
+test("/blacklist list by a non-whitelisted member without Manage Server is silently ignored", async () => {
   const config = createStore();
   const interaction = createInteraction({
     commandName: "blacklist",
@@ -507,10 +579,12 @@ test("/blacklist list rejects a non-whitelisted member without Manage Server", a
 
   await handleGuardCommand(interaction.interaction, config.store);
 
-  assert.match(replyTextOf(interaction.replies[0]), /Only Manage Server members or whitelisted/i);
+  assert.deepEqual(interaction.replies, []);
+  assert.deepEqual(interaction.defers, [{ ephemeral: true }]);
+  assert.equal(interaction.deletes.length, 1);
 });
 
-test("/blacklist add without Manage Server is rejected", async () => {
+test("/blacklist add without Manage Server is silently ignored", async () => {
   const config = createStore(makeSettings({ protectedRoleIds: [ROLE_ID] }));
   const interaction = createInteraction({
     commandName: "blacklist",
@@ -523,7 +597,9 @@ test("/blacklist add without Manage Server is rejected", async () => {
   await handleGuardCommand(interaction.interaction, config.store);
 
   assert.equal(config.getSaveCount(), 0);
-  assert.match(replyTextOf(interaction.replies[0]), /Manage Server/i);
+  assert.deepEqual(interaction.replies, []);
+  assert.deepEqual(interaction.defers, [{ ephemeral: true }]);
+  assert.equal(interaction.deletes.length, 1);
 });
 
 test("/status shows the blacklist count", async () => {

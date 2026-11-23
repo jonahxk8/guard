@@ -30,6 +30,48 @@ export const WILD_KEEP_REPLY: unique symbol = Symbol("wild-keep-reply");
 export const AUTO_DELETE_DELAY_MS = 90_000;
 
 /**
+ * One-line summary of a Discord API error for the logs: the error name
+ * plus its Discord error code and HTTP status when present, so the
+ * Railway log names the cause without reading the whole stack.
+ * `DiscordAPIError[50035] (code=50035 status=400): Invalid Form Body`,
+ * `HTTPError (status=502): Bad Gateway`, or just `Error: <message>`
+ * for anything else.
+ */
+export function describeDiscordError(error: unknown): string {
+  if (typeof error !== "object" || error === null) return String(error);
+  const record = error as {
+    code?: unknown;
+    status?: unknown;
+    message?: unknown;
+    name?: unknown;
+  };
+  const message =
+    typeof record.message === "string" ? record.message : String(error);
+  const name = typeof record.name === "string" ? record.name : "Error";
+  const bits: string[] = [];
+  if (typeof record.code === "number") bits.push(`code=${record.code}`);
+  if (typeof record.status === "number") bits.push(`status=${record.status}`);
+  return bits.length > 0
+    ? `${name} (${bits.join(" ")}): ${message}`
+    : `${name}: ${message}`;
+}
+
+/**
+ * Is this error worth one retry of the send that failed? A 4xx Discord
+ * error is deterministic — bad payload, missing permission, unknown
+ * interaction — and retrying it is pointless. Anything else (a 5xx,
+ * a network failure, a timeout) may succeed on a second attempt.
+ */
+export function isRetryableDiscordError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return true;
+  const status = (error as { status?: unknown }).status;
+  if (typeof status === "number" && status >= 400 && status < 500) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Silently ignore an unauthorised use of an admin-gated command: send
  * NO reply at all, not even an ephemeral error.
  *

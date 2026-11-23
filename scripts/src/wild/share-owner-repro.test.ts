@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   ChannelType,
   Collection,
+  DiscordAPIError,
+  HTTPError,
   PermissionFlagsBits,
   PermissionsBitField,
 } from "discord.js";
@@ -128,6 +130,8 @@ function makeMember(
 interface Harness {
   message: Record<string, unknown>;
   sent: Array<Record<string, unknown>>;
+  /** How many times the offer (the send with buttons) was attempted. */
+  offerAttempts: number;
   dms: Array<{ to: string; options: Record<string, unknown> }>;
   collectors: Array<{
     on: (event: string, fn: (...args: unknown[]) => unknown) => void;
@@ -150,6 +154,10 @@ function createHarness(options: {
   botCanManageRoles?: boolean;
   /** The offer send (the message with buttons) rejects, like a Discord API failure. */
   failOfferSend?: boolean;
+  /** Fail exactly the first N offer sends, then let the rest through. */
+  failOfferSendAttempts?: number;
+  /** The error the failing offer sends throw (default: a 50013-flavoured Error). */
+  offerSendError?: () => unknown;
   settings: GuildSettings;
 }): Harness {
   const fgRoleIds = options.fgRoleIds ?? [FG_ROLE_ID];
@@ -200,15 +208,28 @@ function createHarness(options: {
     [OTHER_ID, target],
   ]);
 
+  // Counts every offer attempt (the sends with buttons), including the
+  // one retry the handler makes for retryable errors.
+  let offerAttempts = 0;
+
   const channel = {
     id: CHANNEL_ID,
     type: ChannelType.GuildText,
     send: async (messageOptions: Record<string, unknown>) => {
-      // The offer is the only send with buttons; fail exactly that one
-      // to model a Discord API failure on the offer send. The specific
-      // error reply that follows has no buttons and goes through.
-      if (options.failOfferSend && messageOptions.components !== undefined) {
-        throw new Error("DiscordAPIError[50013]: Missing Permissions");
+      // The offer is the only send with buttons; fail exactly the first
+      // N of those to model a Discord API failure on the offer send.
+      // The specific error reply that follows has no buttons and goes
+      // through.
+      if (messageOptions.components !== undefined) {
+        offerAttempts++;
+        const failCount =
+          options.failOfferSendAttempts ??
+          (options.failOfferSend ? Number.POSITIVE_INFINITY : 0);
+        if (offerAttempts <= failCount) {
+          throw options.offerSendError
+            ? options.offerSendError()
+            : new Error("DiscordAPIError[50013]: Missing Permissions");
+        }
       }
       const handlers: Record<string, Array<(...args: unknown[]) => unknown>> = {};
       const collector = {
@@ -284,6 +305,9 @@ function createHarness(options: {
   return {
     message,
     sent,
+    get offerAttempts() {
+      return offerAttempts;
+    },
     dms,
     collectors,
     loggedErrors,
@@ -470,13 +494,15 @@ test("repro: bot without Manage Roles gets the specific error", async () => {
   }
 });
 
-test("regression: offer send fails → specific reply naming the step, no generic message, step logged", async () => {
-  // This is the failure the user hit twice (2026-11-23 08:58 and 10:27):
-  // the offer's channel.send is the one Discord API call in the share
-  // path with no specific reply of its own, so it used to surface as
-  // the generic "couldn't complete that command" reply — and the prefix
-  // catch swallowed the error without logging it. Now the step is named
-  // in the reply and in the Railway logs.
+test("regression: offer send fails → retried once, then specific reply naming the step, no generic message, step logged", async () => {
+  // This is the failure the user hit twice (2026-11-23 08:58 and 10:27)
+  // and again at 10:44 after the first fix: the offer's channel.send
+  // is the one Discord API call in the share path with no specific
+  // reply of its own, so it used to surface as the generic "couldn't
+  // complete that command" reply — and the prefix catch swallowed the
+  // error without logging it. Now the step is named in the reply and
+  // in the Railway logs, and the send is retried once for retryable
+  // errors (a plain Error has no HTTP status, so it is retried).
   const { store } = createStore(
     makeSettings({
       fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
@@ -500,9 +526,10 @@ test("regression: offer send fails → specific reply naming the step, no generi
       sentText(harness.sent),
       /Couldn't send the FG role offer\. Check the bot can send messages in this channel and try again\./,
     );
-    // The offer never went out (its send threw before recording), and
-    // the only message sent is the specific error reply — with no
-    // buttons on it.
+    // The offer was attempted twice (first try + the one retry) and
+    // never went out, and the only message sent is the specific error
+    // reply — with no buttons on it.
+    assert.equal(harness.offerAttempts, 2);
     assert.equal(harness.sent.length, 1);
     assert.equal(harness.sent[0].components, undefined);
     assert.match(
@@ -510,6 +537,130 @@ test("regression: offer send fails → specific reply naming the step, no generi
       /\[wild\] fg share: could not send the offer:/,
     );
     assert.match(harness.loggedErrors.join("\n"), /DiscordAPIError\[50013\]/);
+  } finally {
+    harness.restoreConsole();
+  }
+});
+
+test("regression: offer send fails once with a retryable error → retried and the offer goes out", async () => {
+  // The live failure was intermittent (worked once, failed three
+  // times) with a valid payload and full permissions, so the send is
+  // retried once for retryable errors — a 502 that clears on the
+  // second attempt must produce a working offer, not an error reply.
+  const { store } = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoles: { [FG_ROLE_ID]: fgAccess() },
+    }),
+  );
+  const harness = createHarness({
+    content: `,fg share <@${OTHER_ID}>`,
+    authorId: OWNER_ID,
+    failOfferSendAttempts: 1,
+    offerSendError: () =>
+      new HTTPError(
+        502,
+        "Bad Gateway",
+        "POST",
+        "https://discord.com/api/v10/channels/1/messages",
+        {},
+      ),
+    settings: makeSettings(),
+  });
+  try {
+    assert.equal(await handlePrefixMessage(harness.message as never, store), true);
+    assertNoGenericError(harness);
+    assert.equal(harness.offerAttempts, 2);
+    assert.equal(harness.sent.length, 1);
+    const embed = (
+      harness.sent[0].embeds as Array<{ toJSON: () => { title?: string } }>
+    )[0].toJSON();
+    assert.equal(embed.title, "fg share");
+    assert.equal(harness.collectors.length, 1);
+  } finally {
+    harness.restoreConsole();
+  }
+});
+
+test("regression: offer send fails with a 4xx Discord error → never retried", async () => {
+  // A 4xx is deterministic (bad payload, missing permission, unknown
+  // interaction) — retrying it is pointless, so the handler must fail
+  // at once, name the step, and log the Discord error code and status.
+  const { store } = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoles: { [FG_ROLE_ID]: fgAccess() },
+    }),
+  );
+  const harness = createHarness({
+    content: `,fg share <@${OTHER_ID}>`,
+    authorId: OWNER_ID,
+    failOfferSendAttempts: 99,
+    offerSendError: () =>
+      new DiscordAPIError(
+        { message: "Invalid Form Body", code: 50035 },
+        50035,
+        400,
+        "POST",
+        "https://discord.com/api/v10/channels/1/messages",
+        {},
+      ),
+    settings: makeSettings(),
+  });
+  try {
+    assert.equal(await handlePrefixMessage(harness.message as never, store), true);
+    assert.equal(
+      /couldn't complete that command/i.test(sentText(harness.sent)),
+      false,
+      `generic error reply was sent; sent: ${sentText(harness.sent)}`,
+    );
+    assert.match(
+      sentText(harness.sent),
+      /Couldn't send the FG role offer\. Check the bot can send messages in this channel and try again\./,
+    );
+    assert.equal(harness.offerAttempts, 1);
+    assert.equal(harness.sent.length, 1);
+    assert.match(harness.loggedErrors.join("\n"), /code=50035/);
+    assert.match(harness.loggedErrors.join("\n"), /status=400/);
+  } finally {
+    harness.restoreConsole();
+  }
+});
+
+test("regression: offer send fails twice with a retryable error → specific reply after the one retry", async () => {
+  // Only one retry is made: a second consecutive failure gives the
+  // specific reply (not a generic error) and the step is logged.
+  const { store } = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoles: { [FG_ROLE_ID]: fgAccess() },
+    }),
+  );
+  const harness = createHarness({
+    content: `,fg share <@${OTHER_ID}>`,
+    authorId: OWNER_ID,
+    failOfferSendAttempts: 99,
+    offerSendError: () => new Error("fetch failed"),
+    settings: makeSettings(),
+  });
+  try {
+    assert.equal(await handlePrefixMessage(harness.message as never, store), true);
+    assert.equal(
+      /couldn't complete that command/i.test(sentText(harness.sent)),
+      false,
+      `generic error reply was sent; sent: ${sentText(harness.sent)}`,
+    );
+    assert.match(
+      sentText(harness.sent),
+      /Couldn't send the FG role offer\. Check the bot can send messages in this channel and try again\./,
+    );
+    assert.equal(harness.offerAttempts, 2);
+    assert.equal(harness.sent.length, 1);
+    assert.match(
+      harness.loggedErrors.join("\n"),
+      /\[wild\] fg share: could not send the offer:/,
+    );
+    assert.match(harness.loggedErrors.join("\n"), /fetch failed/);
   } finally {
     harness.restoreConsole();
   }

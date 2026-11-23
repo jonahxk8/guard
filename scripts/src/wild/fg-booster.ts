@@ -30,7 +30,13 @@ import {
   isWhitelisted,
 } from "./authorization.js";
 import { memberDisplayName, roleDisplayName, roleMention } from "./names.js";
-import { WILD_ERROR_REPLY, WILD_KEEP_REPLY, ignoreUnauthorized } from "./reply.js";
+import {
+  WILD_ERROR_REPLY,
+  WILD_KEEP_REPLY,
+  describeDiscordError,
+  ignoreUnauthorized,
+  isRetryableDiscordError,
+} from "./reply.js";
 
 /**
  * FG roles, Bleed booster-role style.
@@ -1831,6 +1837,39 @@ async function finishShareOffer(
   return true;
 }
 
+/** Delay before the one retry of a failed offer send. */
+const OFFER_SEND_RETRY_DELAY_MS = 1_000;
+
+/**
+ * Send the share offer, retrying once when the failure may be
+ * transient. The offer POST is the one Discord API call in the share
+ * path with no retry of its own beyond the REST layer's built-in
+ * retries (5xx retried 3 times, 429s waited out, 4xx thrown at once)
+ * — and it failed intermittently live (worked once, failed three
+ * times) with a payload that resolves cleanly through discord.js and
+ * full permissions, so the failure is on that one POST, not in the
+ * code around it. A 4xx Discord error is deterministic (bad payload,
+ * missing permission, unknown interaction) and is never retried.
+ * A retry can double-send the offer if the first POST actually went
+ * through but its response was lost; the second accept is a no-op
+ * (adding a role the member already has), so the worst case is a
+ * duplicate offer message.
+ */
+async function sendOfferWithRetry(
+  interaction: ChatInputCommandInteraction,
+  options: Parameters<ChatInputCommandInteraction["reply"]>[0],
+): Promise<void> {
+  try {
+    await interaction.reply(options);
+  } catch (error) {
+    if (!isRetryableDiscordError(error)) throw error;
+    await new Promise((resolve) =>
+      setTimeout(resolve, OFFER_SEND_RETRY_DELAY_MS),
+    );
+    await interaction.reply(options);
+  }
+}
+
 async function handleShareCommand(
   interaction: ChatInputCommandInteraction,
   store: ConfigStore,
@@ -1883,17 +1922,22 @@ async function handleShareCommand(
   }
 
   // Sending the offer is the one Discord API call in this handler with
-  // no specific reply of its own: if it fails (the bot cannot send
-  // here, a rate limit, a Discord outage), the generic prefix/slash
-  // catch would answer instead — and the prefix catch used to swallow
-  // the error without logging it, which is how two ,fg share failures
-  // stayed undiagnosed. Name the step here, in the reply and in the
-  // Railway logs, so the cause is visible. Every other step in this
-  // handler already has its own reply (no FG role, already has one,
-  // bot cannot manage the role).
+  // no specific reply of its own. It failed intermittently live
+  // (worked once, failed three times: 08:58, ~10:27, ~10:44) with a
+  // payload that resolves cleanly through discord.js's MessagePayload
+  // and full permissions — the failure is on that one POST, not in the
+  // code around it. The offer is therefore sent with one retry for
+  // retryable errors (see sendOfferWithRetry), and the failure is
+  // named here, in the reply and in the Railway logs, so the cause is
+  // visible. Every other step in this handler already has its own
+  // reply (no FG role, already has one, bot cannot manage the role).
+  // Did the offer actually go out before the failure? If the reply
+  // succeeded but fetchReply failed, the offer is in the channel with
+  // dead buttons — say that, not that it couldn't be sent.
   let offer: Message;
+  let replied = false;
   try {
-    await interaction.reply({
+    await sendOfferWithRetry(interaction, {
       // The target is pinged in the message content, not just the embed:
       // a mention in the embed alone was not notifying them. Only the
       // target user is pinged — never the role, never @everyone.
@@ -1909,15 +1953,19 @@ async function handleShareCommand(
       // Offer with a live collector (5 minutes): never auto-delete.
       [WILD_KEEP_REPLY]: true,
     } as Parameters<ChatInputCommandInteraction["reply"]>[0]);
+    replied = true;
     offer = await interaction.fetchReply();
   } catch (error) {
     console.error(
       "[wild] fg share: could not send the offer:",
+      describeDiscordError(error),
       error instanceof Error ? (error.stack ?? error.message) : String(error),
     );
     await replyText(
       interaction,
-      "Couldn't send the FG role offer. Check the bot can send messages in this channel and try again.",
+      replied
+        ? "The offer went out but its buttons couldn't be set up. Try again."
+        : "Couldn't send the FG role offer. Check the bot can send messages in this channel and try again.",
     ).catch(() => undefined);
     return;
   }

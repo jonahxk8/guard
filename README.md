@@ -449,12 +449,16 @@ Deploy as a long-running worker service from the repository root:
   protect it with `/protect @role`.
 - If a prefix command answers "The bot couldn't complete that command",
   check the Railway logs for `[wild] prefix command failed:` — the log
-  line names the real error, with its stack. A stale deploy is not the
-  cause for `,fg share`: the share handler is identical across the last
-  several builds (verified by diffing them), and the failures seen were
-  Discord API failures on sending the offer. The share path now names
-  the failed step in its own reply instead ("Couldn't send the FG role
-  offer...") and logs `[wild] fg share: ...`. Nothing on the live bot
+  line names the real error, with its Discord error code and HTTP
+  status. A stale deploy is not the cause for `,fg share`: the share
+  handler is identical across the last several builds (verified by
+  diffing them), the offer payload resolves cleanly through discord.js,
+  and the failures seen were Discord API failures on sending the offer
+  itself (worked once, failed three times, with full permissions). The
+  offer send is now retried once for retryable errors (a 4xx is never
+  retried), and the share path names the failed step in its own reply
+  instead ("Couldn't send the FG role offer...") and logs
+  `[wild] fg share: ...` with the error code. Nothing on the live bot
   changes until you redeploy, so do still redeploy after a push to get
   the new build — but redeploying alone does not fix a share failure.
 

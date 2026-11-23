@@ -13,6 +13,7 @@ import {
   AUTO_DELETE_DELAY_MS,
   WILD_ERROR_REPLY,
   WILD_KEEP_REPLY,
+  describeDiscordError,
 } from "./reply.js";
 
 /**
@@ -544,6 +545,7 @@ export async function handlePrefixMessage(
     // failures stayed undiagnosed. Railway logs now name the cause.
     console.error(
       "[wild] prefix command failed:",
+      describeDiscordError(error),
       error instanceof Error ? (error.stack ?? error.message) : String(error),
     );
     await replyPrefixError(

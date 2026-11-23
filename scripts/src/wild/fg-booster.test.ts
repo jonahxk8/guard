@@ -893,6 +893,8 @@ test("/fg create rejects a second FG role for the same target", async () => {
       makeRole(BASE_ROLE_ID, "FG Base", 10),
       makeRole(FG_ROLE_ID, "Old FG", 9),
     ],
+    // The target owns the role and actually holds it in the guild.
+    memberRoleIds: { [OTHER_ID]: [FG_ROLE_ID] },
   });
   const { interaction, replies } = createInteraction({
     action: "create",
@@ -1003,7 +1005,7 @@ test("/fg remove asks for confirmation and Yes deletes the role", async () => {
   };
   assert.equal(embed.title, "Remove FG role");
   assert.match(embed.description ?? "", /Delete My FG for good/);
-  assert.equal(embed.fields?.[0]?.value, `<@&${FG_ROLE_ID}>`);
+  assert.equal(embed.fields, undefined); // Sleek: one line, no Role field.
   const row = replies[0].components?.[0]?.toJSON() as {
     components?: Array<{ custom_id?: string; label?: string; disabled?: boolean }>;
   };
@@ -1151,155 +1153,6 @@ test("/fg award no longer exists", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.match(replyTextOf(replies[0]), /Use \/help fg to see FG commands/i);
-});
-
-test("/fg assign gives the role and authorises sharing (whitelisted staff)", async () => {
-  const config = createStore(
-    makeSettings({
-      allowedUserIds: [MEMBER_ID],
-      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
-      fgRoles: {
-        [FG_ROLE_ID]: {
-          assignUserIds: [],
-          assignRoleIds: [],
-          shareUserIds: [],
-          shareRoleIds: [],
-        },
-      },
-    }),
-  );
-  const { guild, getMember } = createGuild({
-    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
-    memberRoleIds: { [OTHER_ID]: [] },
-  });
-  const { interaction, replies } = createInteraction({
-    action: "assign",
-    memberId: OTHER_ID,
-    roleId: FG_ROLE_ID,
-  });
-
-  await handleFgCommand(withGuild(guild, interaction), config.store);
-
-  assert.equal(
-    (getMember(OTHER_ID)!.roles as { cache: { has: (id: string) => boolean } }).cache.has(FG_ROLE_ID),
-    true,
-  );
-  assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
-  assert.match(replyTextOf(replies[0]), /Sam now has My FG and can share it/i);
-  assert.doesNotMatch(replyTextOf(replies[0]), /\[object Object\]/);
-});
-
-test("/fg assign by the server owner works without being whitelisted", async () => {
-  const config = createStore(
-    makeSettings({
-      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
-      fgRoles: {
-        [FG_ROLE_ID]: {
-          assignUserIds: [],
-          assignRoleIds: [],
-          shareUserIds: [],
-          shareRoleIds: [],
-        },
-      },
-    }),
-  );
-  const { guild } = createGuild({
-    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
-    memberRoleIds: { [OTHER_ID]: [] },
-  });
-  const { interaction, replies } = createInteraction({
-    action: "assign",
-    userId: OWNER_ID,
-    memberId: OTHER_ID,
-    roleId: FG_ROLE_ID,
-  });
-
-  await handleFgCommand(withGuild(guild, interaction), config.store);
-
-  assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
-  assert.match(replyTextOf(replies[0]), /can share it/i);
-});
-
-test("/fg assign rejects a normal member", async () => {
-  const config = createStore(
-    makeSettings({
-      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
-      fgRoles: {
-        [FG_ROLE_ID]: {
-          assignUserIds: [],
-          assignRoleIds: [],
-          shareUserIds: [],
-          shareRoleIds: [],
-        },
-      },
-    }),
-  );
-  const { guild, getMember } = createGuild({
-    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
-    memberRoleIds: { [OTHER_ID]: [] },
-  });
-  const { interaction, replies } = createInteraction({
-    action: "assign",
-    memberId: OTHER_ID,
-    roleId: FG_ROLE_ID,
-  });
-
-  await handleFgCommand(withGuild(guild, interaction), config.store);
-
-  assert.deepEqual(config.getSettings().fgRoleSharers, {});
-  assert.equal(
-    (getMember(OTHER_ID)!.roles as { cache: { has: (id: string) => boolean } }).cache.has(FG_ROLE_ID),
-    false,
-  );
-  assert.match(
-    replyTextOf(replies[0]),
-    /Only the server owner, administrators, or whitelisted members can create FG roles/i,
-  );
-});
-
-test("/fg assign when the member already has the role just authorises them", async () => {
-  const config = createStore(
-    makeSettings({
-      allowedUserIds: [MEMBER_ID],
-      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
-      fgRoles: {
-        [FG_ROLE_ID]: {
-          assignUserIds: [],
-          assignRoleIds: [],
-          shareUserIds: [],
-          shareRoleIds: [],
-        },
-      },
-    }),
-  );
-  const { guild } = createGuild({
-    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
-    memberRoleIds: { [OTHER_ID]: [FG_ROLE_ID] },
-  });
-  const { interaction, replies } = createInteraction({
-    action: "assign",
-    memberId: OTHER_ID,
-    roleId: FG_ROLE_ID,
-  });
-
-  await handleFgCommand(withGuild(guild, interaction), config.store);
-
-  assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
-  assert.match(replyTextOf(replies[0]), /can now share My FG/i);
-});
-
-test("/fg assign errors for a role that isn't an FG role", async () => {
-  const config = createStore(makeSettings({ allowedUserIds: [MEMBER_ID] }));
-  const { guild } = createGuild({ roles: [makeRole(FG_ROLE_ID, "Plain", 9)] });
-  const { interaction, replies } = createInteraction({
-    action: "assign",
-    memberId: OTHER_ID,
-    roleId: FG_ROLE_ID,
-  });
-
-  await handleFgCommand(withGuild(guild, interaction), config.store);
-
-  assert.match(replyTextOf(replies[0]), /isn't an FG role/i);
 });
 
 test("/fg auth add works for the FG owner and does not give the role", async () => {
@@ -1486,7 +1339,6 @@ test("/fg share succeeds for an assigned member who is not whitelisted", async (
   const { interaction, replies } = createInteraction({
     action: "share",
     memberId: targetId,
-    roleId: FG_ROLE_ID,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
@@ -1520,7 +1372,6 @@ test("/fg share succeeds for an authed member who does not hold the role", async
   const { interaction, replies } = createInteraction({
     action: "share",
     memberId: targetId,
-    roleId: FG_ROLE_ID,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
@@ -1551,14 +1402,13 @@ test("/fg share rejects a member who holds the role but was never assigned or au
   const { interaction, replies } = createInteraction({
     action: "share",
     memberId: targetId,
-    roleId: FG_ROLE_ID,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(replies[0].ephemeral, true);
   assert.equal(replies[0].embeds?.length, 1);
-  assert.match(replyTextOf(replies[0]), /aren't authorised to share that FG role/i);
+  assert.match(replyTextOf(replies[0]), /aren't authorised to share an FG role/i);
 });
 
 test("/fg list shows FG roles with owners in a colorless embed", async () => {
@@ -1636,28 +1486,38 @@ test("/fg share errors are ephemeral plain text", async () => {
   const { interaction, replies } = createInteraction({
     action: "share",
     memberId: OTHER_ID,
-    roleId: FG_ROLE_ID,
   });
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(replies[0].ephemeral, true);
   assert.equal(replies[0].embeds?.length, 1);
-  assert.match(replyTextOf(replies[0]), /already have that FG role/i);
+  assert.match(replyTextOf(replies[0]), /already have an FG role/i);
 });
 
-test("/fg share rejects a role that isn't an FG role", async () => {
+test("/fg share rejects a caller who has no FG role to share", async () => {
+  // Whitelisted, but owns no FG role and is authed for none: there is
+  // no role argument anymore, so there is nothing to offer.
   const config = createStore(makeSettings({ allowedUserIds: [MEMBER_ID] }));
   const { guild } = createGuild({ roles: [makeRole(FG_ROLE_ID, "Plain", 9)] });
   const { interaction, replies } = createInteraction({
     action: "share",
     memberId: OTHER_ID,
-    roleId: FG_ROLE_ID,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(replies[0].ephemeral, true);
-  assert.match(replyTextOf(replies[0]), /isn't an FG role/i);
+  assert.match(replyTextOf(replies[0]), /aren't authorised to share an FG role/i);
+});
+
+test("/fg assign no longer exists", async () => {
+  const config = createStore();
+  const { guild } = createGuild({ roles: [] });
+  const { interaction, replies } = createInteraction({ action: "assign" });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.match(replyTextOf(replies[0]), /Use \/help fg to see FG commands/i);
 });
 
 /** Administrator counts as owner: verified in the guard, the FG gates, and help. */
@@ -1683,37 +1543,6 @@ test("/fg create by an Administrator works without being whitelisted", async () 
   assert.equal(createdRoles.length, 1);
   assert.deepEqual(createdRoles[0].colors, { primaryColor: "#800080" });
   assert.match(replyTextOf(replies[0]), /Admin FG is your FG role now/i);
-});
-
-test("/fg assign by an Administrator works without being whitelisted", async () => {
-  const config = createStore(
-    makeSettings({
-      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
-      fgRoles: {
-        [FG_ROLE_ID]: {
-          assignUserIds: [],
-          assignRoleIds: [],
-          shareUserIds: [],
-          shareRoleIds: [],
-        },
-      },
-    }),
-  );
-  const { guild } = createGuild({
-    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
-    adminMemberIds: [MEMBER_ID],
-    memberRoleIds: { [OTHER_ID]: [] },
-  });
-  const { interaction, replies } = createInteraction({
-    action: "assign",
-    memberId: OTHER_ID,
-    roleId: FG_ROLE_ID,
-  });
-
-  await handleFgCommand(withGuild(guild, interaction), config.store);
-
-  assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
-  assert.match(replyTextOf(replies[0]), /can share it/i);
 });
 
 test("/fg auth add by an Administrator works without being whitelisted", async () => {
@@ -1763,4 +1592,313 @@ test("/fg base by an Administrator works via the Manage Server gate", async () =
 
   assert.equal(config.getSettings().fgBaseRoleId, BASE_ROLE_ID);
   assert.match(replyTextOf(replies[0]), /base role/i);
+});
+
+const SECOND_FG_ROLE_ID = "777777777777777777";
+
+function twoFgRolesSettings(
+  extra: Partial<GuildSettings> = {},
+): GuildSettings {
+  return makeSettings({
+    fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID, [SECOND_FG_ROLE_ID]: OTHER_ID },
+    fgRoles: {
+      [FG_ROLE_ID]: {
+        assignUserIds: [],
+        assignRoleIds: [],
+        shareUserIds: [],
+        shareRoleIds: [],
+      },
+      [SECOND_FG_ROLE_ID]: {
+        assignUserIds: [],
+        assignRoleIds: [],
+        shareUserIds: [],
+        shareRoleIds: [],
+      },
+    },
+    ...extra,
+  });
+}
+
+test("/fg share offer is one sleek line with no fields", async () => {
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const targetId = "444444444444444444";
+  const { guild } = createGuild({
+    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
+    memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
+  });
+  const { interaction, replies } = createInteraction({
+    action: "share",
+    memberId: targetId,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  const embed = replies[0].embeds?.[0]?.toJSON() as {
+    title?: string;
+    description?: string;
+    fields?: unknown[];
+  };
+  assert.equal(embed.title, "FG role share");
+  assert.equal(embed.fields, undefined);
+  assert.equal(
+    embed.description,
+    `<@${MEMBER_ID}> is offering <@&${FG_ROLE_ID}> to <@${targetId}> — tap Yes to accept.`,
+  );
+});
+
+test("/fg share with no role argument offers the caller's own FG role", async () => {
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID, [SECOND_FG_ROLE_ID]: OTHER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+        [SECOND_FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const targetId = "444444444444444444";
+  const { guild } = createGuild({
+    roles: [
+      makeRole(FG_ROLE_ID, "My FG", 9),
+      makeRole(SECOND_FG_ROLE_ID, "Other FG", 8),
+    ],
+    memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
+  });
+  const { interaction, replies } = createInteraction({
+    action: "share",
+    memberId: targetId,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  // An offer was sent (public embed), for the caller's own role even
+  // though another FG role exists.
+  assert.equal(replies[0].ephemeral, undefined);
+  const embed = replies[0].embeds?.[0]?.toJSON() as { description?: string };
+  assert.match(embed.description ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
+  assert.doesNotMatch(embed.description ?? "", new RegExp(`<@&${SECOND_FG_ROLE_ID}>`));
+});
+
+test("/fg share offers the one FG role an authed member can share", async () => {
+  // MEMBER_ID owns no FG role but is authed to share exactly one.
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID, [SECOND_FG_ROLE_ID]: OTHER_ID },
+      fgRoleSharers: { [FG_ROLE_ID]: [MEMBER_ID] },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+        [SECOND_FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const targetId = "444444444444444444";
+  const { guild } = createGuild({
+    roles: [
+      makeRole(FG_ROLE_ID, "My FG", 9),
+      makeRole(SECOND_FG_ROLE_ID, "Other FG", 8),
+    ],
+    memberRoleIds: { [MEMBER_ID]: [], [targetId]: [] },
+  });
+  const { interaction, replies } = createInteraction({
+    action: "share",
+    memberId: targetId,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(replies[0].ephemeral, undefined);
+  const embed = replies[0].embeds?.[0]?.toJSON() as { description?: string };
+  assert.match(embed.description ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
+});
+
+test("/fg share errors when the caller can share more than one FG role", async () => {
+  // MEMBER_ID is whitelisted (so authorised for every FG role) and owns
+  // none: the bot cannot pick one for them.
+  const config = createStore(
+    twoFgRolesSettings({ allowedUserIds: [MEMBER_ID] }),
+  );
+  const targetId = "444444444444444444";
+  const { guild } = createGuild({
+    roles: [
+      makeRole(FG_ROLE_ID, "My FG", 9),
+      makeRole(SECOND_FG_ROLE_ID, "Other FG", 8),
+    ],
+    memberRoleIds: { [MEMBER_ID]: [], [targetId]: [] },
+  });
+  const { interaction, replies } = createInteraction({
+    action: "share",
+    memberId: targetId,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.match(replyTextOf(replies[0]), /can share more than one FG role/i);
+  assert.match(replyTextOf(replies[0]), new RegExp(`<@&${FG_ROLE_ID}>`));
+  assert.match(replyTextOf(replies[0]), new RegExp(`<@&${SECOND_FG_ROLE_ID}>`));
+});
+
+test("/fg share refuses a target who already holds a different FG role", async () => {
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID, [SECOND_FG_ROLE_ID]: OWNER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+        [SECOND_FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const targetId = "444444444444444444";
+  const { guild } = createGuild({
+    roles: [
+      makeRole(FG_ROLE_ID, "My FG", 9),
+      makeRole(SECOND_FG_ROLE_ID, "Other FG", 8),
+    ],
+    memberRoleIds: {
+      [MEMBER_ID]: [FG_ROLE_ID],
+      [targetId]: [SECOND_FG_ROLE_ID],
+    },
+  });
+  const { interaction, replies } = createInteraction({
+    action: "share",
+    memberId: targetId,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(replies[0].ephemeral, true);
+  assert.match(replyTextOf(replies[0]), /already have an FG role/i);
+});
+
+test("/fg share refuses at accept time when the target gained an FG role", async () => {
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID, [SECOND_FG_ROLE_ID]: OWNER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+        [SECOND_FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const targetId = "444444444444444444";
+  const { guild, getMember } = createGuild({
+    roles: [
+      makeRole(FG_ROLE_ID, "My FG", 9),
+      makeRole(SECOND_FG_ROLE_ID, "Other FG", 8),
+    ],
+    memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
+  });
+  const { interaction, replies, collector } = createInteraction({
+    action: "share",
+    memberId: targetId,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  // Offer was sent.
+  assert.equal(replies[0].ephemeral, undefined);
+  // Between offer and accept, the target gains the other FG role.
+  await (
+    getMember(targetId)!.roles as {
+      add: (role: unknown) => Promise<void>;
+    }
+  ).add(guild.roles.cache.get(SECOND_FG_ROLE_ID)!);
+  const yes = makeButton("fg-share:yes", targetId);
+  await collector.fireCollect(yes);
+
+  assert.match(buttonTextOf(yes), /already has an FG role/i);
+  assert.equal(
+    (
+      getMember(targetId)!.roles as {
+        cache: { has: (id: string) => boolean };
+      }
+    ).cache.has(FG_ROLE_ID),
+    false,
+  );
+});
+
+test("/fg create refuses a target who holds a shared FG role", async () => {
+  // OTHER_ID holds FG_ROLE_ID (owned by someone else) — holding any FG
+  // role, owned or shared, blocks a new one.
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [MEMBER_ID],
+      fgBaseRoleId: BASE_ROLE_ID,
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), makeRole(FG_ROLE_ID, "My FG", 9)],
+    memberRoleIds: { [OTHER_ID]: [FG_ROLE_ID] },
+  });
+  const { interaction, replies } = createInteraction({
+    action: "create",
+    memberId: OTHER_ID,
+    strings: { name: "Second FG" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 0);
+  assert.match(replyTextOf(replies[0]), /already have an FG role/i);
 });

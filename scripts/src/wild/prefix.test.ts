@@ -336,10 +336,6 @@ test("parsePrefixMessage parses mentions, raw ids, and fg color args", () => {
   const createOldSyntax = parsePrefixMessage(",fg create My Role #ff0000");
   // No color argument anymore: a trailing hex is just part of the name.
   assert.equal(createOldSyntax && "args" in createOldSyntax && createOldSyntax.args.strings.name, "My Role #ff0000");
-  const assign = parsePrefixMessage(",fg assign <@333333333333333333> <@&666666666666666666>");
-  assert.equal(assign && "args" in assign && assign.args.subcommand, "assign");
-  assert.equal(assign && "args" in assign && assign.args.users.member, "333333333333333333");
-  assert.equal(assign && "args" in assign && assign.args.roles.role, "666666666666666666");
   const authAdd = parsePrefixMessage(",fg auth add <@333333333333333333> <@&666666666666666666>");
   assert.equal(authAdd && "args" in authAdd && authAdd.args.subcommandGroup, "auth");
   assert.equal(authAdd && "args" in authAdd && authAdd.args.subcommand, "add");
@@ -474,7 +470,7 @@ test(",fg remove asks for confirmation and deletes nothing yet", async () => {
   assert.equal(created.commandDeleted, true);
 });
 
-test(",fg rename and ,fg assign route to the shared FG handler", async () => {
+test(",fg rename and ,fg share route to the shared FG handler", async () => {
   const config = createStore(
     makeSettings({
       allowedUserIds: [USER_ID],
@@ -496,15 +492,27 @@ test(",fg rename and ,fg assign route to the shared FG handler", async () => {
   await handlePrefixMessage(rename.message, config.store);
   assert.match(sentTextOf(rename.sent[0]), /now called/i);
 
-  const assign = createMessage({
-    content: ",fg assign <@333333333333333333> <@&666666666666666666>",
+  // ,fg share takes only @member: the bot offers the caller's own FG role.
+  const share = createMessage({
+    content: ",fg share <@333333333333333333>",
     roles: [{ id: FG_ROLE_ID }],
   });
-  await handlePrefixMessage(assign.message, config.store);
-  assert.deepEqual(config.getSettings().fgRoleSharers, {
-    [FG_ROLE_ID]: [OTHER_ID],
-  });
-  assert.match(sentTextOf(assign.sent[0]), /can share it/i);
+  await handlePrefixMessage(share.message, config.store);
+  const embed = share.sent[0].embeds?.[0]?.toJSON() as {
+    title?: string;
+    description?: string;
+    fields?: unknown[];
+  };
+  assert.equal(embed.title, "FG role share");
+  assert.equal(embed.fields, undefined);
+  assert.match(embed.description ?? "", /is offering/);
+  assert.match(embed.description ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
+});
+
+test(",fg assign no longer exists", async () => {
+  const parsed = parsePrefixMessage(",fg assign <@333333333333333333> <@&666666666666666666>");
+  assert.ok(parsed && "error" in parsed);
+  assert.equal(parsed.error, "Use ,help fg to see FG commands.");
 });
 
 test(",fg auth add and ,fg auth list route to the shared FG handler", async () => {

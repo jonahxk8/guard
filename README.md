@@ -82,16 +82,15 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
 - `/fg icon <url>` / `,fg icon <url>` — set your own FG role's icon
   (image link, emoji, or custom emoji).
 - `/fg remove` / `,fg remove` — delete your own FG role. Asks for
-  confirmation first (Yes/No buttons); nothing is deleted until you tap
+  confirmation first with one line ("Delete @$ for good? Tap Yes to
+  delete it.") and Yes/No buttons; nothing is deleted until you tap
   Yes.
 - `/fg list` / `,fg list` — list all FG roles and their owners.
 - `/fg cleanup` / `,fg cleanup` — remove FG roles whose owners left
   the server.
-- `/fg share @member @role` / `,fg share @member @role` — offer one of
-  your FG roles to a member (see "Sharing FG roles" below).
-- `/fg assign @member @role` / `,fg assign @member @role` — give an
-  existing FG role to a member, and authorise them to share it (server
-  owner, administrators, or whitelisted only).
+- `/fg share @member` / `,fg share @member` — offer an FG role to a
+  member (see "Sharing FG roles" below). The role is picked for you:
+  your own FG role first, otherwise the one FG role you can share.
 - `/fg auth add @member @role` / `,fg auth add @member @role` — let
   someone share one of your FG roles, without giving them the role
   (the FG role's owner, the server owner, administrators, or whitelisted
@@ -130,7 +129,7 @@ Blacklist). An FG owner sees only FG — their own role's commands
 (rename, icon, remove), sharing, and auth. Someone assigned an FG role
 or authed to share one sees only FG share. A normal member with no FG
 role sees the FG category with the note "You don't have an FG role
-yet — ask an admin or whitelisted member to assign you one." and no
+yet — ask an admin or whitelisted member to create one for you." and no
 commands they can't touch. Asking for a command you can't use gets
 the short error "You can't use that command.", never the command's
 syntax. Buttons re-check what you can do on every press, so a menu
@@ -145,7 +144,7 @@ Help
   Guard — Protect roles and whitelist assigners
           4 commands
   FG — Personal FG roles
-       13 commands
+       12 commands
   Blacklist — Block members from roles
               3 commands
   [Guard] [FG] [Blacklist]
@@ -162,7 +161,7 @@ Help - FG (1/2)
   [Next] [Back]
 ```
 
-FG has 13 subcommands, so it splits into 2 pages of 7 and 6
+FG has 12 subcommands, so it splits into 2 pages of 7 and 5
 ("Help - FG (1/2)" and "(2/2)") with Prev/Next buttons; the
 page count is recomputed after filtering, so an FG owner sees their
 7 commands on one page. Guard and Blacklist fit on one page each.
@@ -177,10 +176,13 @@ Every other Wild embed uses the same style: no color, plain
 title, no footer, no timestamp, one field per item — /status (one
 field per section), /fg list (one field per FG role, with its owner),
 the guard log embed (Role / Assigned by / Reason fields), and the FG
-share offer (Role / From / To fields, with its Yes / No buttons). The
+share offer (one line, with its Yes / No buttons). The
 guard DM is an embed in the same style (Role / Member / Server /
 Reason fields) that states what was removed and why — it never asks
-you to get whitelisted.
+you to get whitelisted. The FG share offer and the FG remove
+confirmation are the exception: each is a single one-line embed with
+no fields ("@sharer is offering @role to @member — tap Yes to accept."
+and "Delete @role for good? Tap Yes to delete it.").
 
 ## Prefix commands — read this first
 
@@ -245,16 +247,23 @@ Wild adaptations (these are Wild rules, not Bleed behaviour):
 - **Eligibility is being whitelisted, not boosting.** Bleed gates FG
   roles on boosting the server; Wild gates them on `/whitelist`
   instead.
-- **One FG role per member.** Make a second one only after removing
-  the first with `/fg remove`.
+- **One FG role per member.** A member can hold at most one FG role,
+  whether it's their own or one shared with them. Make a second one
+  only after removing the first with `/fg remove`. Nobody who already
+  holds more than one has any taken away — the rule only applies
+  going forward.
 - **No award role.** Wild used to have one shared "award" role given
   on FG creation; it was removed because it was confusing.
 - **Sharing FG roles.** Only these people can share an FG role: the
   server owner, whitelisted staff, the FG role's owner, and anyone the
-  owner or staff authorised to share it. Staff give someone an FG role
-  (and permission to share it) with `/fg assign`. An FG owner lets
-  someone else share their role with `/fg auth add` — auth is
-  permission to share, not the role itself.
+  owner or staff authorised to share it. `/fg share @member` offers
+  the role automatically: your own FG role first, otherwise the one
+  FG role you can share. If you can share more than one and own
+  none, the bot says so and names them — it can't pick one for you.
+  An FG owner lets someone else share their role with
+  `/fg auth add` — auth is permission to share, not the role itself.
+  The old `/fg assign` command was removed: sharing is the only way
+  to give someone an existing FG role.
 - **Share is Wild-only.** Bleed documents no share command. In Wild,
   `/fg share` lets someone authorised to share an FG role offer it to
   a friend; the friend accepts or declines with buttons. All share

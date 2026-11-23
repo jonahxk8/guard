@@ -15,9 +15,10 @@ export interface GuildSettings {
   /**
    * FG role id -> user ids authorised to share that role. The FG role
    * owner, the server owner, and whitelisted staff are always authorised
-   * and are not listed here. A member gets listed by /fg assign (which
-   * also gives them the role) or by /fg auth add (permission to share
-   * only — they do not get the role itself).
+   * and are not listed here. A member gets listed by /fg auth add
+   * (permission to share only — they do not get the role itself). The
+   * old /fg assign command also listed members here; it was removed,
+   * and the lists are kept so old configs still load.
    */
   fgRoleSharers: Record<string, string[]>;
   /**

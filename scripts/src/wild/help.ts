@@ -27,7 +27,7 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  * fgRoleSharers, the whitelist, Administrator, Manage Server, and the
  * server owner. A normal member sees FG only; an FG owner also sees
  * rename/icon/remove/share/auth; whitelisted staff see Guard, Blacklist,
- * assign, and more. A plain member with no FG role sees the FG category
+ * and more. A plain member with no FG role sees the FG category
  * with a short note and no commands they can't touch. Capability is
  * re-checked on every button press.
  *
@@ -42,8 +42,8 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  *   "no FG role yet" note; Guard and Blacklist appear only when the
  *   user can use at least one of their commands), with buttons to jump
  *   to each one.
- * - Category: one field per visible command. FG has 13 subcommands for
- *   a fully privileged user, so it splits into 2 pages of 7 and 6; for
+ * - Category: one field per visible command. FG has 12 subcommands for
+ *   a fully privileged user, so it splits into 2 pages of 7 and 5; for
  *   other users the pages are re-computed after filtering. Guard and
  *   Blacklist fit on one page. Buttons: [Prev] [Next] where there is
  *   another page, plus [Back].
@@ -284,7 +284,7 @@ export function canSeeEntry(
       return caps.manageServer || caps.whitelisted;
     case "ownerOrWhitelisted":
       // Administrators count as owner here, exactly like the command
-      // handlers: an admin can create, assign, and auth FG roles.
+      // handlers: an admin can create and auth FG roles.
       return caps.owner || caps.admin || caps.whitelisted;
     case "fgOwner":
       return caps.ownsFgRole;
@@ -433,21 +433,12 @@ const FG_ENTRIES: HelpEntry[] = [
   },
   {
     key: "fg share",
-    slash: "/fg share @member @role",
-    prefix: ",fg share @member @role",
+    slash: "/fg share @member",
+    prefix: ",fg share @member",
     purpose: "Offer your FG role",
-    example: "/fg share @Alex @My Role",
-    examplePrefix: ",fg share @Alex @My Role",
+    example: "/fg share @Alex",
+    examplePrefix: ",fg share @Alex",
     gate: "canShare",
-  },
-  {
-    key: "fg assign",
-    slash: "/fg assign @member @role",
-    prefix: ",fg assign @member @role",
-    purpose: "Give an FG role and let them share it",
-    example: "/fg assign @Alex @My Role",
-    examplePrefix: ",fg assign @Alex @My Role",
-    gate: "ownerOrWhitelisted",
   },
   {
     key: "fg auth add",
@@ -543,7 +534,6 @@ const FG_SINGLE_WORDS: Record<string, string> = {
   remove: "fg remove",
   cleanup: "fg cleanup",
   share: "fg share",
-  assign: "fg assign",
 };
 
 export const helpCommand = new SlashCommandBuilder()
@@ -581,7 +571,7 @@ export type HelpResult =
 
 /** The note a plain member with no FG role sees instead of commands. */
 export const NO_FG_ROLE_NOTE =
-  "You don't have an FG role yet — ask an admin or whitelisted member to assign you one.";
+  "You don't have an FG role yet — ask an admin or whitelisted member to create one for you.";
 
 function visibleEntries(category: HelpCategory, ctx: HelpContext): HelpEntry[] {
   return category.entries.filter((entry) => canSeeEntry(entry.gate, ctx.caps));

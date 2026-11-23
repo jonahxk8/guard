@@ -64,13 +64,12 @@ FG roles — Bleed booster-role style. Each member makes their own unique, perso
 - `/fg remove` / `,fg remove` — delete your own FG role. Asks for confirmation first (Yes/No buttons); nothing is deleted until you tap Yes.
 - `/fg list` / `,fg list` — list all FG roles and their owners (Manage Server or whitelisted).
 - `/fg cleanup` / `,fg cleanup` — remove FG roles whose owners left the server (Manage Server).
-- `/fg share @member @role` / `,fg share @member @role` — offer one of your FG roles to a member. Wild-only extra — Bleed documents no share command. You may share only if you are the server owner, an Administrator, whitelisted, the FG role's owner, or authorised to share that role (see below). All errors are invisible (ephemeral) on slash, or auto-deleting on prefix; only the offer itself is public.
-- `/fg assign @member @role` / `,fg assign @member @role` — give an existing FG role to a member, and authorise them to share it (server owner, administrators, or whitelisted only). If they already hold the role, it just authorises them.
+- `/fg share @member` / `,fg share @member` — offer an FG role to a member. Wild-only extra — Bleed documents no share command. You may share only if you are the server owner, an Administrator, whitelisted, the FG role's owner, or authorised to share that role (see below). The role is picked for you: your own FG role first, otherwise the one FG role you can share. The offer is one line: "<@sharer> is offering <@&role> to <@member> — tap Yes to accept." All errors are invisible (ephemeral) on slash, or auto-deleting on prefix; only the offer itself is public.
 - `/fg auth add @member @role` / `,fg auth add @member @role` — let someone share one of your FG roles, without giving them the role (the FG role's owner, the server owner, administrators, or whitelisted only).
 - `/fg auth remove @member @role` / `,fg auth remove @member @role` — take someone's permission to share an FG role away (same gate as auth add; the FG role owner themself can never be removed).
 - `/fg auth list @role` / `,fg auth list @role` — list who can share an FG role, owner first (same gate as auth add).
 
-Sharing FG roles, in three lines: staff assign FG roles to people, so only those people are authorised to share them; an FG owner can authorise others to share their role; auth is permission to share, not the role itself. The old shared "award" role was removed — it was confusing and is gone.
+Sharing FG roles, in three lines: staff share FG roles with people, so only those people are authorised to share them; an FG owner can authorise others to share their role; auth is permission to share, not the role itself. The old `/fg assign` command was removed — sharing is the only way to give someone an existing FG role — and the old shared "award" role was removed too, because it was confusing and is gone. A member can hold at most one FG role, owned or shared; a share or create for someone who already holds one is refused. Nobody who already holds more than one has any taken away.
 
 ## Help
 
@@ -87,17 +86,17 @@ Who sees what: the server owner, anyone with the Discord
 Administrator permission, and whitelisted users / roles see the full
 menu (Guard, FG, Blacklist). An FG owner sees only FG — their own
 role's commands (rename, icon, remove), sharing, and auth. Someone
-assigned an FG role or authed to share one sees only FG share. A
+holding a shared FG role or authed to share one sees only FG share. A
 normal member with no FG role sees the FG category with the note
 "You don't have an FG role yet — ask an admin or whitelisted member
-to assign you one." and no commands they can't touch. Asking for a
+to create one for you." and no commands they can't touch. Asking for a
 command you can't use gets the short error "You can't use that
 command.", never the command's syntax. The capability check runs
 again on every button press, so a member who lost a role or their
 whitelist cannot reach pages through a menu they opened earlier.
 
-FG has 13 subcommands, so it
-splits into 2 pages of 7 and 6 ("Help - FG (1/2)" and "(2/2)") with
+FG has 12 subcommands, so it
+splits into 2 pages of 7 and 5 ("Help - FG (1/2)" and "(2/2)") with
 Prev/Next buttons and a Back button to the main page; the page count
 is recomputed after filtering, so an FG owner sees their 7 commands
 on one page. Guard and Blacklist fit on one page each. `/help fg create`,
@@ -111,10 +110,13 @@ Every other Wild embed uses the same style: no color, plain
 title, no footer, no timestamp, one field per item — /status (one
 field per section), /fg list (one field per FG role, with its owner),
 the guard log embed (Role / Assigned by / Reason fields), and the FG
-share offer (Role / From / To fields, with its Yes / No buttons). The
+share offer (one line, with its Yes / No buttons). The
 guard DM is an embed in the same style (Role / Member / Server /
 Reason fields) that states what was removed and why — it never asks
-you to get whitelisted.
+you to get whitelisted. The FG share offer and the FG remove
+confirmation are the exception: each is a single one-line embed with
+no fields ("@sharer is offering @role to @member — tap Yes to accept."
+and "Delete @role for good? Tap Yes to delete it.").
 
 A bare `,fg` or `,blacklist` (or an unknown subcommand) no longer
 dumps every usage variant — it just says "Use ,help fg" (or

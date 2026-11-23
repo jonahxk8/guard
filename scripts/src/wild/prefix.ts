@@ -293,25 +293,14 @@ function parseFgPrefix(
       args.subcommand = action;
       return { command: "fg", args };
     case "share": {
+      // ,fg share @member — the bot works out which FG role from the
+      // caller (their own role, or the one role they can share).
       const memberId = parseUserToken(tail[0]);
-      const roleId = parseRoleToken(tail[1]);
-      if (!memberId || !roleId) {
-        return usage("Usage: ,fg share @member @role");
+      if (!memberId) {
+        return usage("Usage: ,fg share @member");
       }
       args.subcommand = "share";
       args.users.member = memberId;
-      args.roles.role = roleId;
-      return { command: "fg", args };
-    }
-    case "assign": {
-      const memberId = parseUserToken(tail[0]);
-      const roleId = parseRoleToken(tail[1]);
-      if (!memberId || !roleId) {
-        return usage("Usage: ,fg assign @member @role");
-      }
-      args.subcommand = "assign";
-      args.users.member = memberId;
-      args.roles.role = roleId;
       return { command: "fg", args };
     }
     case "auth": {

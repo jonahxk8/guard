@@ -126,13 +126,14 @@ export function canShareRole(
 }
 
 /**
- * Can this member share an FG role under the assign + auth model?
- * Authorised when they own the FG role, are whitelisted (user or role),
- * or are listed in that role's fgRoleSharers (assigned by staff, or
- * authed by the FG owner). Holding the role alone is NOT enough, and
- * the server owner is handled by callers (owner bypasses the guard).
- * Auth is permission to share only — an authed member need not hold
- * the role at all.
+ * Can this member share an FG role? Authorised when they own the FG
+ * role, are whitelisted (user or role), or are listed in that role's
+ * fgRoleSharers (shared with by staff, or authed by the FG owner).
+ * Holding the role alone is NOT enough, and the server owner is
+ * handled by callers (owner bypasses the guard). Auth is permission
+ * to share only — an authed member need not hold the role at all.
+ * The old /fg assign lists are still read here for backwards
+ * compatibility: anyone listed there can share too.
  */
 export function isFgSharer(
   member: GuildMember,

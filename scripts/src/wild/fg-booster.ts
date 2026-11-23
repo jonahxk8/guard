@@ -19,7 +19,7 @@ import {
   DEFAULT_AVATAR_COLOR,
   getMemberAvatarDominantColor,
 } from "./avatar-color.js";
-import { wildFieldEmbed, wildMessageEmbed } from "./embeds.js";
+import { wildEmbed, wildFieldEmbed, wildMessageEmbed } from "./embeds.js";
 import {
   canAuthFgRole,
   fetchMemberFresh,
@@ -42,15 +42,21 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  *  - One FG role per member (Wild rule).
  *  - /fg share is Wild-only. Bleed documents no share command.
  *
- * Sharing, Wild-only assign + auth model (the award role system was
- * removed — it confused people): the server owner, Administrators, or
- * whitelisted staff assign an FG role to a member with /fg assign,
- * which also makes that member authorised to share it. The FG role's
- * owner can authorise other people to share their role with /fg auth
- * add — auth is permission to share only, they do not get the role
- * itself. Only the server owner, Administrators, whitelisted staff,
- * the FG role owner, and people assigned or authed for that role may
- * share it.
+ * Sharing, Wild-only share + auth model (the award role system was
+ * removed — it confused people — and so was /fg assign, which did the
+ * same thing as /fg create): the server owner, Administrators, or
+ * whitelisted staff create FG roles for people with /fg create. An FG
+ * role is shared with /fg share — the bot works out which FG role from
+ * the caller (their own role, or the one role they are authorised to
+ * share) — and the target taps Yes to accept. The FG role's owner can
+ * authorise other people to share their role with /fg auth add — auth
+ * is permission to share only, they do not get the role itself. Only
+ * the server owner, Administrators, whitelisted staff, the FG role
+ * owner, and people authed for that role may share it.
+ *
+ * One FG role per member (Wild rule): a member may hold at most one FG
+ * role in total, owned or shared. This is enforced going forward only —
+ * members who already hold more than one keep them.
  *
  * All slash replies are ephemeral embeds (short text in the description
  * of a colorless embed), except /fg list and the public share offer
@@ -304,23 +310,9 @@ export const fgCommand = new SlashCommandBuilder()
   .addSubcommand((command) =>
     command
       .setName("share")
-      .setDescription("Offer one of your FG roles to a member")
+      .setDescription("Offer your FG role to a member")
       .addUserOption((option) =>
         option.setName("member").setDescription("Member to offer the role to").setRequired(true),
-      )
-      .addRoleOption((option) =>
-        option.setName("role").setDescription("FG role to share").setRequired(true),
-      ),
-  )
-  .addSubcommand((command) =>
-    command
-      .setName("assign")
-      .setDescription("Give an FG role to a member and let them share it")
-      .addUserOption((option) =>
-        option.setName("member").setDescription("Member to assign the role to").setRequired(true),
-      )
-      .addRoleOption((option) =>
-        option.setName("role").setDescription("FG role to assign").setRequired(true),
       ),
   )
   .addSubcommandGroup((group) =>
@@ -435,12 +427,19 @@ function findOwnFgRole(
   return null;
 }
 
-function findAnyFgRole(
-  guild: Guild,
+/**
+ * Does this member hold ANY FG role (owned or shared)? One FG role per
+ * member is the rule: a member who already holds one — their own or
+ * one shared with them — cannot be given another. Only enforced going
+ * forward; members who already hold more than one keep them.
+ */
+function memberHoldsAnyFgRole(
+  member: { roles: { cache: { has: (roleId: string) => boolean } } },
   settings: GuildSettings,
-  userId: string,
-): string | null {
-  return findOwnFgRole(guild, settings, userId)?.roleId ?? null;
+): boolean {
+  return Object.keys(settings.fgRoles).some((roleId) =>
+    member.roles.cache.has(roleId),
+  );
 }
 
 async function handleBaseCommand(
@@ -497,7 +496,7 @@ async function createFgRole(
     await replyText(interaction, "That person must be a member of this server first.");
     return;
   }
-  if (findAnyFgRole(guild, settings, targetId)) {
+  if (memberHoldsAnyFgRole(target, settings)) {
     await replyText(
       interaction,
       forSelf
@@ -903,11 +902,7 @@ async function handleRemoveCommand(
   // ephemeral flag and sends to the channel).
   await interaction.reply({
     embeds: [
-      wildFieldEmbed(
-        "Remove FG role",
-        [{ name: "Role", value: role ? roleMention(role) : "FG role" }],
-        `Delete ${roleName} for good? Tap Yes to delete it.`,
-      ),
+      wildEmbed("Remove FG role", `Delete ${roleName} for good? Tap Yes to delete it.`),
     ],
     components: [buildDecisionButtons("fg-remove")],
     ephemeral: true,
@@ -1149,72 +1144,6 @@ async function resolveFgRole(
 }
 
 /**
- * /fg assign @member @role — server owner, administrators, or
- * whitelisted staff only.
- * Gives the FG role to the member AND makes them authorised to share
- * it. If they already hold the role, just authorises them to share it.
- */
-async function handleAssignCommand(
-  interaction: ChatInputCommandInteraction,
-  store: ConfigStore,
-): Promise<void> {
-  if (!(await requireFgCreator(interaction, store))) return;
-  const guild = interaction.guild!;
-  const settings = store.get(guild.id);
-  const role = await resolveFgRole(interaction, settings);
-  if (!role) return;
-  const targetUser = interaction.options.getUser("member", true);
-  const target = await guild.members.fetch(targetUser.id).catch(() => null);
-  if (!target) {
-    await replyText(interaction, "That person must be a member of this server first.");
-    return;
-  }
-
-  const nextSettings = store.get(guild.id);
-  const sharers = nextSettings.fgRoleSharers[role.id] ?? [];
-  const alreadyHasRole = target.roles.cache.has(role.id);
-  const alreadyAuthorised = sharers.includes(target.id);
-
-  if (!alreadyHasRole) {
-    const botMember =
-      guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
-    if (
-      !botMember?.permissions.has(PermissionFlagsBits.ManageRoles) ||
-      botMember.roles.highest.comparePositionTo(role) <= 0
-    ) {
-      await replyText(
-        interaction,
-        "The bot can't manage that FG role. Move its role above it first.",
-      );
-      return;
-    }
-    try {
-      await target.roles.add(role, `FG role assigned by ${interaction.user.id}`);
-    } catch {
-      await replyText(
-        interaction,
-        "The bot couldn't give them that FG role. Check its permissions and try again.",
-      );
-      return;
-    }
-  }
-
-  if (!alreadyAuthorised) {
-    nextSettings.fgRoleSharers[role.id] = [...sharers, target.id];
-  }
-  await saveSettings(
-    interaction,
-    store,
-    nextSettings,
-    alreadyHasRole
-      ? alreadyAuthorised
-        ? `${memberDisplayName(target)} is already authorised to share ${roleDisplayName(role)}.`
-        : `${memberDisplayName(target)} can now share ${roleDisplayName(role)}.`
-      : `${memberDisplayName(target)} now has ${roleDisplayName(role)} and can share it.`,
-  );
-}
-
-/**
  * /fg auth add/remove/list @member @role — the FG role's owner, the
  * server owner, or a whitelisted member. Auth is permission to share
  * only: the member does NOT get the role itself.
@@ -1329,22 +1258,56 @@ async function handleAuthCommand(
   );
 }
 
-function buildShareEmbed(
-  title: string,
-  requesterId: string,
-  targetId: string,
-  role: Role | null,
-  status?: string,
-): EmbedBuilder {
-  return wildFieldEmbed(
-    title,
-    [
-      { name: "Role", value: role ? roleMention(role) : "FG role" },
-      { name: "From", value: `<@${requesterId}>` },
-      { name: "To", value: `<@${targetId}>` },
-    ],
-    status ?? "Tap Yes to accept.",
-  );
+/**
+ * The share offer embed, sleek: title + one description line, no
+ * fields. The line carries everything — who is offering which role to
+ * whom, or what happened to the offer.
+ */
+function buildShareEmbed(title: string, description: string): EmbedBuilder {
+  return wildEmbed(title, description);
+}
+
+/**
+ * Work out which FG role a caller is sharing, from the caller alone —
+ * /fg share takes only @member now, no role argument.
+ * (a) If the caller owns an FG role, share that one.
+ * (b) Else if the caller is authorised to share exactly one FG role,
+ *     share that one.
+ * (c) Else (authorised to share several and owns none) the bot cannot
+ *     pick one — the caller gets an error naming the roles.
+ * Returns the role, or an error message to reply with.
+ */
+function resolveShareRole(
+  guild: Guild,
+  requester: GuildMember,
+  settings: GuildSettings,
+): { role: Role } | { error: string } {
+  const own = findOwnFgRole(guild, settings, requester.id);
+  if (own) return { role: own.role };
+  const admin = isBotAdmin(requester, guild.ownerId);
+  const shareable: Role[] = [];
+  for (const roleId of Object.keys(settings.fgRoles)) {
+    const role = guild.roles.cache.get(roleId);
+    if (!role) continue;
+    if (admin || isFgSharer(requester, roleId, settings)) {
+      shareable.push(role);
+    }
+  }
+  if (shareable.length === 1) return { role: shareable[0] };
+  if (shareable.length === 0) {
+    return {
+      error:
+        "You aren't authorised to share an FG role. Only the server owner, administrators, whitelisted members, the FG role owner, and people authed for it can share it.",
+    };
+  }
+  const names = shareable.slice(0, 10).map((role) => roleMention(role));
+  const extra = shareable.length - names.length;
+  return {
+    error:
+      `You can share more than one FG role: ${names.join(", ")}` +
+      (extra > 0 ? `, and ${extra} more` : "") +
+      ". The bot can't pick one for you.",
+  };
 }
 
 function buildDecisionButtons(prefix = "fg-share", disabled = false): ActionRowBuilder<ButtonBuilder> {
@@ -1385,9 +1348,6 @@ async function finishShareOffer(
       embeds: [
         buildShareEmbed(
           "FG role offer ended",
-          requesterId,
-          targetId,
-          role ?? null,
           "This FG role is no longer available.",
         ),
       ],
@@ -1402,9 +1362,6 @@ async function finishShareOffer(
       embeds: [
         buildShareEmbed(
           "FG role declined",
-          requesterId,
-          targetId,
-          role,
           `<@${targetId}> declined ${roleMention(role)}.`,
         ),
       ],
@@ -1423,9 +1380,6 @@ async function finishShareOffer(
       embeds: [
         buildShareEmbed(
           "FG role offer ended",
-          requesterId,
-          targetId,
-          role,
           "The person who shared this role no longer has share access.",
         ),
       ],
@@ -1446,9 +1400,6 @@ async function finishShareOffer(
       embeds: [
         buildShareEmbed(
           "FG role could not be applied",
-          requesterId,
-          targetId,
-          role,
           "The bot can't manage this role right now. Ask server staff to check its role order and permissions.",
         ),
       ],
@@ -1458,15 +1409,14 @@ async function finishShareOffer(
     return true;
   }
 
-  if (target.roles.cache.has(role.id)) {
+  // One FG role per member, re-checked at accept time: the target
+  // may have gained an FG role since the offer was sent.
+  if (memberHoldsAnyFgRole(target, store.get(guild.id))) {
     await button.update({
       embeds: [
         buildShareEmbed(
           "FG role already assigned",
-          requesterId,
-          targetId,
-          role,
-          `<@${targetId}> already has ${roleMention(role)}.`,
+          `<@${targetId}> already has an FG role.`,
         ),
       ],
       components: [],
@@ -1481,9 +1431,6 @@ async function finishShareOffer(
       embeds: [
         buildShareEmbed(
           "FG role accepted",
-          requesterId,
-          targetId,
-          role,
           `<@${targetId}> accepted ${roleMention(role)}.`,
         ),
       ],
@@ -1495,10 +1442,7 @@ async function finishShareOffer(
       embeds: [
         buildShareEmbed(
           "FG role could not be applied",
-          requesterId,
-          targetId,
-          role,
-          "The bot couldn't assign this role. Ask server staff to check its permissions.",
+          "The bot couldn't give them this role. Ask server staff to check its permissions.",
         ),
       ],
       components: [],
@@ -1512,21 +1456,13 @@ async function handleShareCommand(
   interaction: ChatInputCommandInteraction,
   store: ConfigStore,
 ): Promise<void> {
-  // Wild-only extra: Bleed documents no share command. All errors here are
-  // ephemeral plain text; only the offer itself is public.
+  // Wild-only extra: Bleed documents no share command. /fg share takes
+  // only @member — the bot works out which FG role from the caller
+  // (their own role, or the one role they are authorised to share).
+  // All errors here are ephemeral embeds; only the offer itself is public.
   const guild = interaction.guild!;
   const settings = store.get(guild.id);
   const memberUser = interaction.options.getUser("member", true);
-  const selectedRole = interaction.options.getRole("role", true);
-  const role = guild.roles.cache.get(selectedRole.id);
-
-  if (!role || !settings.fgRoles[role.id]) {
-    await replyText(
-      interaction,
-      "That isn't an FG role. Make one with /fg create first.",
-    );
-    return;
-  }
   if (memberUser.id === interaction.user.id) {
     await replyText(interaction, "You can't share a role with yourself.");
     return;
@@ -1541,23 +1477,16 @@ async function handleShareCommand(
     await replyText(interaction, "Both people need to be members of this server.");
     return;
   }
-  // Assign + auth model: the caller may share when they are the server
-  // owner, an Administrator, whitelisted, the FG role's owner, or listed
-  // as an authorised sharer for that role (assigned by staff or authed
-  // by the owner). Holding the role alone is not enough, and an authed
-  // member who does not hold the role can still share it.
-  if (
-    !isBotAdmin(requester, guild.ownerId) &&
-    !isFgSharer(requester, role.id, settings)
-  ) {
-    await replyText(
-      interaction,
-      "You aren't authorised to share that FG role. Only the server owner, administrators, whitelisted members, the FG role owner, and people assigned or authed for it can share it.",
-    );
+  const resolved = resolveShareRole(guild, requester, settings);
+  if ("error" in resolved) {
+    await replyText(interaction, resolved.error);
     return;
   }
-  if (target.roles.cache.has(role.id)) {
-    await replyText(interaction, "They already have that FG role.");
+  const role = resolved.role;
+  // One FG role per member: the target may not already hold any FG
+  // role, owned or shared.
+  if (memberHoldsAnyFgRole(target, settings)) {
+    await replyText(interaction, "They already have an FG role.");
     return;
   }
 
@@ -1575,7 +1504,12 @@ async function handleShareCommand(
   }
 
   await interaction.reply({
-    embeds: [buildShareEmbed("FG role share", requester.id, target.id, role)],
+    embeds: [
+      buildShareEmbed(
+        "FG role share",
+        `<@${requester.id}> is offering ${roleMention(role)} to <@${target.id}> — tap Yes to accept.`,
+      ),
+    ],
     components: [buildDecisionButtons()],
     allowedMentions: { parse: [], users: [target.id] },
   });
@@ -1635,10 +1569,7 @@ async function handleShareCommand(
         embeds: [
           buildShareEmbed(
             "FG role offer expired",
-            requester.id,
-            target.id,
-            role,
-            "This offer expired without a response.",
+            `<@${requester.id}>'s offer of ${roleMention(role)} to <@${target.id}> expired without a response.`,
           ),
         ],
         components: [buildDecisionButtons("fg-share", true)],
@@ -1688,9 +1619,6 @@ export async function handleFgCommand(
       return;
     case "cleanup":
       await handleCleanupCommand(interaction, store);
-      return;
-    case "assign":
-      await handleAssignCommand(interaction, store);
       return;
     case "share":
       await handleShareCommand(interaction, store);

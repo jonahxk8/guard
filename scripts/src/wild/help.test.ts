@@ -175,7 +175,7 @@ test("main help page lists the 3 categories as fields, with category buttons", (
     ["Guard", "FG", "Blacklist"],
   );
   assert.match(result.page.fields[0].value, /Protect roles/);
-  assert.match(result.page.fields[1].value, /13 commands/);
+  assert.match(result.page.fields[1].value, /12 commands/);
   assert.match(result.page.description ?? "", /\/help <command>/);
   assert.deepEqual(
     result.page.buttons.map((button) => button.label),
@@ -209,18 +209,17 @@ test("/help fg page 1 has 7 commands and a Next button", () => {
   assert.doesNotMatch(fieldTextFromPage(result.page), /,fg /);
 });
 
-test("/help fg page 2 has cleanup, share, assign, and auth, and a Prev button", () => {
+test("/help fg page 2 has cleanup, share, and auth, and a Prev button", () => {
   const result = resolveHelpTarget("category:fg:2");
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
   assert.equal(result.page.title, "Help - FG (2/2)");
-  assert.equal(result.page.fields.length, 6);
+  assert.equal(result.page.fields.length, 5);
   assert.equal(result.page.fields[0].name, "`/fg cleanup`");
-  assert.equal(result.page.fields[1].name, "`/fg share @member @role`");
-  assert.equal(result.page.fields[2].name, "`/fg assign @member @role`");
-  assert.equal(result.page.fields[3].name, "`/fg auth add @member @role`");
-  assert.equal(result.page.fields[4].name, "`/fg auth remove @member @role`");
-  assert.equal(result.page.fields[5].name, "`/fg auth list @role`");
+  assert.equal(result.page.fields[1].name, "`/fg share @member`");
+  assert.equal(result.page.fields[2].name, "`/fg auth add @member @role`");
+  assert.equal(result.page.fields[3].name, "`/fg auth remove @member @role`");
+  assert.equal(result.page.fields[4].name, "`/fg auth list @role`");
   assert.deepEqual(
     result.page.buttons.map((button) => button.label),
     ["Prev", "Back"],
@@ -330,7 +329,7 @@ test("normal user FG page shows the note and no commands", () => {
 });
 
 test("normal user asking for a command they can't use gets an error, never its syntax", () => {
-  for (const topic of ["fg base", "fg list", "fg cleanup", "fg color", "fg create", "fg rename", "fg share", "fg assign", "fg auth add", "protect", "blacklist add", "status"]) {
+  for (const topic of ["fg base", "fg list", "fg cleanup", "fg color", "fg create", "fg rename", "fg share", "fg auth add", "protect", "blacklist add", "status"]) {
     const result = resolveHelpTopic(topic, NORMAL);
     assert.equal(result.kind, "error", topic);
     if (result.kind !== "error") continue;
@@ -367,8 +366,7 @@ test("personas see exactly the FG commands they can use", () => {
     "`/fg create <name> [@member]`",
     "`/fg list`",
     "`/fg cleanup`",
-    "`/fg share @member @role`",
-    "`/fg assign @member @role`",
+    "`/fg share @member`",
     "`/fg auth add @member @role`",
     "`/fg auth remove @member @role`",
     "`/fg auth list @role`",
@@ -382,19 +380,17 @@ test("personas see exactly the FG commands they can use", () => {
     "`/fg create <name> [@member]`",
     "`/fg list`",
     "`/fg cleanup`",
-    "`/fg share @member @role`",
-    "`/fg assign @member @role`",
+    "`/fg share @member`",
     "`/fg auth add @member @role`",
     "`/fg auth remove @member @role`",
     "`/fg auth list @role`",
   ]);
-  // Whitelisted staff: creation, listing, sharing, assign, and auth.
+  // Whitelisted staff: creation, listing, sharing, and auth.
   assert.deepEqual(seen(WHITELISTED), [
     "`/fg color <color> [second_color]`",
     "`/fg create <name> [@member]`",
     "`/fg list`",
-    "`/fg share @member @role`",
-    "`/fg assign @member @role`",
+    "`/fg share @member`",
     "`/fg auth add @member @role`",
     "`/fg auth remove @member @role`",
     "`/fg auth list @role`",
@@ -405,14 +401,14 @@ test("personas see exactly the FG commands they can use", () => {
     "`/fg rename <name>`",
     "`/fg icon <url>`",
     "`/fg remove`",
-    "`/fg share @member @role`",
+    "`/fg share @member`",
     "`/fg auth add @member @role`",
     "`/fg auth remove @member @role`",
     "`/fg auth list @role`",
   ]);
   // Assigned holder and authed sharer (no role of their own): share only.
-  assert.deepEqual(seen(HOLDER), ["`/fg share @member @role`"]);
-  assert.deepEqual(seen(SHARER), ["`/fg share @member @role`"]);
+  assert.deepEqual(seen(HOLDER), ["`/fg share @member`"]);
+  assert.deepEqual(seen(SHARER), ["`/fg share @member`"]);
   // Plain member: nothing.
   assert.deepEqual(seen(NORMAL), []);
 });

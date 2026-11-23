@@ -30,6 +30,7 @@ const STALE_NAMES = [
   "staff",
   "access",
   "award",
+  "assign",
 ];
 
 type CommandJson = {
@@ -103,7 +104,6 @@ test("slash registration is exactly the current command set", () => {
 
 test("slash registration has no stale subcommands", () => {
   assert.deepEqual(subcommandNames(fgCommand).sort(), [
-    "assign",
     "auth",
     "base",
     "cleanup",
@@ -157,4 +157,8 @@ test("slash registration has the expected options", () => {
   // /fg create is name + optional member only: the color comes from
   // the member's profile picture, so there are no color options.
   assert.deepEqual(optionNames(fgCommand, "create"), ["name", "member"]);
+  // /fg share takes only @member: the bot works out which FG role
+  // from the caller. /fg assign is gone entirely.
+  assert.deepEqual(optionNames(fgCommand, "share"), ["member"]);
+  assert.ok(!subcommandNames(fgCommand).includes("assign"));
 });

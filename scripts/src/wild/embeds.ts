@@ -18,8 +18,11 @@ export interface WildField {
  * - One field per item: field name is the command syntax (in the form
  *   help was invoked with), field value is one short purpose line —
  *   there are no "Who:" lines; help is filtered per user instead.
- * - Any page indicator goes in the TITLE ("Wild help - FG (1/2)"),
+ * - Any page indicator goes in the TITLE ("Help - FG (1/2)"),
  *   never in a footer.
+ * - Small replies (confirmations, errors, one-line hints) are embeds
+ *   too: wildMessageEmbed puts the short text in the description of a
+ *   colourless embed with no title. No plain-text replies anywhere.
  */
 export function wildFieldEmbed(
   title: string,
@@ -41,4 +44,14 @@ export function wildFieldEmbed(
 /** Backwards-compatible helper: an embed with a title + description. */
 export function wildEmbed(title: string, description: string): EmbedBuilder {
   return wildFieldEmbed(title, [], description);
+}
+
+/**
+ * The one format for every small reply: the short text as the
+ * description of a colourless embed with no title, no footer, no
+ * timestamp, no emojis. Used for confirmations, errors, and one-line
+ * hints — never send a small reply as plain text.
+ */
+export function wildMessageEmbed(text: string): EmbedBuilder {
+  return new EmbedBuilder().setDescription(text);
 }

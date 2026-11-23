@@ -7,7 +7,12 @@ import {
   PermissionFlagsBits,
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
-import { handleGuardCommand } from "./commands.js";
+import {
+  buildBlacklistListPage,
+  handleBlacklistListButton,
+  handleGuardCommand,
+  parseBlacklistButton,
+} from "./commands.js";
 
 const GUILD_ID = "111111111111111111";
 const ROLE_ID = "333333333333333333";
@@ -38,7 +43,9 @@ function makeSettings(partial: Partial<GuildSettings> = {}): GuildSettings {
   };
 }
 
-function createStore(initialSettings: GuildSettings = makeSettings()) {
+function createStore(
+  initialSettings: GuildSettings = makeSettings(),
+) {
   let settings = initialSettings;
   let saveCount = 0;
   const store = {
@@ -55,6 +62,12 @@ function createStore(initialSettings: GuildSettings = makeSettings()) {
     getSettings: () => settings,
     getSaveCount: () => saveCount,
   };
+}
+
+/** Text of a small reply: now always an embed description, never plain content. */
+function replyTextOf(reply: Reply): string {
+  const embed = reply.embeds?.[0]?.toJSON() as { description?: string } | undefined;
+  return embed?.description ?? reply.content ?? "";
 }
 
 function createInteraction(options: {
@@ -156,9 +169,9 @@ test("/protect adds a role with an ephemeral plain-text reply", async () => {
   assert.deepEqual(config.getSettings().protectedRoleIds, [ROLE_ID]);
   assert.equal(config.getSaveCount(), 1);
   assert.equal(interaction.replies[0].ephemeral, true);
-  assert.equal(interaction.replies[0].embeds, undefined);
-  assert.match(interaction.replies[0].content ?? "", /Pic is now protected/i);
-  assert.doesNotMatch(interaction.replies[0].content ?? "", /\[object Object\]/);
+  assert.equal(interaction.replies[0].embeds?.length, 1);
+  assert.match(replyTextOf(interaction.replies[0]), /Pic is now protected/i);
+  assert.doesNotMatch(replyTextOf(interaction.replies[0]), /\[object Object\]/);
 });
 
 test("/protect removes a role that is already protected", async () => {
@@ -168,7 +181,7 @@ test("/protect removes a role that is already protected", async () => {
   await handleGuardCommand(interaction.interaction, config.store);
 
   assert.deepEqual(config.getSettings().protectedRoleIds, []);
-  assert.match(interaction.replies[0].content ?? "", /no longer protected/i);
+  assert.match(replyTextOf(interaction.replies[0]), /no longer protected/i);
 });
 
 test("/protect rejects an Administrator role", async () => {
@@ -183,7 +196,7 @@ test("/protect rejects an Administrator role", async () => {
 
   assert.deepEqual(config.getSettings().protectedRoleIds, []);
   assert.equal(config.getSaveCount(), 0);
-  assert.match(interaction.replies[0].content ?? "", /Administrator/i);
+  assert.match(replyTextOf(interaction.replies[0]), /Administrator/i);
 });
 
 test("/protect without Manage Server is rejected", async () => {
@@ -191,13 +204,14 @@ test("/protect without Manage Server is rejected", async () => {
   const interaction = createInteraction({
     commandName: "protect",
     roleId: ROLE_ID,
+    userId: USER_ID,
     canManageServer: false,
   });
 
   await handleGuardCommand(interaction.interaction, config.store);
 
   assert.equal(config.getSaveCount(), 0);
-  assert.match(interaction.replies[0].content ?? "", /Manage Server/i);
+  assert.match(replyTextOf(interaction.replies[0]), /Manage Server/i);
 });
 
 test("/whitelist toggles a user on and then off", async () => {
@@ -210,8 +224,8 @@ test("/whitelist toggles a user on and then off", async () => {
   await handleGuardCommand(add.interaction, config.store);
 
   assert.deepEqual(config.getSettings().allowedUserIds, [USER_ID]);
-  assert.match(add.replies[0].content ?? "", /Alex is now whitelisted/i);
-  assert.doesNotMatch(add.replies[0].content ?? "", /\[object Object\]/);
+  assert.match(replyTextOf(add.replies[0]), /Alex is now whitelisted/i);
+  assert.doesNotMatch(replyTextOf(add.replies[0]), /\[object Object\]/);
   assert.equal(add.replies[0].ephemeral, true);
 
   const remove = createInteraction({
@@ -221,8 +235,8 @@ test("/whitelist toggles a user on and then off", async () => {
   await handleGuardCommand(remove.interaction, config.store);
 
   assert.deepEqual(config.getSettings().allowedUserIds, []);
-  assert.match(remove.replies[0].content ?? "", /Alex is no longer whitelisted/i);
-  assert.doesNotMatch(remove.replies[0].content ?? "", /\[object Object\]/);
+  assert.match(replyTextOf(remove.replies[0]), /Alex is no longer whitelisted/i);
+  assert.doesNotMatch(replyTextOf(remove.replies[0]), /\[object Object\]/);
 });
 
 test("/whitelist toggles a role", async () => {
@@ -235,8 +249,8 @@ test("/whitelist toggles a role", async () => {
   await handleGuardCommand(interaction.interaction, config.store);
 
   assert.deepEqual(config.getSettings().allowedRoleIds, [ROLE_ID]);
-  assert.match(interaction.replies[0].content ?? "", /Pic is now whitelisted/i);
-  assert.doesNotMatch(interaction.replies[0].content ?? "", /\[object Object\]/);
+  assert.match(replyTextOf(interaction.replies[0]), /Pic is now whitelisted/i);
+  assert.doesNotMatch(replyTextOf(interaction.replies[0]), /\[object Object\]/);
 });
 
 test("/whitelist with no target asks for one person or role", async () => {
@@ -246,7 +260,7 @@ test("/whitelist with no target asks for one person or role", async () => {
   await handleGuardCommand(interaction.interaction, config.store);
 
   assert.equal(config.getSaveCount(), 0);
-  assert.match(interaction.replies[0].content ?? "", /Pick one person or one role/i);
+  assert.match(replyTextOf(interaction.replies[0]), /Pick one person or one role/i);
 });
 
 test("/setup sets the alert channel", async () => {
@@ -259,8 +273,8 @@ test("/setup sets the alert channel", async () => {
   await handleGuardCommand(interaction.interaction, config.store);
 
   assert.equal(config.getSettings().logChannelId, CHANNEL_ID);
-  assert.match(interaction.replies[0].content ?? "", /Alerts will go to #logs-demo/i);
-  assert.doesNotMatch(interaction.replies[0].content ?? "", /\[object Object\]/);
+  assert.match(replyTextOf(interaction.replies[0]), /Alerts will go to #logs-demo/i);
+  assert.doesNotMatch(replyTextOf(interaction.replies[0]), /\[object Object\]/);
 });
 
 test("/setup with no channel turns alerts off", async () => {
@@ -270,7 +284,7 @@ test("/setup with no channel turns alerts off", async () => {
   await handleGuardCommand(interaction.interaction, config.store);
 
   assert.equal(config.getSettings().logChannelId, null);
-  assert.match(interaction.replies[0].content ?? "", /Alerts are turned off/i);
+  assert.match(replyTextOf(interaction.replies[0]), /Alerts are turned off/i);
 });
 
 test("/status shows protected, FG, whitelisted — and no command list", async () => {
@@ -348,7 +362,7 @@ test("/blacklist add requires the role to be protected first", async () => {
 
   assert.deepEqual(config.getSettings().blacklist, {});
   assert.equal(config.getSaveCount(), 0);
-  assert.match(interaction.replies[0].content ?? "", /Protect that role first/i);
+  assert.match(replyTextOf(interaction.replies[0]), /Protect that role first/i);
 });
 
 test("/blacklist add, duplicate add, remove, and list round-trip", async () => {
@@ -362,8 +376,8 @@ test("/blacklist add, duplicate add, remove, and list round-trip", async () => {
   });
   await handleGuardCommand(add.interaction, config.store);
   assert.deepEqual(config.getSettings().blacklist, { [USER_ID]: [ROLE_ID] });
-  assert.match(add.replies[0].content ?? "", /Alex is now blacklisted from <@&333333333333333333>/);
-  assert.doesNotMatch(add.replies[0].content ?? "", /\[object Object\]/);
+  assert.match(replyTextOf(add.replies[0]), /Alex is now blacklisted from <@&333333333333333333>/);
+  assert.doesNotMatch(replyTextOf(add.replies[0]), /\[object Object\]/);
 
   const duplicate = createInteraction({
     commandName: "blacklist",
@@ -373,16 +387,20 @@ test("/blacklist add, duplicate add, remove, and list round-trip", async () => {
   });
   await handleGuardCommand(duplicate.interaction, config.store);
   assert.deepEqual(config.getSettings().blacklist, { [USER_ID]: [ROLE_ID] });
-  assert.match(duplicate.replies[0].content ?? "", /Alex is already blacklisted/i);
-  assert.doesNotMatch(duplicate.replies[0].content ?? "", /\[object Object\]/);
+  assert.match(replyTextOf(duplicate.replies[0]), /Alex is already blacklisted/i);
+  assert.doesNotMatch(replyTextOf(duplicate.replies[0]), /\[object Object\]/);
 
   const list = createInteraction({
     commandName: "blacklist",
     subcommand: "list",
+    roleId: ROLE_ID,
   });
   await handleGuardCommand(list.interaction, config.store);
-  assert.match(list.replies[0].content ?? "", new RegExp(`<@${USER_ID}>`));
-  assert.match(list.replies[0].content ?? "", new RegExp(`<@&${ROLE_ID}>`));
+  const listEmbed = list.replies[0].embeds?.[0].toJSON();
+  assert.equal(listEmbed?.title, "Blacklist");
+  assert.equal(listEmbed?.fields?.length, 1);
+  assert.equal(listEmbed?.fields?.[0].name, "1. Alex");
+  assert.equal(listEmbed?.fields?.[0].value, "Blacklisted from Pic");
 
   const remove = createInteraction({
     commandName: "blacklist",
@@ -392,8 +410,8 @@ test("/blacklist add, duplicate add, remove, and list round-trip", async () => {
   });
   await handleGuardCommand(remove.interaction, config.store);
   assert.deepEqual(config.getSettings().blacklist, {});
-  assert.match(remove.replies[0].content ?? "", /Alex is no longer blacklisted/i);
-  assert.doesNotMatch(remove.replies[0].content ?? "", /\[object Object\]/);
+  assert.match(replyTextOf(remove.replies[0]), /Alex is no longer blacklisted/i);
+  assert.doesNotMatch(replyTextOf(remove.replies[0]), /\[object Object\]/);
 
   const removeAgain = createInteraction({
     commandName: "blacklist",
@@ -402,13 +420,14 @@ test("/blacklist add, duplicate add, remove, and list round-trip", async () => {
     roleId: ROLE_ID,
   });
   await handleGuardCommand(removeAgain.interaction, config.store);
-  assert.match(removeAgain.replies[0].content ?? "", /isn't blacklisted/i);
+  assert.match(replyTextOf(removeAgain.replies[0]), /isn't blacklisted/i);
 });
 
 test("/blacklist list works for a whitelisted member without Manage Server", async () => {
   const config = createStore(
     makeSettings({
       allowedUserIds: [USER_ID],
+      protectedRoleIds: [ROLE_ID],
       blacklist: { [USER_ID]: [ROLE_ID] },
     }),
   );
@@ -416,12 +435,17 @@ test("/blacklist list works for a whitelisted member without Manage Server", asy
     commandName: "blacklist",
     subcommand: "list",
     userId: USER_ID,
+    roleId: ROLE_ID,
     canManageServer: false,
   });
 
   await handleGuardCommand(interaction.interaction, config.store);
 
-  assert.match(interaction.replies[0].content ?? "", new RegExp(`<@${USER_ID}>`));
+  const embed = interaction.replies[0].embeds?.[0].toJSON();
+  assert.equal(embed?.title, "Blacklist");
+  assert.equal(embed?.fields?.length, 1);
+  assert.equal(embed?.fields?.[0].name, "1. Alex");
+  assert.equal(embed?.fields?.[0].value, "Blacklisted from Pic");
 });
 
 test("/blacklist list rejects a non-whitelisted member without Manage Server", async () => {
@@ -435,7 +459,7 @@ test("/blacklist list rejects a non-whitelisted member without Manage Server", a
 
   await handleGuardCommand(interaction.interaction, config.store);
 
-  assert.match(interaction.replies[0].content ?? "", /Only Manage Server members or whitelisted/i);
+  assert.match(replyTextOf(interaction.replies[0]), /Only Manage Server members or whitelisted/i);
 });
 
 test("/blacklist add without Manage Server is rejected", async () => {
@@ -451,7 +475,7 @@ test("/blacklist add without Manage Server is rejected", async () => {
   await handleGuardCommand(interaction.interaction, config.store);
 
   assert.equal(config.getSaveCount(), 0);
-  assert.match(interaction.replies[0].content ?? "", /Manage Server/i);
+  assert.match(replyTextOf(interaction.replies[0]), /Manage Server/i);
 });
 
 test("/status shows the blacklist count", async () => {
@@ -488,4 +512,150 @@ test("/status shows Blacklisted: 1 after a blacklist add (count is live)", async
     (embed?.fields ?? []).map((field) => [field.name, field.value]),
   );
   assert.equal(fields["Blacklisted"], "1");
+});
+
+/** /blacklist list is a paginated embed, 10 users per page. */
+
+function blacklistSettings(count: number): GuildSettings {
+  const blacklist: Record<string, string[]> = {};
+  for (let i = 0; i < count; i += 1) {
+    blacklist[`2000000000000000${String(i).padStart(2, "0")}`] = [ROLE_ID];
+  }
+  return makeSettings({ protectedRoleIds: [ROLE_ID], blacklist });
+}
+
+async function listBlacklist(count: number) {
+  const config = createStore(blacklistSettings(count));
+  const { interaction, replies } = createInteraction({
+    commandName: "blacklist",
+    subcommand: "list",
+    roleId: ROLE_ID,
+  });
+  await handleGuardCommand(interaction, config.store);
+  return { replies };
+}
+
+test("/blacklist list with an empty blacklist is one short embed, no buttons", async () => {
+  const { replies } = await listBlacklist(0);
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  const embed = replies[0].embeds?.[0].toJSON();
+  assert.equal(embed?.title, "Blacklist");
+  assert.match(embed?.description ?? "", /blacklist is empty/i);
+  assert.equal(embed?.color, undefined);
+});
+
+test("/blacklist list with 1 entry is one page with one field", async () => {
+  const { replies } = await listBlacklist(1);
+  const embed = replies[0].embeds?.[0].toJSON();
+  assert.equal(embed?.title, "Blacklist");
+  assert.equal(embed?.fields?.length, 1);
+  assert.equal(embed?.fields?.[0].name, "1. Alex");
+  assert.equal(embed?.fields?.[0].value, "Blacklisted from Pic");
+});
+
+test("/blacklist list paginates at 10 per page: 10, 11, and 25 entries", async () => {
+  const ten = await listBlacklist(10);
+  const tenEmbed = ten.replies[0].embeds?.[0].toJSON();
+  assert.equal(tenEmbed?.title, "Blacklist");
+  assert.equal(tenEmbed?.fields?.length, 10);
+  assert.equal(tenEmbed?.fields?.[0].name, "1. Alex");
+  assert.equal(tenEmbed?.fields?.[9].name, "10. Alex");
+
+  const eleven = await listBlacklist(11);
+  const elevenEmbed = eleven.replies[0].embeds?.[0].toJSON();
+  assert.equal(elevenEmbed?.title, "Blacklist (1/2)");
+  assert.equal(elevenEmbed?.fields?.length, 10);
+
+  const page2 = buildBlacklistListPage(
+    Array.from({ length: 11 }, (_, i) => ({
+      userId: `user-${i}`,
+      roleId: ROLE_ID,
+      userName: `User ${i}`,
+      roleName: "Pic",
+    })),
+    2,
+  );
+  assert.equal(page2.page, 2);
+  assert.equal(page2.totalPages, 2);
+  assert.equal(page2.fields.length, 1);
+
+  const twentyFive = await listBlacklist(25);
+  const twentyFiveEmbed = twentyFive.replies[0].embeds?.[0].toJSON();
+  assert.equal(twentyFiveEmbed?.title, "Blacklist (1/3)");
+  assert.equal(twentyFiveEmbed?.fields?.length, 10);
+  const lastPage = buildBlacklistListPage(
+    Array.from({ length: 25 }, (_, i) => ({
+      userId: `user-${i}`,
+      roleId: ROLE_ID,
+      userName: `User ${i}`,
+      roleName: "Pic",
+    })),
+    3,
+  );
+  assert.equal(lastPage.fields.length, 5);
+  // Page numbers clamp.
+  assert.equal(
+    buildBlacklistListPage(
+      Array.from({ length: 25 }, (_, i) => ({
+        userId: `user-${i}`,
+        roleId: ROLE_ID,
+        userName: `User ${i}`,
+        roleName: "Pic",
+      })),
+      99,
+    ).page,
+    3,
+  );
+});
+
+test("blacklist list buttons round-trip and reject a different user", async () => {
+  const rows = Array.from({ length: 11 }, (_, i) => ({
+    userId: `user-${i}`,
+    roleId: ROLE_ID,
+    userName: `User ${i}`,
+    roleName: "Pic",
+  }));
+  const ownerId = "999999999999999999";
+  assert.deepEqual(parseBlacklistButton(`wild-blacklist:${ownerId}:2`), {
+    ownerId,
+    page: 2,
+  });
+  assert.equal(parseBlacklistButton("wild-help:1:2"), null);
+  assert.equal(parseBlacklistButton("wild-blacklist:bad"), null);
+
+  const calls: { kind: string; data?: unknown }[] = [];
+  const makeButton = (userId: string) =>
+    ({
+      customId: `wild-blacklist:${ownerId}:2`,
+      user: { id: userId },
+      update: async (data: unknown) => {
+        calls.push({ kind: "update", data });
+      },
+      reply: async (data: unknown) => {
+        calls.push({ kind: "reply", data });
+      },
+    }) as unknown as Parameters<typeof handleBlacklistListButton>[0];
+
+  const ownerPage = await handleBlacklistListButton(
+    makeButton(ownerId),
+    rows,
+    ownerId,
+  );
+  assert.equal(ownerPage, 2);
+  const update = calls[0]?.data as { embeds?: EmbedBuilder[] };
+  assert.equal(update.embeds?.[0].toJSON().title, "Blacklist (2/2)");
+
+  const strangerPage = await handleBlacklistListButton(
+    makeButton("222222222222222222"),
+    rows,
+    ownerId,
+  );
+  assert.equal(strangerPage, null);
+  assert.equal(calls[1]?.kind, "reply");
+  const reply = calls[1]?.data as { embeds?: EmbedBuilder[] };
+  assert.match(
+    (reply.embeds?.[0].toJSON().description ?? "") as string,
+    /isn't yours/,
+  );
 });

@@ -168,7 +168,7 @@ test("main help page lists the 3 categories as fields, with category buttons", (
   const result = resolveHelpTopic(null);
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
-  assert.equal(result.page.title, "Wild help");
+  assert.equal(result.page.title, "Help");
   assert.equal(result.page.kind, "main");
   assert.deepEqual(
     result.page.fields.map((field) => field.name),
@@ -191,7 +191,7 @@ test("/help fg page 1 has 7 commands and a Next button", () => {
   const result = resolveHelpTopic("fg");
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
-  assert.equal(result.page.title, "Wild help - FG (1/2)");
+  assert.equal(result.page.title, "Help - FG (1/2)");
   assert.equal(result.page.fields.length, 7);
   assert.equal(result.page.fields[0].name, "`/fg base @role`");
   assert.equal(result.page.fields[0].value, "Set the FG base role");
@@ -213,7 +213,7 @@ test("/help fg page 2 has cleanup, share, assign, and auth, and a Prev button", 
   const result = resolveHelpTarget("category:fg:2");
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
-  assert.equal(result.page.title, "Wild help - FG (2/2)");
+  assert.equal(result.page.title, "Help - FG (2/2)");
   assert.equal(result.page.fields.length, 6);
   assert.equal(result.page.fields[0].name, "`/fg cleanup`");
   assert.equal(result.page.fields[1].name, "`/fg share @member @role`");
@@ -231,7 +231,7 @@ test("/help guard is one page with a Back button only", () => {
   const result = resolveHelpTopic("guard");
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
-  assert.equal(result.page.title, "Wild help - Guard");
+  assert.equal(result.page.title, "Help - Guard");
   assert.equal(result.page.fields.length, 4);
   assert.equal(result.page.fields[0].name, "`/protect @role`");
   assert.deepEqual(
@@ -246,7 +246,7 @@ test("/help blacklist is one page with 3 commands", () => {
   const result = resolveHelpTopic("blacklist");
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
-  assert.equal(result.page.title, "Wild help - Blacklist");
+  assert.equal(result.page.title, "Help - Blacklist");
   assert.equal(result.page.fields.length, 3);
   assert.equal(result.page.fields[0].name, "`/blacklist add @user @role`");
   assert.deepEqual(
@@ -290,11 +290,11 @@ test("/help with an unknown topic errors with a pointer to /help", async () => {
   const { interaction, replies } = createInteraction("nonsense");
   await handleHelpCommand(interaction);
 
-  assert.equal(replies[0].embeds, undefined);
+  assert.equal(replies[0].embeds?.length, 1);
   assert.equal(replies[0].ephemeral, true);
-  assert.match(replies[0].content ?? "", /No help for "nonsense"/);
-  assert.match(replies[0].content ?? "", /Use \/help to see all commands/);
-  assert.doesNotMatch(replies[0].content ?? "", /\|/);
+  assert.match(embedText(replies[0]), /No help for "nonsense"/);
+  assert.match(embedText(replies[0]), /Use \/help to see all commands/);
+  assert.doesNotMatch(embedText(replies[0]), /\|/);
 });
 
 test("normal user main help shows FG only, with the no-FG-role note", () => {
@@ -319,7 +319,7 @@ test("normal user FG page shows the note and no commands", () => {
   const result = resolveHelpTopic("fg", NORMAL);
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
-  assert.equal(result.page.title, "Wild help - FG");
+  assert.equal(result.page.title, "Help - FG");
   assert.equal(result.page.fields.length, 0);
   assert.equal(result.page.description, NO_FG_ROLE_NOTE);
   assert.deepEqual(
@@ -373,12 +373,20 @@ test("personas see exactly the FG commands they can use", () => {
     "`/fg auth remove @member @role`",
     "`/fg auth list @role`",
   ]);
-  // Administrator (not whitelisted, owns no FG role): Guard/Blacklist work,
-  // but FG creation, sharing, and auth are not theirs.
+  // Administrator (not whitelisted, owns no FG role): like the owner for
+  // FG — creation, sharing, and auth included — except rename/icon/remove
+  // (needs to own a role).
   assert.deepEqual(seen(ADMIN), [
     "`/fg base @role`",
+    "`/fg color <color> <name>`",
+    "`/fg create <name> <color> [second_color] [@member]`",
     "`/fg list`",
     "`/fg cleanup`",
+    "`/fg share @member @role`",
+    "`/fg assign @member @role`",
+    "`/fg auth add @member @role`",
+    "`/fg auth remove @member @role`",
+    "`/fg auth list @role`",
   ]);
   // Whitelisted staff: creation, listing, sharing, assign, and auth.
   assert.deepEqual(seen(WHITELISTED), [
@@ -549,8 +557,8 @@ test("handleHelpCommand gates by member: normal sees FG only, whitelisted sees a
     store: makeStore(makeSettings()),
   });
   await handleHelpCommand(normalTopic.interaction, normalTopic.store);
-  assert.equal(normalTopic.replies[0].embeds, undefined);
-  assert.equal(normalTopic.replies[0].content, CANNOT_USE_COMMAND_ERROR);
+  assert.equal(normalTopic.replies[0].embeds?.length, 1);
+  assert.equal(embedText(normalTopic.replies[0]), CANNOT_USE_COMMAND_ERROR);
 });
 
 test("help buttons: parse round-trips the owner and target", () => {
@@ -599,10 +607,10 @@ test("help buttons: the owner navigates to FG page 2, a stranger is rejected", a
     "111111111111111111",
   );
   const page = await handleHelpButton(owner.button);
-  assert.equal(page?.title, "Wild help - FG (2/2)");
+  assert.equal(page?.title, "Help - FG (2/2)");
   assert.equal(owner.calls[0]?.kind, "update");
   const update = owner.calls[0]?.data as { embeds?: EmbedBuilder[] };
-  assert.equal(update.embeds?.[0].toJSON().title, "Wild help - FG (2/2)");
+  assert.equal(update.embeds?.[0].toJSON().title, "Help - FG (2/2)");
 
   const stranger = createButton(
     "wild-help:111111111111111111:category:fg:2",
@@ -611,9 +619,9 @@ test("help buttons: the owner navigates to FG page 2, a stranger is rejected", a
   const rejected = await handleHelpButton(stranger.button);
   assert.equal(rejected, null);
   assert.equal(stranger.calls[0]?.kind, "reply");
-  const reply = stranger.calls[0]?.data as { content?: string; ephemeral?: boolean };
+  const reply = stranger.calls[0]?.data as Reply;
   assert.equal(reply.ephemeral, true);
-  assert.match(reply.content ?? "", /isn't yours/);
+  assert.match(embedText(reply), /isn't yours/);
 });
 
 test("help buttons: a normal user pressing a Guard button is rejected", async () => {
@@ -624,9 +632,9 @@ test("help buttons: a normal user pressing a Guard button is rejected", async ()
   const page = await handleHelpButton(button, { caps: deriveCaps({}), mode: "slash" });
   assert.equal(page, null);
   assert.equal(calls[0]?.kind, "reply");
-  const reply = calls[0]?.data as { content?: string; ephemeral?: boolean };
+  const reply = calls[0]?.data as Reply;
   assert.equal(reply.ephemeral, true);
-  assert.equal(reply.content, CANNOT_USE_COMMAND_ERROR);
+  assert.equal(embedText(reply as Reply), CANNOT_USE_COMMAND_ERROR);
 });
 
 test("help buttons: Back from a command page returns to its category page", async () => {
@@ -643,7 +651,7 @@ test("help buttons: Back from a command page returns to its category page", asyn
     "111111111111111111",
   );
   const page = await handleHelpButton(button);
-  assert.equal(page?.title, "Wild help - FG (2/2)");
+  assert.equal(page?.title, "Help - FG (2/2)");
   assert.equal(calls[0]?.kind, "update");
 });
 

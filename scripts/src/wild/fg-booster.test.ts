@@ -40,7 +40,9 @@ function makeSettings(partial: Partial<GuildSettings> = {}): GuildSettings {
   };
 }
 
-function createStore(initialSettings: GuildSettings = makeSettings()) {
+function createStore(
+  initialSettings: GuildSettings = makeSettings(),
+) {
   let settings = initialSettings;
   let saveCount = 0;
   const store = {
@@ -98,9 +100,16 @@ function makeRole(id: string, name = "Role", position = 5): MockRole {
   return role;
 }
 
+/** Text of a small reply: now always an embed description, never plain content. */
+function replyTextOf(reply: Reply): string {
+  const embed = reply.embeds?.[0]?.toJSON() as { description?: string } | undefined;
+  return embed?.description ?? reply.content ?? "";
+}
+
 function createGuild(options: {
   roles?: MockRole[];
   memberRoleIds?: Record<string, string[]>;
+  adminMemberIds?: string[];
   missingMemberIds?: string[];
   premiumTier?: number;
   botAboveBase?: boolean;
@@ -124,8 +133,13 @@ function createGuild(options: {
     if ((options.missingMemberIds ?? []).includes(memberId)) return null;
     if (!members.has(memberId)) {
       const held = new Set(options.memberRoleIds?.[memberId] ?? []);
+      const isAdmin = (options.adminMemberIds ?? []).includes(memberId);
       members.set(memberId, {
         id: memberId,
+        permissions: {
+          has: (permission: bigint) =>
+            isAdmin && permission === PermissionFlagsBits.Administrator,
+        },
         displayName:
           memberId === MEMBER_ID
             ? "Alex"
@@ -189,6 +203,7 @@ function createInteraction(options: {
   action: string;
   userId?: string;
   canManageServer?: boolean;
+  isAdmin?: boolean;
   roleId?: string;
   memberId?: string;
   strings?: Record<string, string>;
@@ -200,8 +215,10 @@ function createInteraction(options: {
     user: { id: options.userId ?? MEMBER_ID, username: "Alex" },
     memberPermissions: {
       has: (permission: bigint) =>
-        permission === PermissionFlagsBits.ManageGuild &&
-        (options.canManageServer ?? true),
+        (permission === PermissionFlagsBits.Administrator &&
+          (options.isAdmin ?? false)) ||
+        (permission === PermissionFlagsBits.ManageGuild &&
+          (options.canManageServer ?? true)),
     },
     options: {
       getSubcommandGroup: () => options.group ?? null,
@@ -257,7 +274,7 @@ test("/fg base sets the base role for Manage Server members", async () => {
 
   assert.equal(config.getSettings().fgBaseRoleId, BASE_ROLE_ID);
   assert.equal(replies[0].ephemeral, true);
-  assert.match(replies[0].content ?? "", /base role/i);
+  assert.match(replyTextOf(replies[0]), /base role/i);
 });
 
 test("/fg base without Manage Server is rejected", async () => {
@@ -274,7 +291,7 @@ test("/fg base without Manage Server is rejected", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(config.getSettings().fgBaseRoleId, null);
-  assert.match(replies[0].content ?? "", /Manage Server/i);
+  assert.match(replyTextOf(replies[0]), /Manage Server/i);
 });
 
 test("/fg color creates an owned FG role under the base with no permissions", async () => {
@@ -309,8 +326,8 @@ test("/fg color creates an owned FG role under the base with no permissions", as
   assert.ok(settings.protectedRoleIds.includes(createdRoleId));
   assert.ok(settings.fgRoles[createdRoleId]);
   assert.equal(replies[0].ephemeral, true);
-  assert.match(replies[0].content ?? "", /My FG is your FG role now/i);
-  assert.doesNotMatch(replies[0].content ?? "", /\[object Object\]/);
+  assert.match(replyTextOf(replies[0]), /My FG is your FG role now/i);
+  assert.doesNotMatch(replyTextOf(replies[0]), /\[object Object\]/);
   // The award system is gone: no extra role is granted on creation.
   assert.equal(
     (getMember(MEMBER_ID)!.roles as { cache: { has: (id: string) => boolean } }).cache.has(AWARD_ROLE_ID),
@@ -344,7 +361,7 @@ test("/fg color rejects a second FG role for the same member", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(createdRoles.length, 0);
-  assert.match(replies[0].content ?? "", /already have an FG role/i);
+  assert.match(replyTextOf(replies[0]), /already have an FG role/i);
 });
 
 test("/fg color rejects non-whitelisted members", async () => {
@@ -358,7 +375,7 @@ test("/fg color rejects non-whitelisted members", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(createdRoles.length, 0);
-  assert.match(replies[0].content ?? "", /whitelisted/i);
+  assert.match(replyTextOf(replies[0]), /whitelisted/i);
 });
 
 test("/fg create creates an FG role for a named member (whitelisted caller)", async () => {
@@ -391,8 +408,8 @@ test("/fg create creates an FG role for a named member (whitelisted caller)", as
   const createdRoleId = Object.keys(settings.fgRoleOwners)[0];
   assert.equal(settings.fgRoleOwners[createdRoleId], OTHER_ID);
   assert.ok(settings.protectedRoleIds.includes(createdRoleId));
-  assert.match(replies[0].content ?? "", /Created FG role Sam FG for Sam/i);
-  assert.doesNotMatch(replies[0].content ?? "", /\[object Object\]/);
+  assert.match(replyTextOf(replies[0]), /Created FG role Sam FG for Sam/i);
+  assert.doesNotMatch(replyTextOf(replies[0]), /\[object Object\]/);
   // No award role is granted on creation anymore.
   assert.equal(
     (getMember(OTHER_ID)!.roles as { cache: { has: (id: string) => boolean } }).cache.has(AWARD_ROLE_ID),
@@ -417,7 +434,7 @@ test("/fg create for yourself works when whitelisted", async () => {
   assert.equal(createdRoles.length, 1);
   const createdRoleId = Object.keys(config.getSettings().fgRoleOwners)[0];
   assert.equal(config.getSettings().fgRoleOwners[createdRoleId], MEMBER_ID);
-  assert.match(replies[0].content ?? "", /My FG is your FG role now/i);
+  assert.match(replyTextOf(replies[0]), /My FG is your FG role now/i);
 });
 
 test("/fg create by the server owner works without being whitelisted", async () => {
@@ -436,7 +453,7 @@ test("/fg create by the server owner works without being whitelisted", async () 
   assert.equal(createdRoles.length, 1);
   const createdRoleId = Object.keys(config.getSettings().fgRoleOwners)[0];
   assert.equal(config.getSettings().fgRoleOwners[createdRoleId], OWNER_ID);
-  assert.match(replies[0].content ?? "", /Owner FG is your FG role now/i);
+  assert.match(replyTextOf(replies[0]), /Owner FG is your FG role now/i);
 });
 
 test("/fg create by a member with a whitelisted role works", async () => {
@@ -475,8 +492,8 @@ test("/fg create rejects a non-whitelisted member", async () => {
 
   assert.equal(createdRoles.length, 0);
   assert.match(
-    replies[0].content ?? "",
-    /Only the server owner or whitelisted members can create FG roles/i,
+    replyTextOf(replies[0]),
+    /Only the server owner, administrators, or whitelisted members can create FG roles/i,
   );
 });
 
@@ -511,7 +528,7 @@ test("/fg create rejects a second FG role for the same target", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(createdRoles.length, 0);
-  assert.match(replies[0].content ?? "", /already have an FG role/i);
+  assert.match(replyTextOf(replies[0]), /already have an FG role/i);
 });
 
 test("/fg create errors when no base role is set", async () => {
@@ -525,7 +542,7 @@ test("/fg create errors when no base role is set", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(createdRoles.length, 0);
-  assert.match(replies[0].content ?? "", /Set an FG base role first/i);
+  assert.match(replyTextOf(replies[0]), /Set an FG base role first/i);
 });
 
 test("/fg rename only works on your own FG role", async () => {
@@ -542,8 +559,8 @@ test("/fg rename only works on your own FG role", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(fgRole.name, "New Name");
-  assert.match(replies[0].content ?? "", /Your FG role is now called New Name/i);
-  assert.doesNotMatch(replies[0].content ?? "", /\[object Object\]/);
+  assert.match(replyTextOf(replies[0]), /Your FG role is now called New Name/i);
+  assert.doesNotMatch(replyTextOf(replies[0]), /\[object Object\]/);
 
   const other = createInteraction({
     action: "rename",
@@ -553,7 +570,7 @@ test("/fg rename only works on your own FG role", async () => {
   await handleFgCommand(withGuild(guild, other.interaction), config.store);
 
   assert.equal(fgRole.name, "New Name");
-  assert.match(other.replies[0].content ?? "", /don't have an FG role/i);
+  assert.match(replyTextOf(other.replies[0]), /don't have an FG role/i);
 });
 
 test("/fg icon sets a custom emoji icon", async () => {
@@ -573,8 +590,8 @@ test("/fg icon sets a custom emoji icon", async () => {
     fgRole.icon,
     "https://cdn.discordapp.com/emojis/123456789012345678.png",
   );
-  assert.match(replies[0].content ?? "", /icon is set/i);
-  assert.match(replies[0].content ?? "", /Boost Level 2/i);
+  assert.match(replyTextOf(replies[0]), /icon is set/i);
+  assert.match(replyTextOf(replies[0]), /Boost Level 2/i);
 });
 
 test("/fg remove deletes your FG role and unregisters it", async () => {
@@ -604,7 +621,7 @@ test("/fg remove deletes your FG role and unregisters it", async () => {
   assert.deepEqual(config.getSettings().fgRoleOwners, {});
   assert.deepEqual(config.getSettings().fgRoles, {});
   assert.deepEqual(config.getSettings().fgRoleSharers, {});
-  assert.match(replies[0].content ?? "", /is gone/i);
+  assert.match(replyTextOf(replies[0]), /is gone/i);
 });
 
 test("/fg award no longer exists", async () => {
@@ -617,7 +634,7 @@ test("/fg award no longer exists", async () => {
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.match(replies[0].content ?? "", /Use \/help fg to see FG commands/i);
+  assert.match(replyTextOf(replies[0]), /Use \/help fg to see FG commands/i);
 });
 
 test("/fg assign gives the role and authorises sharing (whitelisted staff)", async () => {
@@ -652,8 +669,8 @@ test("/fg assign gives the role and authorises sharing (whitelisted staff)", asy
     true,
   );
   assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
-  assert.match(replies[0].content ?? "", /Sam now has My FG and can share it/i);
-  assert.doesNotMatch(replies[0].content ?? "", /\[object Object\]/);
+  assert.match(replyTextOf(replies[0]), /Sam now has My FG and can share it/i);
+  assert.doesNotMatch(replyTextOf(replies[0]), /\[object Object\]/);
 });
 
 test("/fg assign by the server owner works without being whitelisted", async () => {
@@ -684,7 +701,7 @@ test("/fg assign by the server owner works without being whitelisted", async () 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
-  assert.match(replies[0].content ?? "", /can share it/i);
+  assert.match(replyTextOf(replies[0]), /can share it/i);
 });
 
 test("/fg assign rejects a normal member", async () => {
@@ -719,8 +736,8 @@ test("/fg assign rejects a normal member", async () => {
     false,
   );
   assert.match(
-    replies[0].content ?? "",
-    /Only the server owner or whitelisted members can create FG roles/i,
+    replyTextOf(replies[0]),
+    /Only the server owner, administrators, or whitelisted members can create FG roles/i,
   );
 });
 
@@ -752,7 +769,7 @@ test("/fg assign when the member already has the role just authorises them", asy
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
-  assert.match(replies[0].content ?? "", /can now share My FG/i);
+  assert.match(replyTextOf(replies[0]), /can now share My FG/i);
 });
 
 test("/fg assign errors for a role that isn't an FG role", async () => {
@@ -766,7 +783,7 @@ test("/fg assign errors for a role that isn't an FG role", async () => {
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.match(replies[0].content ?? "", /isn't an FG role/i);
+  assert.match(replyTextOf(replies[0]), /isn't an FG role/i);
 });
 
 test("/fg auth add works for the FG owner and does not give the role", async () => {
@@ -801,8 +818,8 @@ test("/fg auth add works for the FG owner and does not give the role", async () 
     (getMember(OTHER_ID)!.roles as { cache: { has: (id: string) => boolean } }).cache.has(FG_ROLE_ID),
     false,
   );
-  assert.match(replies[0].content ?? "", /Sam can now share My FG/i);
-  assert.match(replies[0].content ?? "", /don't get the role/i);
+  assert.match(replyTextOf(replies[0]), /Sam can now share My FG/i);
+  assert.match(replyTextOf(replies[0]), /don't get the role/i);
 });
 
 test("/fg auth add works for whitelisted staff and rejects a random member", async () => {
@@ -838,8 +855,8 @@ test("/fg auth add works for whitelisted staff and rejects a random member", asy
   });
   await handleFgCommand(withGuild(guild, random.interaction), config.store);
   assert.match(
-    random.replies[0].content ?? "",
-    /Only the FG role owner, the server owner, or whitelisted members/i,
+    replyTextOf(random.replies[0]),
+    /Only the FG role owner, the server owner, administrators, or whitelisted members/i,
   );
   assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
 });
@@ -868,7 +885,7 @@ test("/fg auth add rejects a duplicate and auth remove cannot remove the owner",
     roleId: FG_ROLE_ID,
   });
   await handleFgCommand(withGuild(guild, duplicate.interaction), config.store);
-  assert.match(duplicate.replies[0].content ?? "", /already authorised to share/i);
+  assert.match(replyTextOf(duplicate.replies[0]), /already authorised to share/i);
 
   const removeOwner = createInteraction({
     group: "auth",
@@ -877,7 +894,7 @@ test("/fg auth add rejects a duplicate and auth remove cannot remove the owner",
     roleId: FG_ROLE_ID,
   });
   await handleFgCommand(withGuild(guild, removeOwner.interaction), config.store);
-  assert.match(removeOwner.replies[0].content ?? "", /can't remove the FG role owner/i);
+  assert.match(replyTextOf(removeOwner.replies[0]), /can't remove the FG role owner/i);
 
   const remove = createInteraction({
     group: "auth",
@@ -887,7 +904,7 @@ test("/fg auth add rejects a duplicate and auth remove cannot remove the owner",
   });
   await handleFgCommand(withGuild(guild, remove.interaction), config.store);
   assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [] });
-  assert.match(remove.replies[0].content ?? "", /can no longer share My FG/i);
+  assert.match(replyTextOf(remove.replies[0]), /can no longer share My FG/i);
 
   const removeAgain = createInteraction({
     group: "auth",
@@ -896,7 +913,7 @@ test("/fg auth add rejects a duplicate and auth remove cannot remove the owner",
     roleId: FG_ROLE_ID,
   });
   await handleFgCommand(withGuild(guild, removeAgain.interaction), config.store);
-  assert.match(removeAgain.replies[0].content ?? "", /isn't authorised to share/i);
+  assert.match(replyTextOf(removeAgain.replies[0]), /isn't authorised to share/i);
 });
 
 test("/fg auth list shows the owner first, then the authorised sharers", async () => {
@@ -1024,8 +1041,8 @@ test("/fg share rejects a member who holds the role but was never assigned or au
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(replies[0].ephemeral, true);
-  assert.equal(replies[0].embeds, undefined);
-  assert.match(replies[0].content ?? "", /aren't authorised to share that FG role/i);
+  assert.equal(replies[0].embeds?.length, 1);
+  assert.match(replyTextOf(replies[0]), /aren't authorised to share that FG role/i);
 });
 
 test("/fg list shows FG roles with owners in a colourless embed", async () => {
@@ -1077,7 +1094,7 @@ test("/fg cleanup removes FG roles whose owner left", async () => {
 
   assert.equal(fgRole.deleted, true);
   assert.deepEqual(config.getSettings().fgRoleOwners, {});
-  assert.match(replies[0].content ?? "", /Cleaned up 1 FG role/i);
+  assert.match(replyTextOf(replies[0]), /Cleaned up 1 FG role/i);
 });
 
 test("/fg share errors are ephemeral plain text", async () => {
@@ -1108,8 +1125,8 @@ test("/fg share errors are ephemeral plain text", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(replies[0].ephemeral, true);
-  assert.equal(replies[0].embeds, undefined);
-  assert.match(replies[0].content ?? "", /already have that FG role/i);
+  assert.equal(replies[0].embeds?.length, 1);
+  assert.match(replyTextOf(replies[0]), /already have that FG role/i);
 });
 
 test("/fg share rejects a role that isn't an FG role", async () => {
@@ -1124,5 +1141,104 @@ test("/fg share rejects a role that isn't an FG role", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   assert.equal(replies[0].ephemeral, true);
-  assert.match(replies[0].content ?? "", /isn't an FG role/i);
+  assert.match(replyTextOf(replies[0]), /isn't an FG role/i);
+});
+
+/** Administrator counts as owner: verified in the guard, the FG gates, and help. */
+
+test("/fg create by an Administrator works without being whitelisted", async () => {
+  const config = createStore(makeSettings({ fgBaseRoleId: BASE_ROLE_ID }));
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+    adminMemberIds: [MEMBER_ID],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "create",
+    strings: { name: "Admin FG", color: "crimson" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 1);
+  assert.match(replyTextOf(replies[0]), /Admin FG is your FG role now/i);
+});
+
+test("/fg assign by an Administrator works without being whitelisted", async () => {
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const { guild } = createGuild({
+    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
+    adminMemberIds: [MEMBER_ID],
+    memberRoleIds: { [OTHER_ID]: [] },
+  });
+  const { interaction, replies } = createInteraction({
+    action: "assign",
+    memberId: OTHER_ID,
+    roleId: FG_ROLE_ID,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
+  assert.match(replyTextOf(replies[0]), /can share it/i);
+});
+
+test("/fg auth add by an Administrator works without being whitelisted", async () => {
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const { guild } = createGuild({
+    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
+    adminMemberIds: [MEMBER_ID],
+  });
+  const { interaction, replies } = createInteraction({
+    group: "auth",
+    action: "add",
+    memberId: OTHER_ID,
+    roleId: FG_ROLE_ID,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
+  assert.match(replyTextOf(replies[0]), /can now share/i);
+});
+
+test("/fg base by an Administrator works via the Manage Server gate", async () => {
+  const config = createStore();
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "base",
+    roleId: BASE_ROLE_ID,
+    isAdmin: true,
+    canManageServer: false,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(config.getSettings().fgBaseRoleId, BASE_ROLE_ID);
+  assert.match(replyTextOf(replies[0]), /base role/i);
 });

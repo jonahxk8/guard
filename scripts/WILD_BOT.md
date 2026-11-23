@@ -17,7 +17,7 @@ The bot protects selected server roles. It checks Discord's audit log when a pro
    It also needs **View Channel**, **Send Messages**, and **Embed Links**
    in the alert channel. Manage Messages lets it delete your ","
    command message after handling it.
-8. Run `/whitelist @member` or `/whitelist @role` to authorize assigners. The server owner bypasses the guard: the owner's own grants are never reverted.
+8. Run `/whitelist @member` or `/whitelist @role` to authorize assigners. The server owner and anyone with the Discord Administrator permission bypass the guard: their grants are never reverted. Administrators can use the bot fully, exactly like the server owner.
 9. Run `/protect @role` for each role to protect. Roles with the Administrator permission can't be protected or assigned through the bot.
 10. Optionally set alerts with `/setup #mod-logs`. Run `/setup` with no channel to turn alerts off.
 
@@ -29,7 +29,7 @@ why. The DM never asks to get whitelisted. After 3 unauthorised assignments by t
 
 The bot also corroborates each audit-log event against the guild's recent audit log (up to 10 entries, matched by target, role, and time). When it can't verify who assigned a role, it removes the role by default.
 
-All replies are short invisible (ephemeral) plain text, except `/status`, `/fg list`, the log embed, and the share offer, which are colourless embeds (no colour set, so they blend in with no accent bar; plain title and description, no footer, no timestamp). `/status` lists any protected or FG roles the bot can't manage and shows "Needs setup" until the bot's role is moved above them; the same check runs at startup and logs a warning per server.
+Every reply is a colourless embed (no colour set, so it blends in with no accent bar; plain title and description, no footer, no timestamp) — confirmations, errors, `/status`, `/fg list`, the log embed, and the share offer alike. Slash replies are invisible (ephemeral). `/status` lists any protected or FG roles the bot can't manage and shows "Needs setup" until the bot's role is moved above them; the same check runs at startup and logs a warning per server.
 
 Prefix (",") replies cannot be invisible — Discord has no ephemeral message replies, so a `,` reply is always visible in the channel. That is a Discord limitation, not a bug. Wild mitigates it: your `,` command message is deleted after handling (best-effort), and error replies auto-delete after 10 seconds (best-effort). Success replies stay. If you need invisible errors, use the slash versions. Unknown `,` commands get no reply at all, and the message is never deleted — it may belong to Greed or another bot.
 
@@ -48,25 +48,25 @@ or whitelisted):
 - `/status` / `,status` — view protection status, FG roles, and blacklist count.
 - `/setup #channel` / `,logchannel #channel` or `,logchannel off` — set the alert channel, or turn alerts off. Prefix is `,logchannel` because Greed owns `,setup`.
 
-Blacklist — blocks a member from a protected role. If that role is ever given to them, Wild removes it instantly, whoever gave it — even a whitelisted giver or FG staff. It works for any protected role, not just one ("pic" was only an example). The server owner is the one exception: the owner's own grants are never reverted. If the audit log cannot say who gave the role, the grant is still removed (fail closed).
+Blacklist — blocks a member from a protected role. If that role is ever given to them, Wild removes it instantly, whoever gave it — even a whitelisted giver or FG staff. It works for any protected role, not just one ("pic" was only an example). The exceptions are the server owner and Administrators: their grants are never reverted. If the audit log cannot say who gave the role, the grant is still removed (fail closed).
 
 - `/blacklist add @user @role` / `,blacklist add @user @role` — blacklist a member from a protected role (Manage Server). The role must already be protected, or the bot answers "Protect that role first with /protect @role".
 - `/blacklist remove @user @role` / `,blacklist remove @user @role` — unblacklist them (Manage Server).
-- `/blacklist list` / `,blacklist list` — list the blacklist, user + role per line, max 25 lines (Manage Server or whitelisted).
+- `/blacklist list` / `,blacklist list` — list the blacklist as a paginated embed, 10 users per page with Prev/Next buttons, one field per user (Manage Server or whitelisted).
 
 FG roles — Bleed booster-role style. Each member makes their own unique, personal, cosmetic role under one base role and customises it (name, colour, icon). FG roles are created with no permissions, are automatically protected, and the guard applies to them like any other protected role.
 
 - `/fg base @role` / `,fg base @role` — set the base role FG roles sit under (Manage Server). Keep it above any coloured roles or the colour won't show.
-- `/fg color <color> <name>` / `,fg color <color> <name>` — make your own FG role. Optional second colour for a gradient (`,fg color <color> <name> <second_color>`). Only whitelisted members (or the server owner) can make one, and only one FG role per member (Wild rule — Bleed gates this on boosting instead).
-- `/fg create <name> <color> [second_color] [@member]` / `,fg create <name> <color> [second_color] [@member]` — create an FG role for yourself, or for a named member. Needs an FG base role set first (`/fg base`). Only the server owner or whitelisted members can use it.
+- `/fg color <color> <name>` / `,fg color <color> <name>` — make your own FG role. Optional second colour for a gradient (`,fg color <color> <name> <second_color>`). Colours accept any CSS colour name or hex code: `#rrggbb`, `rrggbb`, `#rgb`, `rgb`, or `0xrrggbb`. Only whitelisted members (or the server owner or an Administrator) can make one, and only one FG role per member (Wild rule — Bleed gates this on boosting instead).
+- `/fg create <name> <color> [second_color] [@member]` / `,fg create <name> <color> [second_color] [@member]` — create an FG role for yourself, or for a named member. Needs an FG base role set first (`/fg base`). Only the server owner, administrators, or whitelisted members can use it.
 - `/fg rename <name>` / `,fg rename <name>` — rename your own FG role.
 - `/fg icon <url>` / `,fg icon <url>` — set your own FG role's icon: image link, emoji, or custom emoji. Role icons only show on Boost Level 2+ servers.
 - `/fg remove` / `,fg remove` — delete your own FG role.
 - `/fg list` / `,fg list` — list all FG roles and their owners (Manage Server or whitelisted).
 - `/fg cleanup` / `,fg cleanup` — remove FG roles whose owners left the server (Manage Server).
-- `/fg share @member @role` / `,fg share @member @role` — offer one of your FG roles to a member. Wild-only extra — Bleed documents no share command. You may share only if you are the server owner, whitelisted, the FG role's owner, or authorised to share that role (see below). All errors are invisible (ephemeral) on slash, or auto-deleting on prefix; only the offer itself is public.
-- `/fg assign @member @role` / `,fg assign @member @role` — give an existing FG role to a member, and authorise them to share it (server owner or whitelisted only). If they already hold the role, it just authorises them.
-- `/fg auth add @member @role` / `,fg auth add @member @role` — let someone share one of your FG roles, without giving them the role (the FG role's owner, the server owner, or whitelisted only).
+- `/fg share @member @role` / `,fg share @member @role` — offer one of your FG roles to a member. Wild-only extra — Bleed documents no share command. You may share only if you are the server owner, an Administrator, whitelisted, the FG role's owner, or authorised to share that role (see below). All errors are invisible (ephemeral) on slash, or auto-deleting on prefix; only the offer itself is public.
+- `/fg assign @member @role` / `,fg assign @member @role` — give an existing FG role to a member, and authorise them to share it (server owner, administrators, or whitelisted only). If they already hold the role, it just authorises them.
+- `/fg auth add @member @role` / `,fg auth add @member @role` — let someone share one of your FG roles, without giving them the role (the FG role's owner, the server owner, administrators, or whitelisted only).
 - `/fg auth remove @member @role` / `,fg auth remove @member @role` — take someone's permission to share an FG role away (same gate as auth add; the FG role owner themself can never be removed).
 - `/fg auth list @role` / `,fg auth list @role` — list who can share an FG role, owner first (same gate as auth add).
 
@@ -97,7 +97,7 @@ again on every button press, so a member who lost a role or their
 whitelist cannot reach pages through a menu they opened earlier.
 
 FG has 13 subcommands, so it
-splits into 2 pages of 7 and 6 ("Wild help - FG (1/2)" and "(2/2)") with
+splits into 2 pages of 7 and 6 ("Help - FG (1/2)" and "(2/2)") with
 Prev/Next buttons and a Back button to the main page; the page count
 is recomputed after filtering, so an FG owner sees their 7 commands
 on one page. Guard and Blacklist fit on one page each. `/help fg create`,
@@ -128,7 +128,7 @@ Wild also never uses Greed's `,boosterrole` (alias `,br`), `,autorole`, or bare 
 
 Not verified: whether Greed also has `,whitelist`, `,status`, `,fg`, or `,blacklist`. No full Greed command index was checked, so before relying on those four, type them in a test channel with both bots present and confirm Wild answers and Greed stays silent.
 
-The old `/wild`, `/roles`, `/watch`, `/enforcement`, `/logs`, `/commands`, `/fg staff`, and `/fg access` commands are gone.
+The old `/wild`, `/roles`, `/watch`, `/enforcement`, `/logs`, `/commands`, `/fg staff`, `/fg access`, and `/fg award` commands are gone.
 
 ## Railway deployment
 
@@ -152,4 +152,4 @@ Deploy this repository as a long-running worker service, using the repository ro
 
 Configuration is stored in `data/wild-config.json` by default and can be relocated with `WILD_CONFIG_PATH`. A `wild-config.json.bak` backup of the previous settings is written on every save.
 
-The token is `DISCORD_BOT_TOKEN` (not `DISCORD_TOKEN`). Slash commands are registered globally, so `/protect`, `/whitelist`, `/status`, `/setup`, `/fg`, `/blacklist`, and `/help` can take up to an hour to appear in Discord. Prefix commands work as soon as the bot is online and Message Content Intent is enabled — no wait.
+The token is `DISCORD_BOT_TOKEN` (not `DISCORD_TOKEN`). Slash commands are registered globally with a full overwrite on startup: the bot registers exactly `/protect`, `/whitelist`, `/status`, `/setup`, `/fg`, `/blacklist`, and `/help`, and removes any stale commands Discord still lists from older versions. The new list can take up to an hour to appear in Discord after a redeploy — and nothing updates until you redeploy the bot on Railway. The old `/logs` commands are gone, replaced by `/setup` and `,logchannel`. Prefix commands work as soon as the bot is online and Message Content Intent is enabled — no wait.

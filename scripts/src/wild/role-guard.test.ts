@@ -53,6 +53,7 @@ function createSetup(
     botAboveRole?: boolean;
     enforcementEnabled?: boolean;
     ownerId?: string;
+    actorIsAdmin?: boolean;
     blacklist?: Record<string, string[]>;
     logChannelId?: string | null;
     fetchAuditLogs?: (options: unknown) => Promise<unknown>;
@@ -87,6 +88,11 @@ function createSetup(
   };
   const actor = {
     id: UNAPPROVED_ACTOR_ID,
+    permissions: {
+      has: (permission: bigint) =>
+        permission === PermissionFlagsBits.Administrator &&
+        (options.actorIsAdmin ?? false),
+    },
     roles: {
       cache: {
         some: (predicate: (role: { id: string }) => boolean) =>
@@ -546,4 +552,50 @@ test("still removes a blacklisted grant when the assigner cannot be verified", a
     embed.fields?.find((field) => field.name === "Reason")?.value ?? "",
     /blacklisted/i,
   );
+});
+
+test("keeps watched roles assigned by an Administrator (not whitelisted)", async () => {
+  const setup = createSetup({ actorIsAdmin: true });
+
+  await guardAuditLogEntry(
+    createEntry("audit-admin", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("does not remove a blacklisted grant given by an Administrator", async () => {
+  const setup = createSetup({
+    actorIsAdmin: true,
+    blacklist: { [MEMBER_ID]: [ROLE_ID] },
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-blacklist-admin", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("an unverified actor is still removed even if they would be an admin", async () => {
+  // Fail closed: only a VERIFIED Administrator giver is trusted. Here the
+  // audit log verifies nobody (executor null), so the grant is removed
+  // even though the actor fake carries Administrator.
+  const setup = createSetup({ actorIsAdmin: true });
+
+  await guardAuditLogEntry(
+    createEntry("audit-admin-unverified", null),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
 });

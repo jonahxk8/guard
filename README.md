@@ -7,15 +7,15 @@ and logs the removal. If it can't verify who assigned the role, it
 removes the role by default (fail closed) instead of allowing an
 unverified assignment.
 
-The server owner bypasses the guard — the owner's own grants are never
-reverted. Repeat offenders (3+ unauthorised assignments) are flagged in
-the log.
+The server owner and anyone with the Discord Administrator permission
+bypass the guard — their grants are never reverted. Repeat offenders
+(3+ unauthorised assignments) are flagged in the log.
 
 Wild is simple on purpose: seven slash commands, each with a "," prefix
-version that works the same way. Confirmations and errors are short
-invisible (ephemeral) plain-text replies — only you can see them. All
-embeds use no colour at all (no accent bar, so they blend into the chat
-background and look invisible), no footer, no timestamp.
+version that works the same way. Every reply is an embed — confirmations
+and errors are short invisible (ephemeral) embeds, only you can see them.
+All embeds use no colour at all (no accent bar, so they blend into the
+chat background and look invisible), no footer, no timestamp.
 
 ## Discord setup
 
@@ -34,12 +34,13 @@ background and look invisible), no footer, no timestamp.
 7. Optionally set alerts with `/setup #mod-logs`.
 
 Administrator roles can never be protected or assigned through the bot.
-All commands need Manage Server, except `/fg color`, `/fg create`,
-`/fg rename`, `/fg icon`, `/fg remove`, and `/fg share`, which any
-whitelisted member (or the server owner) can use. `/fg create` needs an
-FG base role set first. `/blacklist list` can also be used by
-whitelisted members; `/blacklist add` and `/blacklist remove` need
-Manage Server.
+The server owner and anyone with the Discord Administrator permission
+can use the bot fully, exactly like each other. All commands need Manage
+Server, except `/fg color`, `/fg create`, `/fg rename`, `/fg icon`,
+`/fg remove`, and `/fg share`, which any whitelisted member (or the
+server owner or an Administrator) can use. `/fg create` needs an FG base
+role set first. `/blacklist list` can also be used by whitelisted
+members; `/blacklist add` and `/blacklist remove` need Manage Server.
 
 ## Commands
 
@@ -61,11 +62,14 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
   under (Manage Server).
 - `/fg color <color> <name>` / `,fg color <color> <name>` — make your
   own FG role. Optional second colour for a gradient
-  (`,fg color <color> <name> <second_color>`).
+  (`,fg color <color> <name> <second_color>`). Colours accept any CSS
+  colour name or hex code: `#rrggbb`, `rrggbb`, `#rgb`, `rgb`, or
+  `0xrrggbb`.
 - `/fg create <name> <color> [second_color] [@member]` /
   `,fg create <name> <color> [second_color] [@member]` — create an FG
   role for yourself, or for a named member. Needs an FG base role set
-  first. Only the server owner or whitelisted members can use it.
+  first. Only the server owner, administrators, or whitelisted members
+  can use it.
 - `/fg rename <name>` / `,fg rename <name>` — rename your own FG role.
 - `/fg icon <url>` / `,fg icon <url>` — set your own FG role's icon
   (image link, emoji, or custom emoji).
@@ -77,10 +81,11 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
   your FG roles to a member (see "Sharing FG roles" below).
 - `/fg assign @member @role` / `,fg assign @member @role` — give an
   existing FG role to a member, and authorise them to share it (server
-  owner or whitelisted only).
+  owner, administrators, or whitelisted only).
 - `/fg auth add @member @role` / `,fg auth add @member @role` — let
   someone share one of your FG roles, without giving them the role
-  (the FG role's owner, the server owner, or whitelisted only).
+  (the FG role's owner, the server owner, administrators, or whitelisted
+  only).
 - `/fg auth remove @member @role` / `,fg auth remove @member @role` —
   take someone's permission to share an FG role away (same gate as
   auth add; the FG role owner themself can never be removed).
@@ -90,8 +95,8 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
   blacklist a member from a protected role (Manage Server).
 - `/blacklist remove @user @role` / `,blacklist remove @user @role` —
   unblacklist them (Manage Server).
-- `/blacklist list` / `,blacklist list` — list the blacklist (Manage
-  Server or whitelisted).
+- `/blacklist list` / `,blacklist list` — list the blacklist, 10 users
+  per page with Prev/Next buttons (Manage Server or whitelisted).
 - `/help` / `,help` — show all commands, grouped by category.
   `/help fg` (or `,help fg`) shows one category; `/help fg create`
   shows just that command. A bare `,fg` or `,blacklist` just points at
@@ -126,7 +131,7 @@ The main page lists the visible categories with buttons to jump to
 each one, with command counts for you, not the total:
 
 ```
-Wild help
+Help
   Guard — Protect roles and whitelist assigners
           4 commands
   FG — Personal FG roles
@@ -140,7 +145,7 @@ Each category page lists its commands the same way — one field per
 command, one purpose line:
 
 ```
-Wild help - FG (1/2)
+Help - FG (1/2)
   `/fg base @role`
   Set the FG base role
   ...
@@ -148,7 +153,7 @@ Wild help - FG (1/2)
 ```
 
 FG has 13 subcommands, so it splits into 2 pages of 7 and 6
-("Wild help - FG (1/2)" and "(2/2)") with Prev/Next buttons; the
+("Help - FG (1/2)" and "(2/2)") with Prev/Next buttons; the
 page count is recomputed after filtering, so an FG owner sees their
 7 commands on one page. Guard and Blacklist fit on one page each.
 `/help fg create` or `/help blacklist add` (`,help fg create` and so
@@ -174,9 +179,9 @@ message replies, so a `,` reply is always visible in the channel.
 That is a Discord limitation, not a bug. Wild mitigates it two ways:
 your `,` command message is deleted after handling (best-effort), and
 error replies auto-delete after 10 seconds (best-effort). Success
-replies stay. Only `/status`, `/fg list`, `/help`, and the share offer
-use embeds; everything else is short plain text. If you need invisible
-errors, use the slash versions instead.
+replies stay. Every reply is an embed, in the same colourless style as
+the slash replies. If you need invisible errors, use the slash versions
+instead.
 
 Unknown `,` commands get no reply at all — the bot stays silent, so
 it never spams errors and never deletes a message that belongs to
@@ -194,9 +199,10 @@ otherwise the bot answers "Protect that role first with
 see the whole list with `/blacklist list`. `/status` shows how many
 blacklist entries there are.
 
-The one exception is the **server owner**: the owner's own grants are
-never reverted, same as the rest of the guard. If the audit log cannot
-say who gave the role, the grant is still removed (fail closed).
+The exceptions are the **server owner** and **Administrators**: their
+grants are never reverted, same as the rest of the guard. If the audit
+log cannot say who gave the role, the grant is still removed (fail
+closed).
 
 ## No clash with Greed
 
@@ -281,12 +287,16 @@ Deploy as a long-running worker service from the repository root:
 
 ## Notes
 
-- Slash commands are registered globally, so `/protect`, `/whitelist`,
-  `/status`, `/setup`, `/fg`, `/blacklist`, and `/help` can take up to
-  an hour to appear in Discord after the bot first starts. The old
-  `/wild`, `/roles`, `/watch`, `/enforcement`, `/logs`, and `/commands`
-  commands are gone. Prefix commands work as soon as the bot is online
-  and Message Content Intent is enabled — no wait.
+- Slash commands are registered globally with a full overwrite on
+  startup: the bot registers exactly `/protect`, `/whitelist`,
+  `/status`, `/setup`, `/fg`, `/blacklist`, and `/help`, and removes any
+  stale commands Discord still lists from older versions (`/wild`,
+  `/roles`, `/watch`, `/enforcement`, `/logs`, `/commands`, `/fg staff`,
+  `/fg access`, `/fg award`). The new list can take up to an hour to
+  appear in Discord after a redeploy — and nothing updates until you
+  redeploy the bot on Railway. The old `/logs` commands are gone,
+  replaced by `/setup` and `,logchannel`. Prefix commands work as soon
+  as the bot is online and Message Content Intent is enabled — no wait.
 - The bot code lives in `scripts/src/`. The other workspace packages
   (`artifacts/`, `lib/`) are unrelated Replit scaffold and are not used
   by the bot.

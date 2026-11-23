@@ -6,6 +6,7 @@ import { ConfigStore } from "./config-store.js";
 import { handleGuardCommand } from "./commands.js";
 import { handleFgCommand, parseFgColor } from "./fg-booster.js";
 import { handleHelpCommand } from "./help.js";
+import { wildMessageEmbed } from "./embeds.js";
 import { WILD_ERROR_REPLY } from "./reply.js";
 
 /**
@@ -466,7 +467,7 @@ async function replyPrefixError(message: Message, content: string): Promise<void
   const channel = message.channel;
   if (!("send" in channel)) return;
   const sent = await channel
-    .send({ content, allowedMentions: { parse: [] } })
+    .send({ embeds: [wildMessageEmbed(content)], allowedMentions: { parse: [] } })
     .catch(() => null);
   if (!sent) return;
   const timer = setTimeout(() => {

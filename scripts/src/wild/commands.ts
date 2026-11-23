@@ -1,12 +1,18 @@
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   ChannelType,
   ChatInputCommandInteraction,
+  ComponentType,
+  Message,
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from "discord.js";
 import { ConfigStore, GuildSettings, blacklistCount, blacklistEntries, isBlacklisted } from "./config-store.js";
-import { wildFieldEmbed } from "./embeds.js";
-import { isWhitelisted } from "./authorization.js";
+import { wildFieldEmbed, wildMessageEmbed } from "./embeds.js";
+import { isBotAdmin, isBotAdminPermissions, isWhitelisted } from "./authorization.js";
 import {
   channelDisplayName,
   memberDisplayName,
@@ -19,10 +25,10 @@ import {
   isDangerousRole,
 } from "./role-guard.js";
 
-// Wild has six slash commands: /protect, /whitelist, /status,
-// /setup, /fg, and /blacklist. Confirmations and errors are short ephemeral
-// plain text — no embeds, no titles, no footers. Only /status uses an embed
-// (one colourless embed, short lines). /blacklist list is plain text.
+// Wild has seven slash commands: /protect, /whitelist, /status,
+// /setup, /fg, /blacklist, and /help. Confirmations and errors are short
+// ephemeral embeds (one colourless embed, message in the description).
+// Only /status uses a field embed (one colourless embed, short lines).
 
 export const protectCommand = new SlashCommandBuilder()
   .setName("protect")
@@ -93,9 +99,20 @@ function hasManageServer(interaction: ChatInputCommandInteraction): boolean {
 async function requireManageServer(
   interaction: ChatInputCommandInteraction,
 ): Promise<boolean> {
-  if (hasManageServer(interaction)) return true;
+  // Administrators and the server owner count too — do not rely on the
+  // Manage Server bit being inherited.
+  if (
+    isBotAdminPermissions(
+      interaction.memberPermissions,
+      interaction.user.id,
+      interaction.guild?.ownerId ?? null,
+    ) ||
+    hasManageServer(interaction)
+  ) {
+    return true;
+  }
   await interaction.reply({
-    content: "You need Manage Server for that.",
+    embeds: [wildMessageEmbed("You need Manage Server for that.")],
     ephemeral: true,
   });
   return false;
@@ -106,13 +123,15 @@ async function replyText(
   content: string,
   isError = true,
 ): Promise<void> {
-  // Most plain-text replies from the guard commands are errors, so the
-  // default is error. Success replies pass false explicitly (see
-  // saveSettings). The flag is a symbol-keyed property: discord.js builds
-  // the reply payload from named fields only, so it never reaches Discord.
-  // The prefix adapter reads it to auto-delete visible error replies.
+  // Small replies are embeds, not plain text: the short message goes in
+  // the description of a colourless embed with no title (see embeds.ts).
+  // Most replies from the guard commands are errors, so the default is
+  // error. Success replies pass false explicitly (see saveSettings).
+  // The flag is a symbol-keyed property: discord.js builds the reply
+  // payload from named fields only, so it never reaches Discord. The
+  // prefix adapter reads it to auto-delete visible error replies.
   await interaction.reply({
-    content,
+    embeds: [wildMessageEmbed(content)],
     ephemeral: true,
     [WILD_ERROR_REPLY]: isError,
   } as Parameters<ChatInputCommandInteraction["reply"]>[0]);
@@ -403,10 +422,11 @@ async function handleBlacklistList(
 ): Promise<void> {
   const guild = interaction.guild!;
   const settings = store.get(guild.id);
-  // Manage Server or whitelisted (the server owner bypasses too).
+  // Manage Server or whitelisted (the server owner and Administrators
+  // bypass too).
   const member = await guild.members.fetch(interaction.user.id).catch(() => null);
   if (
-    interaction.user.id !== guild.ownerId &&
+    !isBotAdmin(member, guild.ownerId) &&
     !hasManageServer(interaction) &&
     !(member && isWhitelisted(member, settings))
   ) {
@@ -416,20 +436,190 @@ async function handleBlacklistList(
     );
     return;
   }
-  const entries = blacklistEntries(settings).slice(0, 25);
-  const lines = entries.map(
-    ({ userId, roleId }, index) => `\`${index + 1}.\` <@${userId}> — <@&${roleId}>`,
-  );
-  if (blacklistEntries(settings).length > lines.length) {
-    lines.push(
-      `…and ${blacklistEntries(settings).length - lines.length} more.`,
+  const entries = blacklistEntries(settings);
+  const rows: BlacklistListRow[] = [];
+  for (const { userId, roleId } of entries) {
+    const entryMember = await guild.members.fetch(userId).catch(() => null);
+    const role = guild.roles.cache.get(roleId);
+    rows.push({
+      userId,
+      roleId,
+      userName: entryMember ? memberDisplayName(entryMember) : `Unknown member \`${userId}\``,
+      roleName: role ? roleDisplayName(role) : `Deleted role \`${roleId}\``,
+    });
+  }
+  if (rows.length === 0) {
+    await interaction.reply({
+      embeds: [wildFieldEmbed("Blacklist", [], "The blacklist is empty.")],
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+  const ownerId = interaction.user.id;
+  const firstPage = buildBlacklistListPage(rows, 1);
+  await interaction.reply({
+    embeds: [
+      wildFieldEmbed(firstPage.title, firstPage.fields),
+    ],
+    components: buildBlacklistListComponents(firstPage.page, firstPage.totalPages, ownerId),
+    ephemeral: true,
+    allowedMentions: { parse: [] },
+  });
+
+  // Paged navigation: buttons live for 5 minutes, then disable.
+  // Best-effort only — test doubles and channels without a fetchable
+  // reply simply skip the collector (same pattern as /help).
+  let message: Message | null = null;
+  try {
+    const fetched = await interaction.fetchReply();
+    if (
+      fetched &&
+      typeof (fetched as Message).createMessageComponentCollector === "function"
+    ) {
+      message = fetched as Message;
+    }
+  } catch {
+    message = null;
+  }
+  if (!message) return;
+
+  let currentPage = firstPage.page;
+  const collector = message.createMessageComponentCollector({
+    componentType: ComponentType.Button,
+    time: BLACKLIST_BUTTON_TIMEOUT_MS,
+  });
+  collector.on("collect", async (button) => {
+    const nextPage = await handleBlacklistListButton(button, rows, ownerId);
+    if (nextPage !== null) currentPage = nextPage;
+  });
+  collector.on("end", async () => {
+    await message
+      ?.edit({
+        components: buildBlacklistListComponents(currentPage, firstPage.totalPages, ownerId).map(
+          (row) =>
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+              row.components.map((component) =>
+                ButtonBuilder.from(component).setDisabled(true),
+              ),
+            ),
+        ),
+      })
+      .catch(() => undefined);
+  });
+}
+
+/** One resolved blacklist entry, ready to render. */
+export interface BlacklistListRow {
+  userId: string;
+  roleId: string;
+  userName: string;
+  roleName: string;
+}
+
+export const BLACKLIST_PAGE_SIZE = 10;
+export const BLACKLIST_BUTTON_PREFIX = "wild-blacklist:";
+const BLACKLIST_BUTTON_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * Build one page of the blacklist list: 10 users per page, one field
+ * per user (name = the member's name, value = the role they are
+ * blacklisted from). Pure function, so tests can check page counts
+ * without a Discord interaction.
+ */
+export function buildBlacklistListPage(
+  rows: BlacklistListRow[],
+  page: number,
+): { title: string; fields: { name: string; value: string }[]; totalPages: number; page: number } {
+  const totalPages = Math.max(1, Math.ceil(rows.length / BLACKLIST_PAGE_SIZE));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * BLACKLIST_PAGE_SIZE;
+  const pageRows = rows.slice(start, start + BLACKLIST_PAGE_SIZE);
+  return {
+    title: totalPages > 1 ? `Blacklist (${safePage}/${totalPages})` : "Blacklist",
+    fields: pageRows.map((row, index) => ({
+      name: `${start + index + 1}. ${row.userName}`,
+      value: `Blacklisted from ${row.roleName}`,
+    })),
+    totalPages,
+    page: safePage,
+  };
+}
+
+/** Parse a blacklist-list button customId into its owner and target page. */
+export function parseBlacklistButton(
+  customId: string,
+): { ownerId: string; page: number } | null {
+  if (!customId.startsWith(BLACKLIST_BUTTON_PREFIX)) return null;
+  const rest = customId.slice(BLACKLIST_BUTTON_PREFIX.length);
+  const separator = rest.indexOf(":");
+  if (separator <= 0) return null;
+  const page = Number.parseInt(rest.slice(separator + 1), 10);
+  if (!Number.isFinite(page)) return null;
+  return { ownerId: rest.slice(0, separator), page };
+}
+
+function buildBlacklistListComponents(
+  page: number,
+  totalPages: number,
+  ownerId: string,
+): ActionRowBuilder<ButtonBuilder>[] {
+  const row = new ActionRowBuilder<ButtonBuilder>();
+  if (page > 1) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${BLACKLIST_BUTTON_PREFIX}${ownerId}:${page - 1}`)
+        .setLabel("Prev")
+        .setStyle(ButtonStyle.Secondary),
     );
   }
-  await replyText(
-    interaction,
-    lines.length > 0 ? lines.join("\n") : "The blacklist is empty.",
-    false,
-  );
+  if (page < totalPages) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${BLACKLIST_BUTTON_PREFIX}${ownerId}:${page + 1}`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Secondary),
+    );
+  }
+  return row.components.length > 0 ? [row] : [];
+}
+
+/**
+ * Handle a blacklist-list navigation button press. Returns the page
+ * navigated to, or null when the press was rejected (wrong user) or the
+ * target is gone. Only the user who ran /blacklist list can use its
+ * buttons.
+ */
+export async function handleBlacklistListButton(
+  button: ButtonInteraction,
+  rows: BlacklistListRow[],
+  ownerId: string,
+): Promise<number | null> {
+  const parsed = parseBlacklistButton(button.customId);
+  if (!parsed) {
+    await button.deferUpdate().catch(() => undefined);
+    return null;
+  }
+  if (button.user.id !== parsed.ownerId || parsed.ownerId !== ownerId) {
+    await button
+      .reply({
+        embeds: [
+          wildMessageEmbed("This list isn't yours - run /blacklist list to get your own."),
+        ],
+        ephemeral: true,
+      })
+      .catch(() => undefined);
+    return null;
+  }
+  const nextPage = buildBlacklistListPage(rows, parsed.page);
+  await button
+    .update({
+      embeds: [wildFieldEmbed(nextPage.title, nextPage.fields)],
+      components: buildBlacklistListComponents(nextPage.page, nextPage.totalPages, ownerId),
+      allowedMentions: { parse: [] },
+    })
+    .catch(() => undefined);
+  return nextPage.page;
 }
 
 async function handleStatusCommand(
@@ -492,7 +682,7 @@ async function handleStatusCommand(
     });
   }
   await interaction.reply({
-    embeds: [wildFieldEmbed("Wild", fields)],
+    embeds: [wildFieldEmbed("Status", fields)],
     ephemeral: true,
     allowedMentions: { parse: [] },
   });
@@ -506,7 +696,7 @@ export async function handleGuardCommand(
   if (!guardCommands.has(interaction.commandName)) return;
   if (!requireGuild(interaction)) {
     await interaction.reply({
-      content: "These commands are only available inside a server.",
+      embeds: [wildMessageEmbed("These commands are only available inside a server.")],
       ephemeral: true,
     });
     return;
@@ -514,7 +704,8 @@ export async function handleGuardCommand(
 
   // Every guard command requires Manage Server, except /blacklist list,
   // which Manage Server members or whitelisted members can use (the list
-  // handler itself enforces that — the owner bypasses too).
+  // handler itself enforces that — the owner and Administrators bypass
+  // too).
   const isBlacklistList =
     interaction.commandName === "blacklist" &&
     interaction.options.getSubcommand() === "list";
@@ -552,7 +743,7 @@ export async function handleGuardCommand(
   }
 
   await interaction.reply({
-    content: "That command isn't supported.",
+    embeds: [wildMessageEmbed("That command isn't supported.")],
     ephemeral: true,
   });
 }

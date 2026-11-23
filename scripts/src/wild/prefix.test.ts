@@ -30,7 +30,9 @@ function makeSettings(partial: Partial<GuildSettings> = {}): GuildSettings {
   };
 }
 
-function createStore(initialSettings: GuildSettings = makeSettings()) {
+function createStore(
+  initialSettings: GuildSettings = makeSettings(),
+) {
   let settings = initialSettings;
   let saveCount = 0;
   const store = {
@@ -48,6 +50,12 @@ interface SentMessage {
   content?: string;
   embeds?: Array<{ toJSON: () => Record<string, unknown> }>;
   deleted: boolean;
+}
+
+/** Text of a sent prefix reply: now always an embed description, never plain content. */
+function sentTextOf(sent: SentMessage): string {
+  const embed = sent.embeds?.[0]?.toJSON() as { description?: string } | undefined;
+  return embed?.description ?? sent.content ?? "";
 }
 
 function createMessage(options: {
@@ -271,7 +279,7 @@ test(",guard routes to the same handler as /protect and deletes the command", as
 
   assert.deepEqual(config.getSettings().protectedRoleIds, [ROLE_ID]);
   assert.equal(sent.length, 1);
-  assert.match(sent[0].content ?? "", /now protected/i);
+  assert.match(sentTextOf(sent[0]), /now protected/i);
   assert.equal(sent[0].deleted, false, "success replies stay");
 });
 
@@ -313,7 +321,7 @@ test(",status sends the colourless embed and ,logchannel off turns alerts off", 
   const setup = createMessage({ content: ",logchannel off" });
   await handlePrefixMessage(setup.message, config.store);
   assert.equal(config.getSettings().logChannelId, null);
-  assert.match(setup.sent[0].content ?? "", /Alerts are turned off/i);
+  assert.match(sentTextOf(setup.sent[0]), /Alerts are turned off/i);
 });
 
 test(",fg color creates an FG role through the shared handler", async () => {
@@ -327,7 +335,7 @@ test(",fg color creates an FG role through the shared handler", async () => {
   const settings = config.getSettings();
   assert.deepEqual(settings.fgRoleOwners, { "100000000000000001": USER_ID });
   assert.ok(settings.protectedRoleIds.includes("100000000000000001"));
-  assert.match(sent[0].content ?? "", /is your FG role now/i);
+  assert.match(sentTextOf(sent[0]), /is your FG role now/i);
 });
 
 test(",fg rename and ,fg assign route to the shared FG handler", async () => {
@@ -350,7 +358,7 @@ test(",fg rename and ,fg assign route to the shared FG handler", async () => {
     roles: [{ id: FG_ROLE_ID }],
   });
   await handlePrefixMessage(rename.message, config.store);
-  assert.match(rename.sent[0].content ?? "", /now called/i);
+  assert.match(sentTextOf(rename.sent[0]), /now called/i);
 
   const assign = createMessage({
     content: ",fg assign <@333333333333333333> <@&666666666666666666>",
@@ -360,7 +368,7 @@ test(",fg rename and ,fg assign route to the shared FG handler", async () => {
   assert.deepEqual(config.getSettings().fgRoleSharers, {
     [FG_ROLE_ID]: [OTHER_ID],
   });
-  assert.match(assign.sent[0].content ?? "", /can share it/i);
+  assert.match(sentTextOf(assign.sent[0]), /can share it/i);
 });
 
 test(",fg auth add and ,fg auth list route to the shared FG handler", async () => {
@@ -385,7 +393,7 @@ test(",fg auth add and ,fg auth list route to the shared FG handler", async () =
   assert.deepEqual(config.getSettings().fgRoleSharers, {
     [FG_ROLE_ID]: [OTHER_ID],
   });
-  assert.match(add.sent[0].content ?? "", /can now share/i);
+  assert.match(sentTextOf(add.sent[0]), /can now share/i);
 
   const list = createMessage({
     content: ",fg auth list <@&666666666666666666>",
@@ -407,11 +415,22 @@ test(",blacklist add/remove/list parse and route to the same handlers", async ()
   });
   await handlePrefixMessage(add.message, config.store);
   assert.deepEqual(config.getSettings().blacklist, { [USER_ID]: [ROLE_ID] });
-  assert.match(add.sent[0].content ?? "", /now blacklisted from/i);
+  assert.match(sentTextOf(add.sent[0]), /now blacklisted from/i);
 
-  const list = createMessage({ content: ",blacklist list" });
+  const list = createMessage({
+    content: ",blacklist list",
+    roles: [{ id: ROLE_ID }],
+  });
   await handlePrefixMessage(list.message, config.store);
-  assert.match(list.sent[0].content ?? "", new RegExp(`<@${USER_ID}>`));
+  const listEmbed = list.sent[0].embeds?.[0].toJSON();
+  const listFields = (listEmbed?.fields ?? []) as {
+    name: string;
+    value: string;
+  }[];
+  assert.equal(listEmbed?.title, "Blacklist");
+  assert.equal(listFields.length, 1);
+  assert.equal(listFields[0].name, "1. Alex");
+  assert.equal(listFields[0].value, "Blacklisted from Role");
 
   const remove = createMessage({
     content: ",blacklist remove <@222222222222222222> <@&444444444444444444>",
@@ -429,7 +448,7 @@ test(",blacklist add for an unprotected role errors", async () => {
   await handlePrefixMessage(message, config.store);
 
   assert.deepEqual(config.getSettings().blacklist, {});
-  assert.match(sent[0].content ?? "", /Protect that role first/i);
+  assert.match(sentTextOf(sent[0]), /Protect that role first/i);
 });
 
 test("an unknown ',' command gets no reply and the message is left alone", async () => {
@@ -463,7 +482,7 @@ test("a usage error replies with usage and the command message is deleted", asyn
   assert.equal(await handlePrefixMessage(message, config.store), true);
 
   assert.equal(sent.length, 1);
-  assert.match(sent[0].content ?? "", /Usage: ,guard @role/);
+  assert.match(sentTextOf(sent[0]), /Usage: ,guard @role/);
 });
 
 test("bare ,fg and ,blacklist point at help instead of a usage wall", async () => {
@@ -472,8 +491,8 @@ test("bare ,fg and ,blacklist point at help instead of a usage wall", async () =
     const { message, sent } = createMessage({ content });
     assert.equal(await handlePrefixMessage(message, config.store), true);
     assert.equal(sent.length, 1);
-    assert.doesNotMatch(sent[0].content ?? "", /\|/);
-    assert.match(sent[0].content ?? "", /Use ,help (fg|blacklist) to see/);
+    assert.doesNotMatch(sentTextOf(sent[0]), /\|/);
+    assert.match(sentTextOf(sent[0]), /Use ,help (fg|blacklist) to see/);
   }
 });
 
@@ -481,13 +500,13 @@ test(",whitelist on the prefix path says the name, never [object Object]", async
   const config = createStore();
   const addUser = createMessage({ content: ",whitelist <@222222222222222222>" });
   await handlePrefixMessage(addUser.message, config.store);
-  assert.match(addUser.sent[0].content ?? "", /Alex is now whitelisted/i);
-  assert.doesNotMatch(addUser.sent[0].content ?? "", /\[object Object\]/);
+  assert.match(sentTextOf(addUser.sent[0]), /Alex is now whitelisted/i);
+  assert.doesNotMatch(sentTextOf(addUser.sent[0]), /\[object Object\]/);
 
   const addRole = createMessage({ content: ",whitelist <@&444444444444444444>" });
   await handlePrefixMessage(addRole.message, config.store);
-  assert.match(addRole.sent[0].content ?? "", /Role is now whitelisted/i);
-  assert.doesNotMatch(addRole.sent[0].content ?? "", /\[object Object\]/);
+  assert.match(sentTextOf(addRole.sent[0]), /Role is now whitelisted/i);
+  assert.doesNotMatch(sentTextOf(addRole.sent[0]), /\[object Object\]/);
 });
 
 test(",fg create creates an FG role for a named member through the prefix", async () => {
@@ -503,8 +522,8 @@ test(",fg create creates an FG role for a named member through the prefix", asyn
 
   const settings = config.getSettings();
   assert.deepEqual(settings.fgRoleOwners, { "100000000000000001": OTHER_ID });
-  assert.match(sent[0].content ?? "", /Created FG role Sam FG for Sam/i);
-  assert.doesNotMatch(sent[0].content ?? "", /\[object Object\]/);
+  assert.match(sentTextOf(sent[0]), /Created FG role Sam FG for Sam/i);
+  assert.doesNotMatch(sentTextOf(sent[0]), /\[object Object\]/);
 });
 
 test(",fg create by a non-whitelisted member is rejected", async () => {
@@ -518,8 +537,8 @@ test(",fg create by a non-whitelisted member is rejected", async () => {
 
   assert.deepEqual(config.getSettings().fgRoleOwners, {});
   assert.match(
-    sent[0].content ?? "",
-    /Only the server owner or whitelisted members can create FG roles/i,
+    sentTextOf(sent[0]),
+    /Only the server owner, administrators, or whitelisted members can create FG roles/i,
   );
 });
 
@@ -550,7 +569,7 @@ test(",help for a Manage Server member shows FG only, with prefix syntax", async
   const fg = createMessage({ content: ",help fg" });
   await handlePrefixMessage(fg.message, config.store);
   const fgEmbed = fg.sent[0].embeds?.[0].toJSON();
-  assert.equal(fgEmbed?.title, "Wild help - FG");
+  assert.equal(fgEmbed?.title, "Help - FG");
   const fgFields = (fgEmbed?.fields ?? []) as {
     name: string;
     value: string;
@@ -569,8 +588,8 @@ test(",help for a Manage Server member shows FG only, with prefix syntax", async
   // short error, never the syntax.
   const create = createMessage({ content: ",help fg create" });
   await handlePrefixMessage(create.message, config.store);
-  assert.equal(create.sent[0].embeds, undefined);
-  assert.equal(create.sent[0].content, "You can't use that command.");
+  assert.equal(create.sent[0].embeds?.length, 1);
+  assert.equal(sentTextOf(create.sent[0]), "You can't use that command.");
 
   // fg base is Manage Server, so this member CAN see it.
   const guarded = createMessage({ content: ",help fg base" });
@@ -579,9 +598,9 @@ test(",help for a Manage Server member shows FG only, with prefix syntax", async
 
   const unknown = createMessage({ content: ",help nonsense" });
   await handlePrefixMessage(unknown.message, config.store);
-  assert.equal(unknown.sent[0].embeds, undefined);
-  assert.match(unknown.sent[0].content ?? "", /No help for "nonsense"/);
-  assert.match(unknown.sent[0].content ?? "", /Use \/help to see all commands/);
+  assert.equal(unknown.sent[0].embeds?.length, 1);
+  assert.match(sentTextOf(unknown.sent[0]), /No help for "nonsense"/);
+  assert.match(sentTextOf(unknown.sent[0]), /Use \/help to see all commands/);
 });
 
 test(",help for a whitelisted user shows all categories, prefix syntax", async () => {
@@ -602,7 +621,7 @@ test(",help for a whitelisted user shows all categories, prefix syntax", async (
   const fg = createMessage({ content: ",help fg" });
   await handlePrefixMessage(fg.message, config.store);
   const fgEmbed = fg.sent[0].embeds?.[0].toJSON();
-  assert.equal(fgEmbed?.title, "Wild help - FG (1/2)");
+  assert.equal(fgEmbed?.title, "Help - FG (1/2)");
   const fgFields = (fgEmbed?.fields ?? []) as {
     name: string;
     value: string;

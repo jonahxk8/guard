@@ -14,7 +14,7 @@ import {
   roleDisplayName,
 } from "./names.js";
 import { wildFieldEmbed } from "./embeds.js";
-import { canAssignFgRole, memberMatchesWhitelist } from "./authorization.js";
+import { canAssignFgRole, isBotAdmin, memberMatchesWhitelist } from "./authorization.js";
 import {
   REPEAT_OFFENDER_THRESHOLD,
   getOffenseCount,
@@ -163,7 +163,9 @@ async function isAllowedForRole(
 ): Promise<boolean> {
   if (!actorId) return false;
   if (actorId === guild.client?.user?.id) return true;
-  // The server owner bypasses the guard: their own grants are never reverted.
+  // The server owner — and anyone with Administrator — bypasses the
+  // guard: their grants are never reverted. Only a VERIFIED giver is
+  // trusted; an unverified actor never reaches this check (fail closed).
   if (actorId === guild.ownerId) return true;
 
   const fgAccess = settings.fgRoles[roleId];
@@ -178,11 +180,15 @@ async function isAllowedForRole(
     return true;
   }
 
+  // Only now fetch the member: an id-whitelisted giver costs no fetch,
+  // and a verified Administrator counts as owner.
+  const actor = await guild.members.fetch(actorId).catch(() => null);
+  if (actor && isBotAdmin(actor, guild.ownerId)) return true;
+
   const relevantRoleIds = fgAccess
     ? [...settings.fgStaffRoleIds, ...fgAccess.assignRoleIds]
     : settings.allowedRoleIds;
   if (relevantRoleIds.length === 0) return false;
-  const actor = await guild.members.fetch(actorId).catch(() => null);
   if (!actor) return false;
 
   return fgAccess
@@ -350,11 +356,19 @@ export async function guardAuditLogEntry(
   // Blacklist check, on the same flow as the unauthorised-giver check:
   // a protected role granted to a user blacklisted from THAT role is
   // removed even when the giver was authorised — the blacklist blocks the
-  // target, not the giver. Only the server owner bypasses it.
+  // target, not the giver. Only the server owner and Administrators
+  // bypass it. The actor is only fetched when the target is actually
+  // blacklisted, so an id-whitelisted giver costs no member fetch.
+  const targetIsBlacklisted = addedRoleIds.some((roleId) =>
+    isBlacklisted(settings, targetId, roleId),
+  );
+  let actorIsExempt = actorId === guild.ownerId;
+  if (targetIsBlacklisted && actorId && !actorIsExempt) {
+    const actorMember = await guild.members.fetch(actorId).catch(() => null);
+    actorIsExempt = isBotAdmin(actorMember, guild.ownerId);
+  }
   const blacklistedRoleIds = addedRoleIds.filter(
-    (roleId) =>
-      actorId !== guild.ownerId &&
-      isBlacklisted(settings, targetId, roleId),
+    (roleId) => !actorIsExempt && isBlacklisted(settings, targetId, roleId),
   );
 
   const watchedRoleIds: string[] = [];
@@ -374,7 +388,8 @@ export async function guardAuditLogEntry(
       : undefined;
 
   // Record the offence and tell the assigner why, even when no log channel
-  // is configured. The owner and the bot never reach this path (bypassed).
+  // is configured. The owner, Administrators, and the bot never reach this
+  // path (bypassed).
   // A blacklist-only removal is not an offence by the giver — they were
   // allowed to assign roles — so no offence is recorded for it, and the
   // DM explains the blacklist instead of the whitelist.

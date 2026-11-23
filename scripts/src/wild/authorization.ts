@@ -1,4 +1,4 @@
-import { GuildMember } from "discord.js";
+import { GuildMember, PermissionFlagsBits } from "discord.js";
 import { FgRoleAccess, GuildSettings } from "./config-store.js";
 
 export function memberMatchesWhitelist(
@@ -18,6 +18,43 @@ export function isFgStaff(member: GuildMember, settings: GuildSettings): boolean
     settings.fgStaffUserIds,
     settings.fgStaffRoleIds,
   );
+}
+
+/**
+ * Server owner OR anyone with the Discord Administrator permission.
+ * Administrators can use the bot fully, exactly like the server owner.
+ * Tolerant of partial/mock members: no permissions object means "not
+ * an admin" unless the id is the owner's.
+ */
+export function isBotAdmin(
+  member: GuildMember | null | undefined,
+  ownerId: string | null | undefined,
+): boolean {
+  if (!member) return false;
+  if (ownerId && member.id === ownerId) return true;
+  try {
+    return Boolean(member.permissions?.has(PermissionFlagsBits.Administrator));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Same rule, for interaction handlers that only have the caller's
+ * member permissions (no fetched member): server owner, or the
+ * Administrator permission bit.
+ */
+export function isBotAdminPermissions(
+  permissions: { has: (permission: bigint) => boolean } | null | undefined,
+  userId: string,
+  ownerId: string | null | undefined,
+): boolean {
+  if (ownerId && userId === ownerId) return true;
+  try {
+    return Boolean(permissions?.has(PermissionFlagsBits.Administrator));
+  } catch {
+    return false;
+  }
 }
 
 /** Whitelisted directly, or via a whitelisted role, or legacy FG staff. */

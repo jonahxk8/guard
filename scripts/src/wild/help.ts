@@ -12,7 +12,7 @@ import {
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
 import { isWhitelisted } from "./authorization.js";
-import { WildField, wildFieldEmbed } from "./embeds.js";
+import { WildField, wildFieldEmbed, wildMessageEmbed } from "./embeds.js";
 import { WILD_ERROR_REPLY } from "./reply.js";
 
 /**
@@ -117,8 +117,10 @@ export function deriveCaps(
     holdsFgRole: partial.holdsFgRole ?? ownsFgRole,
     listedSharer,
     canShareAny:
-      partial.canShareAny ?? (owner || whitelisted || ownsFgRole || listedSharer),
-    canAuthAny: partial.canAuthAny ?? (owner || whitelisted || ownsFgRole),
+      partial.canShareAny ??
+      (owner || admin || whitelisted || ownsFgRole || listedSharer),
+    canAuthAny:
+      partial.canAuthAny ?? (owner || admin || whitelisted || ownsFgRole),
     privileged,
   };
 }
@@ -280,7 +282,9 @@ export function canSeeEntry(
     case "manageOrWhitelisted":
       return caps.manageServer || caps.whitelisted;
     case "ownerOrWhitelisted":
-      return caps.owner || caps.whitelisted;
+      // Administrators count as owner here, exactly like the command
+      // handlers: an admin can create, assign, and auth FG roles.
+      return caps.owner || caps.admin || caps.whitelisted;
     case "fgOwner":
       return caps.ownsFgRole;
     case "canShare":
@@ -606,7 +610,7 @@ function mainHelpPage(ctx: HelpContext): HelpPage {
   const categories = visibleCategories(ctx);
   const helpWord = ctx.mode === "prefix" ? ",help" : "/help";
   return {
-    title: "Wild help",
+    title: "Help",
     description: `Pick a category, or ${helpWord} <command>.`,
     fields: categories.map((category) => {
       const count = visibleEntries(category, ctx).length;
@@ -638,8 +642,8 @@ function categoryHelpPage(
   const pageEntries = entries.slice(start, start + FG_PAGE_SIZE);
   const title =
     totalPages > 1
-      ? `Wild help - ${category.title} (${safePage}/${totalPages})`
-      : `Wild help - ${category.title}`;
+      ? `Help - ${category.title} (${safePage}/${totalPages})`
+      : `Help - ${category.title}`;
   const buttons: HelpButtonSpec[] = [];
   if (safePage > 1) {
     buttons.push({ id: `category:${category.key}:${safePage - 1}`, label: "Prev" });
@@ -872,7 +876,7 @@ export async function handleHelpButton(
   if (button.user.id !== parsed.ownerId) {
     await button
       .reply({
-        content: "This help menu isn't yours - run /help to get your own.",
+        embeds: [wildMessageEmbed("This help menu isn't yours - run /help to get your own.")],
         ephemeral: true,
       })
       .catch(() => undefined);
@@ -885,7 +889,7 @@ export async function handleHelpButton(
   const result = resolveHelpTarget(parsed.target, ctx);
   if (result.kind === "error") {
     await button
-      .reply({ content: result.message, ephemeral: true })
+      .reply({ embeds: [wildMessageEmbed(result.message)], ephemeral: true })
       .catch(() => undefined);
     return null;
   }
@@ -934,7 +938,7 @@ export async function handleHelpCommand(
   const result = resolveHelpTopic(topic, ctx);
   if (result.kind === "error") {
     await interaction.reply({
-      content: result.message,
+      embeds: [wildMessageEmbed(result.message)],
       ephemeral: true,
       [WILD_ERROR_REPLY]: true,
     } as Parameters<ChatInputCommandInteraction["reply"]>[0]);

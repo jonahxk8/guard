@@ -13,9 +13,12 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
-import { wildFieldEmbed } from "./embeds.js";
+import { FG_COLOR_NAMES, normalizeColorName } from "./colors.js";
+import { wildFieldEmbed, wildMessageEmbed } from "./embeds.js";
 import {
   canAuthFgRole,
+  isBotAdmin,
+  isBotAdminPermissions,
   isFgSharer,
   isWhitelisted,
 } from "./authorization.js";
@@ -34,44 +37,35 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  *  - /fg share is Wild-only. Bleed documents no share command.
  *
  * Sharing, Wild-only assign + auth model (the award role system was
- * removed — it confused people): the server owner or whitelisted staff
- * assign an FG role to a member with /fg assign, which also makes that
- * member authorised to share it. The FG role's owner can authorise
- * other people to share their role with /fg auth add — auth is
- * permission to share only, they do not get the role itself. Only the
- * server owner, whitelisted staff, the FG role owner, and people
- * assigned or authed for that role may share it.
+ * removed — it confused people): the server owner, Administrators, or
+ * whitelisted staff assign an FG role to a member with /fg assign,
+ * which also makes that member authorised to share it. The FG role's
+ * owner can authorise other people to share their role with /fg auth
+ * add — auth is permission to share only, they do not get the role
+ * itself. Only the server owner, Administrators, whitelisted staff,
+ * the FG role owner, and people assigned or authed for that role may
+ * share it.
  *
- * All slash replies are ephemeral plain text, except /fg list and the
- * public share offer (colourless embeds, no footer/timestamp). Errors are
- * never public.
+ * All slash replies are ephemeral embeds (short text in the description
+ * of a colourless embed), except /fg list and the public share offer
+ * (colourless field embeds, no footer/timestamp). Errors are never public.
  */
 
 const SHARE_TIMEOUT_MS = 5 * 60 * 1_000;
 const MAX_FG_NAME_LENGTH = 90;
 
-const COLOR_NAMES: Record<string, string> = {
-  red: "#ff0000",
-  orange: "#ff8800",
-  yellow: "#ffff00",
-  green: "#00ff00",
-  blue: "#0000ff",
-  purple: "#800080",
-  pink: "#ff69b4",
-  white: "#ffffff",
-  black: "#000000",
-  grey: "#808080",
-  gray: "#808080",
-};
-
 /**
- * Parse a colour as hex (#rrggbb, rrggbb, #rgb) or a basic colour name.
- * Returns a "#rrggbb" string, or null when the input is not a colour.
+ * Parse a colour: any CSS colour name (148 names, case-insensitive,
+ * spaces optional, grey/gray spellings both work) or a hex code
+ * (#rrggbb, rrggbb, #rgb, rgb, 0xrrggbb). Returns a lowercase
+ * "#rrggbb" string, or null when the input is not a colour.
  */
 export function parseFgColor(input: string): string | null {
-  const value = input.trim().toLowerCase();
-  if (value in COLOR_NAMES) return COLOR_NAMES[value];
-  const hex = value.startsWith("#") ? value.slice(1) : value;
+  const value = normalizeColorName(input);
+  if (value in FG_COLOR_NAMES) return FG_COLOR_NAMES[value];
+  let hex = value;
+  if (hex.startsWith("0x")) hex = hex.slice(2);
+  else if (hex.startsWith("#")) hex = hex.slice(1);
   if (/^[0-9a-f]{6}$/.test(hex)) return `#${hex}`;
   if (/^[0-9a-f]{3}$/.test(hex)) {
     return `#${hex[0]}${hex[0]}${hex[1]}${hex[1]}${hex[2]}${hex[2]}`;
@@ -239,14 +233,16 @@ async function replyText(
   content: string,
   isError = true,
 ): Promise<void> {
-  // Most plain-text replies from the FG commands are errors, so the
-  // default is error. Success replies pass false explicitly (see
-  // saveSettings and the colour/rename/icon confirmations). The flag is a
-  // symbol-keyed property: discord.js builds the reply payload from named
-  // fields only, so it never reaches Discord. The prefix adapter reads it
-  // to auto-delete visible error replies.
+  // Small replies are embeds, not plain text: the short message goes in
+  // the description of a colourless embed with no title (see embeds.ts).
+  // Most replies from the FG commands are errors, so the default is
+  // error. Success replies pass false explicitly (see saveSettings and
+  // the colour/rename/icon confirmations). The flag is a symbol-keyed
+  // property: discord.js builds the reply payload from named fields
+  // only, so it never reaches Discord. The prefix adapter reads it to
+  // auto-delete visible error replies.
   await interaction.reply({
-    content,
+    embeds: [wildMessageEmbed(content)],
     ephemeral: true,
     [WILD_ERROR_REPLY]: isError,
   } as Parameters<ChatInputCommandInteraction["reply"]>[0]);
@@ -261,7 +257,18 @@ function hasManageServer(interaction: ChatInputCommandInteraction): boolean {
 async function requireManageServer(
   interaction: ChatInputCommandInteraction,
 ): Promise<boolean> {
-  if (hasManageServer(interaction)) return true;
+  // Administrators and the server owner count too — do not rely on the
+  // Manage Server bit being inherited.
+  if (
+    isBotAdminPermissions(
+      interaction.memberPermissions,
+      interaction.user.id,
+      interaction.guild?.ownerId ?? null,
+    ) ||
+    hasManageServer(interaction)
+  ) {
+    return true;
+  }
   await replyText(interaction, "You need Manage Server for that.");
   return false;
 }
@@ -479,12 +486,13 @@ async function requireFgCreator(
     await replyText(interaction, "You need to be a member of this server first.");
     return null;
   }
-  // Wild rule: eligibility is being whitelisted (or the server owner),
-  // not boosting. Bleed gates this on boosting instead.
-  if (interaction.user.id !== guild.ownerId && !isWhitelisted(member, settings)) {
+  // Wild rule: eligibility is being whitelisted (or the server owner
+  // or an Administrator), not boosting. Bleed gates this on boosting
+  // instead.
+  if (!isBotAdmin(member, guild.ownerId) && !isWhitelisted(member, settings)) {
     await replyText(
       interaction,
-      "Only the server owner or whitelisted members can create FG roles.",
+      "Only the server owner, administrators, or whitelisted members can create FG roles.",
     );
     return null;
   }
@@ -644,7 +652,7 @@ async function handleListCommand(
   const settings = store.get(guild.id);
   const member = await guild.members.fetch(interaction.user.id).catch(() => null);
   if (
-    interaction.user.id !== guild.ownerId &&
+    !isBotAdmin(member, guild.ownerId) &&
     !hasManageServer(interaction) &&
     !(member && isWhitelisted(member, settings))
   ) {
@@ -761,7 +769,8 @@ async function resolveFgRole(
 }
 
 /**
- * /fg assign @member @role — server owner or whitelisted staff only.
+ * /fg assign @member @role — server owner, administrators, or
+ * whitelisted staff only.
  * Gives the FG role to the member AND makes them authorised to share
  * it. If they already hold the role, just authorises them to share it.
  */
@@ -845,12 +854,12 @@ async function handleAuthCommand(
     return;
   }
   if (
-    interaction.user.id !== guild.ownerId &&
+    !isBotAdmin(member, guild.ownerId) &&
     !canAuthFgRole(member, role.id, settings)
   ) {
     await replyText(
       interaction,
-      "Only the FG role owner, the server owner, or whitelisted members can do that.",
+      "Only the FG role owner, the server owner, administrators, or whitelisted members can do that.",
     );
     return;
   }
@@ -981,7 +990,7 @@ async function finishShareOffer(
 ): Promise<boolean> {
   if (button.user.id !== targetId) {
     await button.reply({
-      content: "This FG role offer is for the mentioned member.",
+      embeds: [wildMessageEmbed("This FG role offer is for the mentioned member.")],
       ephemeral: true,
     });
     return false;
@@ -1026,7 +1035,7 @@ async function finishShareOffer(
   const requester = await guild.members.fetch(requesterId).catch(() => null);
   if (
     !requester ||
-    (requesterId !== guild.ownerId && !isFgSharer(requester, roleId, settings))
+    (!isBotAdmin(requester, guild.ownerId) && !isFgSharer(requester, roleId, settings))
   ) {
     await button.update({
       embeds: [
@@ -1148,17 +1157,17 @@ async function handleShareCommand(
     return;
   }
   // Assign + auth model: the caller may share when they are the server
-  // owner, whitelisted, the FG role's owner, or listed as an authorised
-  // sharer for that role (assigned by staff or authed by the owner).
-  // Holding the role alone is not enough, and an authed member who
-  // does not hold the role can still share it.
+  // owner, an Administrator, whitelisted, the FG role's owner, or listed
+  // as an authorised sharer for that role (assigned by staff or authed
+  // by the owner). Holding the role alone is not enough, and an authed
+  // member who does not hold the role can still share it.
   if (
-    interaction.user.id !== guild.ownerId &&
+    !isBotAdmin(requester, guild.ownerId) &&
     !isFgSharer(requester, role.id, settings)
   ) {
     await replyText(
       interaction,
-      "You aren't authorised to share that FG role. Only the server owner, whitelisted members, the FG role owner, and people assigned or authed for it can share it.",
+      "You aren't authorised to share that FG role. Only the server owner, administrators, whitelisted members, the FG role owner, and people assigned or authed for it can share it.",
     );
     return;
   }
@@ -1220,7 +1229,7 @@ async function handleShareCommand(
       if (!button.replied && !button.deferred) {
         await button
           .reply({
-            content: "The bot couldn't complete this FG role offer.",
+            embeds: [wildMessageEmbed("The bot couldn't complete this FG role offer.")],
             ephemeral: true,
           })
           .catch(() => undefined);

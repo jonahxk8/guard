@@ -15,6 +15,7 @@ import {
   statusCommand,
   whitelistCommand,
 } from "./wild/commands.js";
+import { wildMessageEmbed } from "./wild/embeds.js";
 import { fgCommand, handleFgCommand } from "./wild/fg-booster.js";
 import { handleHelpCommand, helpCommand } from "./wild/help.js";
 import { handlePrefixMessage } from "./wild/prefix.js";
@@ -52,6 +53,12 @@ async function main(): Promise<void> {
 
   client.once(Events.ClientReady, async (readyClient) => {
     try {
+      // Full bulk overwrite of the global slash commands: this both
+      // registers the current commands AND removes stale ones Discord
+      // still lists from older versions (/logs, /wild, /roles, /watch,
+      // /enforcement, /commands, /fg staff, /fg access). Discord can
+      // still take up to an hour to show the new list, and nothing
+      // updates until the bot is redeployed with this code.
       await readyClient.application.commands.set([
         protectCommand.toJSON(),
         whitelistCommand.toJSON(),
@@ -113,7 +120,53 @@ async function main(): Promise<void> {
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
+    if (interaction.isButton()) {
+      // Help and FG-share buttons are handled by the per-message
+      // collectors attached when those messages were sent — never
+      // answer them here, or the button would be handled twice.
+      // Anything else is a button this bot no longer owns (e.g. from
+      // an old message): answer it instead of leaving it to fail.
+      if (
+        interaction.customId.startsWith("wild-help:") ||
+        interaction.customId.startsWith("fg-share:")
+      ) {
+        return;
+      }
+      await interaction
+        .reply({
+          embeds: [wildMessageEmbed("That button isn't available anymore.")],
+          ephemeral: true,
+        })
+        .catch(() => undefined);
+      return;
+    }
     if (!interaction.isChatInputCommand()) return;
+    // Slash registration is a full bulk overwrite (see ClientReady
+    // above), so a command Discord still lists but this code no longer
+    // knows — e.g. /logs from an older version — must never be left
+    // unanswered. Answer it instead of timing out.
+    const knownCommands = new Set([
+      "protect",
+      "whitelist",
+      "status",
+      "setup",
+      "fg",
+      "blacklist",
+      "help",
+    ]);
+    if (!knownCommands.has(interaction.commandName)) {
+      await interaction
+        .reply({
+          embeds: [
+            wildMessageEmbed(
+              "That command isn't available anymore. Use /help to see the current commands.",
+            ),
+          ],
+          ephemeral: true,
+        })
+        .catch(() => undefined);
+      return;
+    }
     try {
       if (interaction.commandName === "fg") {
         await handleFgCommand(interaction, store);
@@ -125,7 +178,11 @@ async function main(): Promise<void> {
     } catch (error) {
       log(`Command failed: ${describeError(error)}`);
       const response = {
-        content: "The bot couldn't complete that command. Check its permissions and try again.",
+        embeds: [
+          wildMessageEmbed(
+            "The bot couldn't complete that command. Check its permissions and try again.",
+          ),
+        ],
         ephemeral: true,
       };
       if (interaction.replied || interaction.deferred) {
@@ -146,7 +203,14 @@ async function main(): Promise<void> {
     } catch (error) {
       log(`Prefix command failed: ${describeError(error)}`);
       await message.channel
-        .send("The bot couldn't complete that command. Check its permissions and try again.")
+        .send({
+          embeds: [
+            wildMessageEmbed(
+              "The bot couldn't complete that command. Check its permissions and try again.",
+            ),
+          ],
+          allowedMentions: { parse: [] },
+        })
         .then((sent) => {
           const timer = setTimeout(() => {
             sent.delete().catch(() => undefined);

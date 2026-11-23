@@ -8,7 +8,7 @@ const EMOJI_PATTERN =
 
 test("wildFieldEmbed: no colour, no footer, no timestamp, one field per item", () => {
   const embed = wildFieldEmbed(
-    "Wild help - FG (1/2)",
+    "Help - FG (1/2)",
     [
       { name: "`/fg base @role`", value: "Set the FG base role\nWho: Manage Server" },
       { name: "`/fg color <color> <name>`", value: "Make your own FG role\nWho: Owner / whitelisted" },
@@ -21,7 +21,7 @@ test("wildFieldEmbed: no colour, no footer, no timestamp, one field per item", (
   assert.equal(embed.color, undefined);
   assert.equal(embed.footer, undefined);
   assert.equal(embed.timestamp, undefined);
-  assert.equal(embed.title, "Wild help - FG (1/2)");
+  assert.equal(embed.title, "Help - FG (1/2)");
   assert.equal(embed.fields?.length, 2);
   assert.equal(embed.fields?.[0]?.name, "`/fg base @role`");
   assert.doesNotMatch(JSON.stringify(embed), EMOJI_PATTERN);

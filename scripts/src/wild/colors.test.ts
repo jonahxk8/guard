@@ -4,15 +4,26 @@ import {
   FG_COLOR_COUNT,
   FG_COLOR_LIST,
   FG_COLOR_NAMES,
+  FG_HEX_COLOR_COUNT,
 } from "./colors.js";
-import { parseFgColor } from "./fg-booster.js";
+import {
+  HOLOGRAPHIC_COLORS,
+  parseFgColor,
+  parseFgColorSpec,
+  parseFgColorTokens,
+  parseFgColorTokensFromEnd,
+  randomFgColor,
+  splitColorTokens,
+} from "./fg-booster.js";
 
 /**
- * FG colours: the full CSS named-colour list (148 names), plus hex codes.
- * The /fg colors list shows exactly these 148 names.
+ * FG colors: the full CSS named-color list (148 names), plus hex codes.
+ * There is no color list anywhere in the bot — no /fg colors command,
+ * no help list, no docs list. The bot accepts these names but never
+ * shows them.
  */
 
-test("the colour table has all 148 CSS named colours", () => {
+test("the color table has all 148 CSS named colors", () => {
   assert.equal(FG_COLOR_COUNT, 148);
   assert.equal(FG_COLOR_LIST.length, 148);
   assert.equal(Object.keys(FG_COLOR_NAMES).length, 148);
@@ -26,7 +37,7 @@ test("the colour table has all 148 CSS named colours", () => {
   }
 });
 
-test("parseFgColor accepts colours across the list", () => {
+test("parseFgColor accepts colors across the list", () => {
   assert.equal(parseFgColor("crimson"), "#dc143c");
   assert.equal(parseFgColor("turquoise"), "#40e0d0");
   assert.equal(parseFgColor("teal"), "#008080");
@@ -95,7 +106,7 @@ test("parseFgColor accepts every hex form", () => {
 });
 
 test("parseFgColor rejects invalid names and hex codes", () => {
-  assert.equal(parseFgColor("notacolour"), null);
+  assert.equal(parseFgColor("notacolor"), null);
   assert.equal(parseFgColor("blurple"), null);
   assert.equal(parseFgColor(""), null);
   assert.equal(parseFgColor("#gggggg"), null);
@@ -105,4 +116,179 @@ test("parseFgColor rejects invalid names and hex codes", () => {
   assert.equal(parseFgColor("0x12345"), null);
   assert.equal(parseFgColor("0x1234567"), null);
   assert.equal(parseFgColor("#12g456"), null);
+});
+
+test("splitColorTokens splits on spaces and commas", () => {
+  assert.deepEqual(splitColorTokens("red blue"), ["red", "blue"]);
+  assert.deepEqual(splitColorTokens("red,blue"), ["red", "blue"]);
+  assert.deepEqual(splitColorTokens("red, blue"), ["red", "blue"]);
+  assert.deepEqual(splitColorTokens("#ff0000,#0000ff"), ["#ff0000", "#0000ff"]);
+  assert.deepEqual(splitColorTokens("  red,,  blue  "), ["red", "blue"]);
+  assert.deepEqual(splitColorTokens(""), []);
+});
+
+test("parseFgColorTokens parses one color, two colors, and multi-word names", () => {
+  assert.deepEqual(parseFgColorTokens(["red"]), {
+    choice: { kind: "solid", primary: "#ff0000", secondary: null },
+    consumed: 1,
+    colorText: "red",
+  });
+  assert.deepEqual(parseFgColorTokens(["red", "blue"]), {
+    choice: { kind: "gradient", primary: "#ff0000", secondary: "#0000ff" },
+    consumed: 2,
+    colorText: "red blue",
+  });
+  assert.deepEqual(parseFgColorTokens(["#ff0000", "#0000ff", "My", "Role"]), {
+    choice: { kind: "gradient", primary: "#ff0000", secondary: "#0000ff" },
+    consumed: 2,
+    colorText: "#ff0000 #0000ff",
+  });
+  assert.deepEqual(parseFgColorTokens(["light", "blue", "My", "Role"]), {
+    choice: { kind: "solid", primary: "#add8e6", secondary: null },
+    consumed: 2,
+    colorText: "light blue",
+  });
+  assert.deepEqual(
+    parseFgColorTokens(["dark", "slate", "blue", "red", "My", "Role"]),
+    {
+      choice: { kind: "gradient", primary: "#483d8b", secondary: "#ff0000" },
+      consumed: 4,
+      colorText: "dark slate blue red",
+    },
+  );
+});
+
+test("parseFgColorTokens rejects extra colors and invalid input", () => {
+  // Three colors: Greed-style, the third is an error, never ignored.
+  assert.deepEqual(parseFgColorTokens(["red", "blue", "green"]), {
+    error: "too-many",
+  });
+  assert.deepEqual(parseFgColorTokens(["red", "blue", "green", "My", "Role"]), {
+    error: "too-many",
+  });
+  assert.deepEqual(parseFgColorTokens(["notacolor"]), { error: "invalid" });
+  assert.deepEqual(parseFgColorTokens([]), { error: "invalid" });
+  assert.deepEqual(parseFgColorTokens(["red", "holographic"]), {
+    error: "too-many",
+  });
+});
+
+test("parseFgColorTokens handles random and holographic", () => {
+  const random = parseFgColorTokens(["random"]);
+  assert.ok(!("error" in random));
+  if (!("error" in random)) {
+    assert.equal(random.choice.kind, "solid");
+    assert.match(random.choice.primary, /^#[0-9a-f]{6}$/);
+    assert.equal(random.consumed, 1);
+  }
+  const randomGradient = parseFgColorTokens(["random", "blue"]);
+  assert.ok(!("error" in randomGradient));
+  if (!("error" in randomGradient)) {
+    assert.equal(randomGradient.choice.kind, "gradient");
+    assert.match(randomGradient.choice.primary, /^#[0-9a-f]{6}$/);
+    assert.equal(randomGradient.choice.secondary, "#0000ff");
+  }
+  assert.deepEqual(parseFgColorTokens(["holographic"]), {
+    choice: {
+      kind: "holographic",
+      primary: "#a9c9ff",
+      secondary: "#ffbbec",
+    },
+    consumed: 1,
+    colorText: "holographic",
+  });
+  assert.deepEqual(parseFgColorTokens(["holo"]), {
+    choice: {
+      kind: "holographic",
+      primary: "#a9c9ff",
+      secondary: "#ffbbec",
+    },
+    consumed: 1,
+    colorText: "holo",
+  });
+});
+
+test("holographic colors are Discord's fixed preset", () => {
+  assert.deepEqual(HOLOGRAPHIC_COLORS, {
+    primary: "#a9c9ff",
+    secondary: "#ffbbec",
+    tertiary: "#ffc3a0",
+  });
+});
+
+test("randomFgColor always makes a valid hex color", () => {
+  for (let i = 0; i < 100; i++) {
+    assert.match(randomFgColor(), /^#[0-9a-f]{6}$/);
+  }
+});
+
+test("parseFgColorSpec needs the whole string to be colors", () => {
+  assert.deepEqual(parseFgColorSpec("red blue"), {
+    kind: "gradient",
+    primary: "#ff0000",
+    secondary: "#0000ff",
+  });
+  assert.deepEqual(parseFgColorSpec("red, blue"), {
+    kind: "gradient",
+    primary: "#ff0000",
+    secondary: "#0000ff",
+  });
+  assert.deepEqual(parseFgColorSpec("light blue"), {
+    kind: "solid",
+    primary: "#add8e6",
+    secondary: null,
+  });
+  assert.deepEqual(parseFgColorSpec("holographic"), {
+    kind: "holographic",
+    primary: "#a9c9ff",
+    secondary: "#ffbbec",
+  });
+  assert.equal(parseFgColorSpec("red blue green"), null);
+  assert.equal(parseFgColorSpec("red My Role"), null);
+  assert.equal(parseFgColorSpec("notacolor"), null);
+  assert.equal(parseFgColorSpec(""), null);
+});
+
+test("parseFgColorTokensFromEnd parses trailing colors for ,fg create", () => {
+  assert.deepEqual(
+    parseFgColorTokensFromEnd(["My", "Role", "red", "blue"]),
+    {
+      choice: { kind: "gradient", primary: "#ff0000", secondary: "#0000ff" },
+      nameTokens: ["My", "Role"],
+      colorText: "red blue",
+    },
+  );
+  assert.deepEqual(parseFgColorTokensFromEnd(["My", "Role", "light", "blue"]), {
+    choice: { kind: "solid", primary: "#add8e6", secondary: null },
+    nameTokens: ["My", "Role"],
+    colorText: "light blue",
+  });
+  assert.deepEqual(parseFgColorTokensFromEnd(["My", "Role", "holographic"]), {
+    choice: {
+      kind: "holographic",
+      primary: "#a9c9ff",
+      secondary: "#ffbbec",
+    },
+    nameTokens: ["My", "Role"],
+    colorText: "holographic",
+  });
+  assert.deepEqual(parseFgColorTokensFromEnd(["My", "Role", "red", "blue", "green"]), {
+    error: "too-many",
+  });
+  assert.deepEqual(parseFgColorTokensFromEnd(["My", "Role"]), {
+    error: "invalid",
+  });
+});
+
+test("10,000 distinct hex colors all parse", () => {
+  // Any hex code works: 16,777,216 possible colors, plus the 148 names.
+  assert.equal(FG_HEX_COLOR_COUNT, 16777216);
+  const seen = new Set<string>();
+  for (let i = 0; i < 10000; i++) {
+    const hex = `#${i.toString(16).padStart(6, "0")}`;
+    const parsed = parseFgColor(hex);
+    assert.equal(parsed, hex, `${hex} must parse`);
+    seen.add(parsed!);
+  }
+  assert.equal(seen.size, 10000);
 });

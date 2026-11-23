@@ -10,9 +10,9 @@ export interface WildField {
  * The one shared embed style for every Wild embed (help pages, /status,
  * /fg list, the guard log embed, the share offer, guard DMs).
  *
- * - No colour set at all: no setColor call, so Discord renders the embed
+ * - No color set at all: no setColor call, so Discord renders the embed
  *   with no accent bar and it blends into the chat background, looking
- *   invisible. Do not add a colour back (not black, not dark grey).
+ *   invisible. Do not add a color back (not black, not dark grey).
  * - Plain title, no footer, no timestamp, no emojis.
  * - Description is one short intro line only, when present at all.
  * - One field per item: field name is the command syntax (in the form
@@ -22,7 +22,7 @@ export interface WildField {
  *   never in a footer.
  * - Small replies (confirmations, errors, one-line hints) are embeds
  *   too: wildMessageEmbed puts the short text in the description of a
- *   colourless embed with no title. No plain-text replies anywhere.
+ *   colorless embed with no title. No plain-text replies anywhere.
  */
 export function wildFieldEmbed(
   title: string,
@@ -48,7 +48,7 @@ export function wildEmbed(title: string, description: string): EmbedBuilder {
 
 /**
  * The one format for every small reply: the short text as the
- * description of a colourless embed with no title, no footer, no
+ * description of a colorless embed with no title, no footer, no
  * timestamp, no emojis. Used for confirmations, errors, and one-line
  * hints — never send a small reply as plain text.
  */

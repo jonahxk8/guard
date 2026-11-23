@@ -153,7 +153,7 @@ function assertNoEmoji(text: string): void {
 
 function assertUniformEmbed(reply: Reply): void {
   const embed = embedJson(reply);
-  // No colour set at all: the embed blends into the chat background.
+  // No color set at all: the embed blends into the chat background.
   assert.equal(embed?.color, undefined);
   assert.equal(embed?.footer, undefined);
   assert.equal(embed?.timestamp, undefined);

@@ -215,7 +215,7 @@ function createMessage(options: {
   };
 }
 
-test("parsePrefixMessage parses mentions, raw ids, and fg colour args", () => {
+test("parsePrefixMessage parses mentions, raw ids, and fg color args", () => {
   assert.deepEqual(parsePrefixMessage(",guard <@&444444444444444444>"), {
     command: "guard",
     args: {
@@ -232,10 +232,34 @@ test("parsePrefixMessage parses mentions, raw ids, and fg colour args", () => {
   assert.equal(fg && "args" in fg && fg.args.strings.name, "My Cool Role");
   assert.equal(fg && "args" in fg && fg.args.strings.second_color, "#00ff00");
   const singleWord = parsePrefixMessage(",fg color red blue");
-  assert.equal(
-    singleWord && "args" in singleWord && singleWord.args.strings.name,
-    "blue",
+  assert.ok(
+    singleWord && "error" in singleWord,
+    "two colors and no name is a usage error, not a role called 'blue'",
   );
+  const twoFront = parsePrefixMessage(",fg color red blue My Role");
+  assert.equal(twoFront && "args" in twoFront && twoFront.args.strings.color, "red blue");
+  assert.equal(twoFront && "args" in twoFront && twoFront.args.strings.name, "My Role");
+  assert.equal(twoFront && "args" in twoFront && twoFront.args.strings.second_color, undefined);
+  const twoComma = parsePrefixMessage(",fg color #ff0000,#0000ff My Role");
+  assert.equal(twoComma && "args" in twoComma && twoComma.args.strings.color, "#ff0000 #0000ff");
+  assert.equal(twoComma && "args" in twoComma && twoComma.args.strings.name, "My Role");
+  const multiWord = parsePrefixMessage(",fg color light blue My Role");
+  assert.equal(multiWord && "args" in multiWord && multiWord.args.strings.color, "light blue");
+  assert.equal(multiWord && "args" in multiWord && multiWord.args.strings.name, "My Role");
+  const tooMany = parsePrefixMessage(",fg color red blue green");
+  assert.equal(
+    tooMany && "error" in tooMany && tooMany.error,
+    "Too many colors — give one color, or two for a gradient.",
+  );
+  const random = parsePrefixMessage(",fg color random My Role");
+  assert.equal(random && "args" in random && random.args.strings.color, "random");
+  const holo = parsePrefixMessage(",fg color holo My Role");
+  assert.equal(holo && "args" in holo && holo.args.strings.color, "holo");
+  const createTooMany = parsePrefixMessage(",fg create My Role red blue green");
+  assert.ok(createTooMany && "error" in createTooMany);
+  const createMultiWord = parsePrefixMessage(",fg create My Role light blue");
+  assert.equal(createMultiWord && "args" in createMultiWord && createMultiWord.args.strings.color, "light blue");
+  assert.equal(createMultiWord && "args" in createMultiWord && createMultiWord.args.strings.name, "My Role");
   const create = parsePrefixMessage(",fg create My Cool Role #ff0000");
   assert.equal(create && "args" in create && create.args.subcommand, "create");
   assert.equal(create && "args" in create && create.args.strings.name, "My Cool Role");
@@ -245,8 +269,8 @@ test("parsePrefixMessage parses mentions, raw ids, and fg colour args", () => {
   assert.equal(createFor && "args" in createFor && createFor.args.strings.color, "blue");
   assert.equal(createFor && "args" in createFor && createFor.args.users.member, "333333333333333333");
   const createGradient = parsePrefixMessage(",fg create My Role red blue");
-  assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.color, "red");
-  assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.second_color, "#0000ff");
+  assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.color, "red blue");
+  assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.second_color, undefined);
   assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.name, "My Role");
   const assign = parsePrefixMessage(",fg assign <@333333333333333333> <@&666666666666666666>");
   assert.equal(assign && "args" in assign && assign.args.subcommand, "assign");
@@ -299,14 +323,14 @@ test(",whitelist toggles a user and a role", async () => {
   assert.deepEqual(config.getSettings().allowedUserIds, [USER_ID, OTHER_ID]);
 });
 
-test(",status sends the colourless embed and ,logchannel off turns alerts off", async () => {
+test(",status sends the colorless embed and ,logchannel off turns alerts off", async () => {
   const config = createStore(
     makeSettings({ protectedRoleIds: [ROLE_ID], logChannelId: CHANNEL_ID }),
   );
   const status = createMessage({ content: ",status" });
   await handlePrefixMessage(status.message, config.store);
   assert.equal(status.sent.length, 1);
-  assert.equal(status.sent[0].embeds?.[0].toJSON().color, undefined); // No colour set.
+  assert.equal(status.sent[0].embeds?.[0].toJSON().color, undefined); // No color set.
   const statusFields = Object.fromEntries(
     (
       (status.sent[0].embeds?.[0].toJSON().fields ?? []) as {
@@ -336,6 +360,43 @@ test(",fg color creates an FG role through the shared handler", async () => {
   assert.deepEqual(settings.fgRoleOwners, { "100000000000000001": USER_ID });
   assert.ok(settings.protectedRoleIds.includes("100000000000000001"));
   assert.match(sentTextOf(sent[0]), /is your FG role now/i);
+});
+
+test(",fg remove asks for confirmation and deletes nothing yet", async () => {
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: USER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+      protectedRoleIds: [FG_ROLE_ID],
+    }),
+  );
+  const created = createMessage({
+    content: ",fg remove",
+    roles: [{ id: FG_ROLE_ID }],
+  });
+  const { message, sent } = created;
+
+  assert.equal(await handlePrefixMessage(message, config.store), true);
+
+  // The confirmation is public on prefix, the role is still there, and
+  // the invoking message is deleted like other prefix commands.
+  assert.equal(sent.length, 1);
+  const embed = sent[0].embeds?.[0]?.toJSON() as {
+    title?: string;
+    description?: string;
+    fields?: Array<{ name?: string; value?: string }>;
+  };
+  assert.equal(embed.title, "Remove FG role");
+  assert.match(embed.description ?? "", /Delete Role for good/);
+  assert.deepEqual(config.getSettings().fgRoleOwners, { [FG_ROLE_ID]: USER_ID });
+  assert.equal(created.commandDeleted, true);
 });
 
 test(",fg rename and ,fg assign route to the shared FG handler", async () => {
@@ -548,7 +609,7 @@ test(",help for a Manage Server member shows FG only, with prefix syntax", async
   const main = createMessage({ content: ",help" });
   await handlePrefixMessage(main.message, config.store);
   assert.equal(main.sent.length, 1);
-  assert.equal(main.sent[0].embeds?.[0].toJSON().color, undefined); // No colour set.
+  assert.equal(main.sent[0].embeds?.[0].toJSON().color, undefined); // No color set.
   const mainEmbed = main.sent[0].embeds?.[0].toJSON();
   const mainFields = (mainEmbed?.fields ?? []) as {
     name: string;

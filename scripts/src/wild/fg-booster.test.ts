@@ -20,6 +20,40 @@ interface Reply {
   content?: string;
   embeds?: EmbedBuilder[];
   ephemeral?: boolean;
+  components?: Array<{ toJSON: () => unknown }>;
+}
+
+/** A fake button press, recording what the handler replies/updates with. */
+function makeButton(customId: string, userId: string) {
+  const button = {
+    customId,
+    user: { id: userId },
+    replied: false,
+    deferred: false,
+    replies: [] as Reply[],
+    updates: [] as Reply[],
+    reply: async (options: Reply) => {
+      button.replied = true;
+      button.replies.push(options);
+    },
+    update: async (options: Reply) => {
+      button.replied = true;
+      button.updates.push(options);
+    },
+    deferUpdate: async () => {
+      button.deferred = true;
+    },
+  };
+  return button;
+}
+
+/** Text of a button update's embed, for assertions. */
+function buttonTextOf(button: ReturnType<typeof makeButton>): string {
+  const update = button.updates[0];
+  const embed = update?.embeds?.[0]?.toJSON() as
+    | { description?: string; title?: string }
+    | undefined;
+  return embed?.description ?? embed?.title ?? "";
 }
 
 function makeSettings(partial: Partial<GuildSettings> = {}): GuildSettings {
@@ -113,6 +147,8 @@ function createGuild(options: {
   missingMemberIds?: string[];
   premiumTier?: number;
   botAboveBase?: boolean;
+  /** Make roles.create reject gradient/holographic colors, like Discord does without the Enhanced Role Styles perk. */
+  rejectEnhancedStyles?: boolean;
 }) {
   const rolesCache = new Map<string, MockRole>(
     (options.roles ?? []).map((role) => [role.id, role]),
@@ -181,7 +217,16 @@ function createGuild(options: {
     roles: {
       cache: rolesCache,
       create: async (createOptions: Record<string, unknown>) => {
+        const colors = createOptions.colors as
+          | { primaryColor?: string; secondaryColor?: string; tertiaryColor?: string }
+          | undefined;
         createdRoles.push(createOptions);
+        if (
+          options.rejectEnhancedStyles &&
+          (colors?.secondaryColor || colors?.tertiaryColor)
+        ) {
+          throw new Error("Enhanced Role Styles not unlocked");
+        }
         const role = makeRole(
           String(100000000000000000 + nextRoleId++),
           createOptions.name as string,
@@ -189,7 +234,7 @@ function createGuild(options: {
             ? (createOptions.position as number)
             : 5,
         );
-        role.color = createOptions.color as string;
+        role.color = colors?.primaryColor ?? (createOptions.color as string);
         rolesCache.set(role.id, role);
         return role;
       },
@@ -209,6 +254,20 @@ function createInteraction(options: {
   strings?: Record<string, string>;
 }) {
   const replies: Reply[] = [];
+  const offerEdits: Reply[] = [];
+  const collectorHandlers: Record<string, Array<(...args: unknown[]) => unknown>> = {};
+  const collector = {
+    on: (event: string, fn: (...args: unknown[]) => unknown) => {
+      (collectorHandlers[event] ??= []).push(fn);
+    },
+    stop: (_reason?: string) => {},
+    fireCollect: async (button: unknown) => {
+      for (const fn of collectorHandlers.collect ?? []) await fn(button);
+    },
+    fireEnd: async (reason: string) => {
+      for (const fn of collectorHandlers.end ?? []) await fn(undefined, reason);
+    },
+  };
   const interaction = {
     commandName: "fg",
     guildId: GUILD_ID,
@@ -233,13 +292,18 @@ function createInteraction(options: {
     reply: async (reply: Reply) => {
       replies.push(reply);
     },
-    // Share offers call fetchReply() to start a button collector; the
-    // fake offer's collector does nothing in tests.
+    // Share offers and the remove confirmation call fetchReply() to
+    // start a button collector. The fake collector records its handlers
+    // so tests can fire button presses and timeouts at will.
     fetchReply: async () => ({
-      createMessageComponentCollector: () => ({ on: () => undefined }),
+      edits: [] as Reply[],
+      edit: async (options: Reply) => {
+        offerEdits.push(options);
+      },
+      createMessageComponentCollector: () => collector,
     }),
   } as unknown as ChatInputCommandInteraction;
-  return { interaction, replies };
+  return { interaction, replies, collector, offerEdits };
 }
 
 function withGuild(
@@ -250,13 +314,13 @@ function withGuild(
   return interaction;
 }
 
-test("parseFgColor accepts hex, short hex, and colour names", () => {
+test("parseFgColor accepts hex, short hex, and color names", () => {
   assert.equal(parseFgColor("#ff0000"), "#ff0000");
   assert.equal(parseFgColor("ff0000"), "#ff0000");
   assert.equal(parseFgColor("#f00"), "#ff0000");
   assert.equal(parseFgColor("blue"), "#0000ff");
   assert.equal(parseFgColor("grey"), "#808080");
-  assert.equal(parseFgColor("not-a-colour"), null);
+  assert.equal(parseFgColor("not-a-color"), null);
   assert.equal(parseFgColor("#gggggg"), null);
 });
 
@@ -376,6 +440,175 @@ test("/fg color rejects non-whitelisted members", async () => {
 
   assert.equal(createdRoles.length, 0);
   assert.match(replyTextOf(replies[0]), /whitelisted/i);
+});
+
+test("/fg color with two colors creates a real gradient role", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [MEMBER_ID],
+      fgBaseRoleId: BASE_ROLE_ID,
+    }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "color",
+    strings: { color: "#ff0000", second_color: "#0000ff", name: "Grad FG" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 1);
+  assert.deepEqual(createdRoles[0].colors, {
+    primaryColor: "#ff0000",
+    secondaryColor: "#0000ff",
+  });
+  assert.match(replyTextOf(replies[0]), /Grad FG is your FG role now/i);
+  assert.doesNotMatch(replyTextOf(replies[0]), /only show one color/i);
+});
+
+test("/fg color accepts two colors in the one color option", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [MEMBER_ID],
+      fgBaseRoleId: BASE_ROLE_ID,
+    }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  });
+  const { interaction } = createInteraction({
+    action: "color",
+    strings: { color: "red, blue", name: "Grad FG" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 1);
+  assert.deepEqual(createdRoles[0].colors, {
+    primaryColor: "#ff0000",
+    secondaryColor: "#0000ff",
+  });
+});
+
+test("/fg color holographic creates a role with Discord's preset", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [MEMBER_ID],
+      fgBaseRoleId: BASE_ROLE_ID,
+    }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  });
+  const { interaction } = createInteraction({
+    action: "color",
+    strings: { color: "holographic", name: "Holo FG" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 1);
+  assert.deepEqual(createdRoles[0].colors, {
+    primaryColor: "#a9c9ff",
+    secondaryColor: "#ffbbec",
+    tertiaryColor: "#ffc3a0",
+  });
+});
+
+test("/fg color random creates a role with a valid hex color", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [MEMBER_ID],
+      fgBaseRoleId: BASE_ROLE_ID,
+    }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  });
+  const { interaction } = createInteraction({
+    action: "color",
+    strings: { color: "random", name: "Random FG" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 1);
+  assert.match(
+    (createdRoles[0].colors as { primaryColor: string }).primaryColor,
+    /^#[0-9a-f]{6}$/,
+  );
+});
+
+test("/fg color rejects three colors", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [MEMBER_ID],
+      fgBaseRoleId: BASE_ROLE_ID,
+    }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "color",
+    strings: { color: "red blue", second_color: "#00ff00", name: "Too Many" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 0);
+  assert.match(replyTextOf(replies[0]), /Too many colors/i);
+});
+
+test("/fg color falls back to solid when the server lacks Enhanced Role Styles", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [MEMBER_ID],
+      fgBaseRoleId: BASE_ROLE_ID,
+    }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+    rejectEnhancedStyles: true,
+  });
+  const { interaction, replies } = createInteraction({
+    action: "color",
+    strings: { color: "#ff0000", second_color: "#0000ff", name: "Grad FG" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  // First attempt (gradient) rejected, second attempt (solid) kept.
+  assert.equal(createdRoles.length, 2);
+  assert.deepEqual(createdRoles[1].colors, { primaryColor: "#ff0000" });
+  assert.match(replyTextOf(replies[0]), /Gradients need the Enhanced Role Styles perk/i);
+  assert.match(replyTextOf(replies[0]), /solid #ff0000 for now/i);
+});
+
+test("/fg color holographic falls back to solid without Enhanced Role Styles", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [MEMBER_ID],
+      fgBaseRoleId: BASE_ROLE_ID,
+    }),
+  );
+  const { guild, createdRoles } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+    rejectEnhancedStyles: true,
+  });
+  const { interaction, replies } = createInteraction({
+    action: "color",
+    strings: { color: "holo", name: "Holo FG" },
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(createdRoles.length, 2);
+  assert.deepEqual(createdRoles[1].colors, { primaryColor: "#a9c9ff" });
+  assert.match(replyTextOf(replies[0]), /Holographic needs the Enhanced Role Styles perk/i);
+  assert.match(replyTextOf(replies[0]), /solid #a9c9ff for now/i);
 });
 
 test("/fg create creates an FG role for a named member (whitelisted caller)", async () => {
@@ -594,7 +827,7 @@ test("/fg icon sets a custom emoji icon", async () => {
   assert.match(replyTextOf(replies[0]), /Boost Level 2/i);
 });
 
-test("/fg remove deletes your FG role and unregisters it", async () => {
+test("/fg remove asks for confirmation and Yes deletes the role", async () => {
   const config = createStore(
     makeSettings({
       protectedRoleIds: [FG_ROLE_ID],
@@ -612,16 +845,157 @@ test("/fg remove deletes your FG role and unregisters it", async () => {
   );
   const fgRole = makeRole(FG_ROLE_ID, "My FG", 9);
   const { guild } = createGuild({ roles: [fgRole] });
-  const { interaction, replies } = createInteraction({ action: "remove" });
+  const { interaction, replies, collector } = createInteraction({ action: "remove" });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
+  // Nothing is deleted yet: the reply is the confirmation embed.
+  assert.equal(fgRole.deleted, false);
+  assert.deepEqual(config.getSettings().fgRoleOwners, { [FG_ROLE_ID]: MEMBER_ID });
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  const embed = replies[0].embeds?.[0]?.toJSON() as {
+    title?: string;
+    description?: string;
+    fields?: Array<{ name?: string; value?: string }>;
+  };
+  assert.equal(embed.title, "Remove FG role");
+  assert.match(embed.description ?? "", /Delete My FG for good/);
+  assert.equal(embed.fields?.[0]?.value, `<@&${FG_ROLE_ID}>`);
+  const row = replies[0].components?.[0]?.toJSON() as {
+    components?: Array<{ custom_id?: string; label?: string; disabled?: boolean }>;
+  };
+  assert.deepEqual(
+    (row.components ?? []).map((button) => button.custom_id),
+    ["fg-remove:yes", "fg-remove:no"],
+  );
+  assert.deepEqual(
+    (row.components ?? []).map((button) => button.label),
+    ["Yes", "No"],
+  );
+
+  // Press Yes: the role and its sharers entry go away.
+  const yes = makeButton("fg-remove:yes", MEMBER_ID);
+  await collector.fireCollect(yes);
   assert.equal(fgRole.deleted, true);
   assert.deepEqual(config.getSettings().protectedRoleIds, []);
   assert.deepEqual(config.getSettings().fgRoleOwners, {});
   assert.deepEqual(config.getSettings().fgRoles, {});
   assert.deepEqual(config.getSettings().fgRoleSharers, {});
-  assert.match(replyTextOf(replies[0]), /is gone/i);
+  assert.match(buttonTextOf(yes), /is gone/i);
+});
+
+test("/fg remove No keeps the role", async () => {
+  const config = createStore(
+    makeSettings({
+      protectedRoleIds: [FG_ROLE_ID],
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoleSharers: { [FG_ROLE_ID]: [OTHER_ID] },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const fgRole = makeRole(FG_ROLE_ID, "My FG", 9);
+  const { guild } = createGuild({ roles: [fgRole] });
+  const { interaction, collector } = createInteraction({ action: "remove" });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  const no = makeButton("fg-remove:no", MEMBER_ID);
+  await collector.fireCollect(no);
+  assert.equal(fgRole.deleted, false);
+  assert.deepEqual(config.getSettings().fgRoleOwners, { [FG_ROLE_ID]: MEMBER_ID });
+  assert.deepEqual(config.getSettings().fgRoleSharers, { [FG_ROLE_ID]: [OTHER_ID] });
+  assert.match(buttonTextOf(no), /was kept/i);
+});
+
+test("/fg remove timeout keeps the role", async () => {
+  const config = createStore(
+    makeSettings({
+      protectedRoleIds: [FG_ROLE_ID],
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const fgRole = makeRole(FG_ROLE_ID, "My FG", 9);
+  const { guild } = createGuild({ roles: [fgRole] });
+  const { interaction, collector, offerEdits } = createInteraction({ action: "remove" });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  await collector.fireEnd("time");
+  assert.equal(fgRole.deleted, false);
+  assert.deepEqual(config.getSettings().fgRoleOwners, { [FG_ROLE_ID]: MEMBER_ID });
+  assert.equal(offerEdits.length, 1);
+  const edit = offerEdits[0].embeds?.[0]?.toJSON() as { description?: string };
+  assert.match(edit.description ?? "", /expired.*was kept/i);
+  const row = offerEdits[0].components?.[0]?.toJSON() as {
+    components?: Array<{ disabled?: boolean }>;
+  };
+  assert.ok((row.components ?? []).every((button) => button.disabled));
+});
+
+test("/fg remove rejects another user's button press", async () => {
+  const config = createStore(
+    makeSettings({
+      protectedRoleIds: [FG_ROLE_ID],
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const fgRole = makeRole(FG_ROLE_ID, "My FG", 9);
+  const { guild } = createGuild({ roles: [fgRole] });
+  const { interaction, collector } = createInteraction({ action: "remove" });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  const stranger = makeButton("fg-remove:yes", OTHER_ID);
+  await collector.fireCollect(stranger);
+  assert.equal(fgRole.deleted, false);
+  assert.equal(stranger.replies.length, 1);
+  const replyEmbed = stranger.replies[0].embeds?.[0]?.toJSON() as {
+    description?: string;
+  };
+  assert.match(replyEmbed.description ?? "", /isn't for you/i);
+  assert.equal(stranger.replies[0].ephemeral, true);
+
+  // The confirmation is still open for the owner afterwards.
+  const yes = makeButton("fg-remove:yes", MEMBER_ID);
+  await collector.fireCollect(yes);
+  assert.equal(fgRole.deleted, true);
+  assert.match(buttonTextOf(yes), /is gone/i);
+});
+
+test("/fg remove without an FG role errors with no buttons", async () => {
+  const config = createStore();
+  const { guild } = createGuild({ roles: [] });
+  const { interaction, replies } = createInteraction({ action: "remove" });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].components, undefined);
+  assert.match(replyTextOf(replies[0]), /don't have an FG role to remove/i);
 });
 
 test("/fg award no longer exists", async () => {
@@ -1045,7 +1419,7 @@ test("/fg share rejects a member who holds the role but was never assigned or au
   assert.match(replyTextOf(replies[0]), /aren't authorised to share that FG role/i);
 });
 
-test("/fg list shows FG roles with owners in a colourless embed", async () => {
+test("/fg list shows FG roles with owners in a colorless embed", async () => {
   const config = createStore(
     makeSettings({ fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID } }),
   );
@@ -1055,7 +1429,7 @@ test("/fg list shows FG roles with owners in a colourless embed", async () => {
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   const embed = replies[0].embeds?.[0].toJSON();
-  assert.equal(embed?.color, undefined); // No colour set: the embed blends in.
+  assert.equal(embed?.color, undefined); // No color set: the embed blends in.
   assert.equal(embed?.footer, undefined);
   assert.equal(embed?.timestamp, undefined);
   assert.equal(embed?.fields?.length, 1);

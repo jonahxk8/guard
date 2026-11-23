@@ -29,7 +29,7 @@ why. The DM never asks to get whitelisted. After 3 unauthorised assignments by t
 
 The bot also corroborates each audit-log event against the guild's recent audit log (up to 10 entries, matched by target, role, and time). When it can't verify who assigned a role, it removes the role by default.
 
-Every reply is a colourless embed (no colour set, so it blends in with no accent bar; plain title and description, no footer, no timestamp) — confirmations, errors, `/status`, `/fg list`, the log embed, and the share offer alike. Slash replies are invisible (ephemeral). `/status` lists any protected or FG roles the bot can't manage and shows "Needs setup" until the bot's role is moved above them; the same check runs at startup and logs a warning per server.
+Every reply is a colorless embed (no color set, so it blends in with no accent bar; plain title and description, no footer, no timestamp) — confirmations, errors, `/status`, `/fg list`, the log embed, and the share offer alike. Slash replies are invisible (ephemeral). `/status` lists any protected or FG roles the bot can't manage and shows "Needs setup" until the bot's role is moved above them; the same check runs at startup and logs a warning per server.
 
 Prefix (",") replies cannot be invisible — Discord has no ephemeral message replies, so a `,` reply is always visible in the channel. That is a Discord limitation, not a bug. Wild mitigates it: your `,` command message is deleted after handling (best-effort), and error replies auto-delete after 10 seconds (best-effort). Success replies stay. If you need invisible errors, use the slash versions. Unknown `,` commands get no reply at all, and the message is never deleted — it may belong to Greed or another bot.
 
@@ -54,14 +54,14 @@ Blacklist — blocks a member from a protected role. If that role is ever given 
 - `/blacklist remove @user @role` / `,blacklist remove @user @role` — unblacklist them (Manage Server).
 - `/blacklist list` / `,blacklist list` — list the blacklist as a paginated embed, 10 users per page with Prev/Next buttons, one field per user (Manage Server or whitelisted).
 
-FG roles — Bleed booster-role style. Each member makes their own unique, personal, cosmetic role under one base role and customises it (name, colour, icon). FG roles are created with no permissions, are automatically protected, and the guard applies to them like any other protected role.
+FG roles — Bleed booster-role style. Each member makes their own unique, personal, cosmetic role under one base role and customises it (name, color, icon). FG roles are created with no permissions, are automatically protected, and the guard applies to them like any other protected role.
 
-- `/fg base @role` / `,fg base @role` — set the base role FG roles sit under (Manage Server). Keep it above any coloured roles or the colour won't show.
-- `/fg color <color> <name>` / `,fg color <color> <name>` — make your own FG role. Optional second colour for a gradient (`,fg color <color> <name> <second_color>`). Colours accept any CSS colour name or hex code: `#rrggbb`, `rrggbb`, `#rgb`, `rgb`, or `0xrrggbb`. Only whitelisted members (or the server owner or an Administrator) can make one, and only one FG role per member (Wild rule — Bleed gates this on boosting instead).
+- `/fg base @role` / `,fg base @role` — set the base role FG roles sit under (Manage Server).
+- `/fg color <color> <name>` / `,fg color <color> <name>` — make your own FG role. One color = solid, two = gradient: give the second color as `/fg color`'s `second_color` option, or after the name in `,fg color <color> <name> <second_color>`, separated by a space or a comma. Colors accept any CSS color name or hex code: `#rrggbb`, `rrggbb`, `#rgb`, `rgb`, or `0xrrggbb` — any hex code works, so 16,777,216 colors are possible, plus 148 named colors. `random` picks a random color, and `holographic` (alias `holo`) gives the role Discord's holographic style. More than two colors is rejected. Gradients and holographic need the Enhanced Role Styles perk (3 server boosts on it); without it the role is made solid in the first color instead, and the bot says so. Only whitelisted members (or the server owner or an Administrator) can make one, and only one FG role per member (Wild rule — Bleed gates this on boosting instead).
 - `/fg create <name> <color> [second_color] [@member]` / `,fg create <name> <color> [second_color] [@member]` — create an FG role for yourself, or for a named member. Needs an FG base role set first (`/fg base`). Only the server owner, administrators, or whitelisted members can use it.
 - `/fg rename <name>` / `,fg rename <name>` — rename your own FG role.
 - `/fg icon <url>` / `,fg icon <url>` — set your own FG role's icon: image link, emoji, or custom emoji. Role icons only show on Boost Level 2+ servers.
-- `/fg remove` / `,fg remove` — delete your own FG role.
+- `/fg remove` / `,fg remove` — delete your own FG role. Asks for confirmation first (Yes/No buttons); nothing is deleted until you tap Yes.
 - `/fg list` / `,fg list` — list all FG roles and their owners (Manage Server or whitelisted).
 - `/fg cleanup` / `,fg cleanup` — remove FG roles whose owners left the server (Manage Server).
 - `/fg share @member @role` / `,fg share @member @role` — offer one of your FG roles to a member. Wild-only extra — Bleed documents no share command. You may share only if you are the server owner, an Administrator, whitelisted, the FG role's owner, or authorised to share that role (see below). All errors are invisible (ephemeral) on slash, or auto-deleting on prefix; only the offer itself is public.
@@ -74,7 +74,7 @@ Sharing FG roles, in three lines: staff assign FG roles to people, so only those
 
 ## Help
 
-`/help` / `,help` opens a paged help menu — one colourless embed per
+`/help` / `,help` opens a paged help menu — one colorless embed per
 page, one field per command, plain text only, no emojis. Help shows
 only the syntax for the form it was opened with: `/help` shows slash
 forms, `,help` shows prefix forms. Each command is one field: the
@@ -107,7 +107,7 @@ category page. An unknown topic gets a short error pointing at `/help`.
 Only the person who ran /help can use its buttons, and they stop
 working after 5 minutes.
 
-Every other Wild embed uses the same style: no colour, plain
+Every other Wild embed uses the same style: no color, plain
 title, no footer, no timestamp, one field per item — /status (one
 field per section), /fg list (one field per FG role, with its owner),
 the guard log embed (Role / Assigned by / Reason fields), and the FG

@@ -14,7 +14,7 @@ bypass the guard — their grants are never reverted. Repeat offenders
 Wild is simple on purpose: seven slash commands, each with a "," prefix
 version that works the same way. Every reply is an embed — confirmations
 and errors are short invisible (ephemeral) embeds, only you can see them.
-All embeds use no colour at all (no accent bar, so they blend into the
+All embeds use no color at all (no accent bar, so they blend into the
 chat background and look invisible), no footer, no timestamp.
 
 ## Discord setup
@@ -61,10 +61,17 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
 - `/fg base @role` / `,fg base @role` — set the base role FG roles sit
   under (Manage Server).
 - `/fg color <color> <name>` / `,fg color <color> <name>` — make your
-  own FG role. Optional second colour for a gradient
-  (`,fg color <color> <name> <second_color>`). Colours accept any CSS
-  colour name or hex code: `#rrggbb`, `rrggbb`, `#rgb`, `rgb`, or
-  `0xrrggbb`.
+  own FG role. One color = solid, two = gradient: give the second color
+  as `/fg color`'s `second_color` option, or after the name in
+  `,fg color <color> <name> <second_color>`, separated by a space or a
+  comma. Colors accept any CSS color name or hex code: `#rrggbb`,
+  `rrggbb`, `#rgb`, `rgb`, or `0xrrggbb` — any hex code works, so
+  16,777,216 colors are possible, plus 148 named colors. `random`
+  picks a random color, and `holographic` (alias `holo`) gives the
+  role Discord's holographic style. More than two colors is rejected.
+  Gradients and holographic need the Enhanced Role Styles perk (3
+  server boosts on it); without it the role is made solid in the first
+  color instead, and the bot says so.
 - `/fg create <name> <color> [second_color] [@member]` /
   `,fg create <name> <color> [second_color] [@member]` — create an FG
   role for yourself, or for a named member. Needs an FG base role set
@@ -73,7 +80,9 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
 - `/fg rename <name>` / `,fg rename <name>` — rename your own FG role.
 - `/fg icon <url>` / `,fg icon <url>` — set your own FG role's icon
   (image link, emoji, or custom emoji).
-- `/fg remove` / `,fg remove` — delete your own FG role.
+- `/fg remove` / `,fg remove` — delete your own FG role. Asks for
+  confirmation first (Yes/No buttons); nothing is deleted until you tap
+  Yes.
 - `/fg list` / `,fg list` — list all FG roles and their owners.
 - `/fg cleanup` / `,fg cleanup` — remove FG roles whose owners left
   the server.
@@ -104,7 +113,7 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
 
 ## Help
 
-`/help` / `,help` opens a paged help menu — one colourless embed per
+`/help` / `,help` opens a paged help menu — one colorless embed per
 page, one field per command, plain text only, no emojis. Help shows
 only the syntax for the form it was opened with: `/help` shows slash
 forms, `,help` shows prefix forms. Each command is one field: the
@@ -163,7 +172,7 @@ a short error pointing at `/help`. Only the person who ran /help can
 use its buttons — anyone else gets told to run /help for their own
 menu — and the buttons stop working after 5 minutes.
 
-Every other Wild embed uses the same style: no colour, plain
+Every other Wild embed uses the same style: no color, plain
 title, no footer, no timestamp, one field per item — /status (one
 field per section), /fg list (one field per FG role, with its owner),
 the guard log embed (Role / Assigned by / Reason fields), and the FG
@@ -179,7 +188,7 @@ message replies, so a `,` reply is always visible in the channel.
 That is a Discord limitation, not a bug. Wild mitigates it two ways:
 your `,` command message is deleted after handling (best-effort), and
 error replies auto-delete after 10 seconds (best-effort). Success
-replies stay. Every reply is an embed, in the same colourless style as
+replies stay. Every reply is an embed, in the same colorless style as
 the slash replies. If you need invisible errors, use the slash versions
 instead.
 
@@ -227,9 +236,8 @@ present and confirm Wild answers and Greed stays silent.
 
 FG roles work like Bleed's booster roles: each member makes their own
 unique, personal, cosmetic role that sits under one base role, and
-customises it themselves (name, colour, icon). Set the base once with
-`/fg base`, and keep it above any coloured roles or the colour won't
-show.
+customises it themselves (name, color, icon). Set the base once with
+`/fg base`.
 
 Wild adaptations (these are Wild rules, not Bleed behaviour):
 

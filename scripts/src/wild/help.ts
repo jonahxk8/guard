@@ -18,7 +18,7 @@ import { WILD_ERROR_REPLY } from "./reply.js";
 /**
  * Help pages, Greed-style: paged embeds, one field per command, buttons
  * to move between pages. Plain text only — no emojis anywhere, including
- * on buttons ("Prev", "Next", "Back", never arrow symbols). No colour
+ * on buttons ("Prev", "Next", "Back", never arrow symbols). No color
  * set on any embed, so the pages blend into the chat background.
  *
  * Personalised help: there are no "Who:" lines anywhere. Instead, every
@@ -366,7 +366,7 @@ const FG_ENTRIES: HelpEntry[] = [
     key: "fg color",
     slash: "/fg color <color> <name>",
     prefix: ",fg color <color> <name> [second_color]",
-    purpose: "Make your own FG role",
+    purpose: "Make your own FG role (hex, name, random, holographic)",
     example: "/fg color #ff0000 My Role",
     examplePrefix: ",fg color #ff0000 My Role",
     gate: "ownerOrWhitelisted",

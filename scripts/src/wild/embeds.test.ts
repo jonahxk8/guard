@@ -6,7 +6,7 @@ import { wildEmbed, wildFieldEmbed } from "./embeds.js";
 const EMOJI_PATTERN =
   /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{25A0}-\u{25FF}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{FE0F}\u{200D}]/u;
 
-test("wildFieldEmbed: no colour, no footer, no timestamp, one field per item", () => {
+test("wildFieldEmbed: no color, no footer, no timestamp, one field per item", () => {
   const embed = wildFieldEmbed(
     "Help - FG (1/2)",
     [
@@ -16,7 +16,7 @@ test("wildFieldEmbed: no colour, no footer, no timestamp, one field per item", (
     "Personal FG roles.",
   ).toJSON();
 
-  // No colour set at all: the embed renders with no accent bar and
+  // No color set at all: the embed renders with no accent bar and
   // blends into the chat background (looks invisible).
   assert.equal(embed.color, undefined);
   assert.equal(embed.footer, undefined);
@@ -27,7 +27,7 @@ test("wildFieldEmbed: no colour, no footer, no timestamp, one field per item", (
   assert.doesNotMatch(JSON.stringify(embed), EMOJI_PATTERN);
 });
 
-test("wildEmbed has no colour, no footer, and no timestamp", () => {
+test("wildEmbed has no color, no footer, and no timestamp", () => {
   const embed = wildEmbed("Wild", "No FG roles yet.").toJSON();
   assert.equal(embed.color, undefined);
   assert.equal(embed.footer, undefined);
@@ -35,14 +35,14 @@ test("wildEmbed has no colour, no footer, and no timestamp", () => {
   assert.doesNotMatch(JSON.stringify(embed), EMOJI_PATTERN);
 });
 
-test("no embed builder in non-test source sets a colour", async () => {
+test("no embed builder in non-test source sets a color", async () => {
   const { readdir, readFile } = await import("node:fs/promises");
   const { fileURLToPath } = await import("node:url");
   const dir = fileURLToPath(new URL(".", import.meta.url));
   for (const name of await readdir(dir)) {
     if (!name.endsWith(".ts") || name.endsWith(".test.ts")) continue;
     const source = await readFile(`${dir}${name}`, "utf-8");
-    assert.doesNotMatch(source, /setColor\s*\(/, `${name} must not set an embed colour`);
-    assert.doesNotMatch(source, /BOT_BLACK|BOT_WHITE/, `${name} must not use a colour constant`);
+    assert.doesNotMatch(source, /setColor\s*\(/, `${name} must not set an embed color`);
+    assert.doesNotMatch(source, /BOT_BLACK|BOT_WHITE/, `${name} must not use a color constant`);
   }
 });

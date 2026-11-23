@@ -27,8 +27,8 @@ import {
 
 // Wild has seven slash commands: /protect, /whitelist, /status,
 // /setup, /fg, /blacklist, and /help. Confirmations and errors are short
-// ephemeral embeds (one colourless embed, message in the description).
-// Only /status uses a field embed (one colourless embed, short lines).
+// ephemeral embeds (one colorless embed, message in the description).
+// Only /status uses a field embed (one colorless embed, short lines).
 
 export const protectCommand = new SlashCommandBuilder()
   .setName("protect")
@@ -124,7 +124,7 @@ async function replyText(
   isError = true,
 ): Promise<void> {
   // Small replies are embeds, not plain text: the short message goes in
-  // the description of a colourless embed with no title (see embeds.ts).
+  // the description of a colorless embed with no title (see embeds.ts).
   // Most replies from the guard commands are errors, so the default is
   // error. Success replies pass false explicitly (see saveSettings).
   // The flag is a symbol-keyed property: discord.js builds the reply

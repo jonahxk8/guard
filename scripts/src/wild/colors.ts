@@ -1,11 +1,11 @@
 /**
- * FG colours: the full CSS named-colour list (CSS Color 4 — 148 names,
+ * FG colors: the full CSS named-color list (CSS Color 4 — 148 names,
  * counting the gray/grey spellings as separate names, as CSS does).
  * Names are case-insensitive and spaces are optional, so "light blue"
  * and "lightblue" both work, and grey/gray spellings both work.
  *
  * Three names keep the bot's ORIGINAL values instead of the CSS ones,
- * so FG roles created before this list don't change colour:
+ * so FG roles created before this list don't change color:
  * orange #ff8800 (CSS #ffa500), green #00ff00 (CSS #008000), and
  * pink #ff69b4 (CSS #ffc0cb).
  */
@@ -161,12 +161,15 @@ const COLOR_ENTRIES: Array<[string, string]> = [
   ["yellowgreen", "#9acd32"],
 ];
 
-/** Colour name (lowercase, no spaces) to lowercase "#rrggbb". */
+/** Color name (lowercase, no spaces) to lowercase "#rrggbb". */
 export const FG_COLOR_NAMES: Record<string, string> =
   Object.fromEntries(COLOR_ENTRIES);
 
-/** How many colour names the bot accepts (148 CSS names). */
+/** How many color names the bot accepts (148 CSS names). */
 export const FG_COLOR_COUNT = COLOR_ENTRIES.length;
+
+/** How many hex colors exist: every #rrggbb, 16^6 = 16,777,216. */
+export const FG_HEX_COLOR_COUNT = 0x1000000;
 
 export interface FgColorEntry {
   name: string;
@@ -179,7 +182,7 @@ export const FG_COLOR_LIST: FgColorEntry[] = COLOR_ENTRIES.map(
   ([name, hex]) => ({ name, hex: hex.toUpperCase() }),
 );
 
-/** Normalise a colour name for lookup: lowercase, spaces removed. */
+/** Normalise a color name for lookup: lowercase, spaces removed. */
 export function normalizeColorName(input: string): string {
   return input.trim().toLowerCase().replace(/\s+/g, "");
 }

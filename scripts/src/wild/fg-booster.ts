@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -5,6 +6,7 @@ import {
   ButtonStyle,
   ChatInputCommandInteraction,
   ComponentType,
+  Constants,
   EmbedBuilder,
   Guild,
   GuildMember,
@@ -29,7 +31,7 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  * FG roles, Bleed booster-role style.
  *
  * Bleed's booster roles are unique, personal, cosmetic roles that a member
- * customises themselves (name, colour, icon) and that sit under one base
+ * customises themselves (name, color, icon) and that sit under one base
  * role. Wild copies that model, with Wild adaptations (labelled as such
  * in the docs, NOT Bleed behaviour):
  *  - Eligibility is being whitelisted, not boosting the server.
@@ -47,18 +49,18 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  * share it.
  *
  * All slash replies are ephemeral embeds (short text in the description
- * of a colourless embed), except /fg list and the public share offer
- * (colourless field embeds, no footer/timestamp). Errors are never public.
+ * of a colorless embed), except /fg list and the public share offer
+ * (colorless field embeds, no footer/timestamp). Errors are never public.
  */
 
 const SHARE_TIMEOUT_MS = 5 * 60 * 1_000;
 const MAX_FG_NAME_LENGTH = 90;
 
 /**
- * Parse a colour: any CSS colour name (148 names, case-insensitive,
+ * Parse a color: any CSS color name (148 names, case-insensitive,
  * spaces optional, grey/gray spellings both work) or a hex code
  * (#rrggbb, rrggbb, #rgb, rgb, 0xrrggbb). Returns a lowercase
- * "#rrggbb" string, or null when the input is not a colour.
+ * "#rrggbb" string, or null when the input is not a color.
  */
 export function parseFgColor(input: string): string | null {
   const value = normalizeColorName(input);
@@ -73,6 +75,186 @@ export function parseFgColor(input: string): string | null {
   return null;
 }
 
+/** Split color input on whitespace and commas; empty pieces dropped. */
+export function splitColorTokens(input: string): string[] {
+  return input
+    .split(/[\s,]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+}
+
+/** A random hex color, "#rrggbb". */
+export function randomFgColor(): string {
+  return `#${randomInt(0, 0x1000000).toString(16).padStart(6, "0")}`;
+}
+
+/**
+ * Discord's fixed holographic preset, straight from discord.js
+ * (Constants.HolographicStyle: Primary 11127295, Secondary 16759788,
+ * Tertiary 16761760). The API enforces these exact values whenever a
+ * tertiary color is sent, so a holographic role is always these three
+ * colors — it can't be recolored.
+ */
+export const HOLOGRAPHIC_COLORS = {
+  primary: `#${Constants.HolographicStyle.Primary.toString(16).padStart(6, "0")}`,
+  secondary: `#${Constants.HolographicStyle.Secondary.toString(16).padStart(6, "0")}`,
+  tertiary: `#${Constants.HolographicStyle.Tertiary.toString(16).padStart(6, "0")}`,
+} as const;
+
+export type FgColorKind = "solid" | "gradient" | "holographic";
+
+export interface FgColorChoice {
+  kind: FgColorKind;
+  /** Lowercase "#rrggbb". For holographic, the preset primary. */
+  primary: string;
+  /** Lowercase "#rrggbb", or null for solid. Holographic stores its preset secondary here. */
+  secondary: string | null;
+}
+
+interface MatchedColor {
+  /** Lowercase "#rrggbb", or null for holographic. */
+  hex: string | null;
+  holographic: boolean;
+  /** How many tokens this color used. */
+  length: number;
+}
+
+/**
+ * Try to match one color at tokens[start]: `holographic`/`holo`, `random`,
+ * or a name (multi-word: "light blue" matches before "light") or hex.
+ * Null when the token(s) there aren't a color.
+ */
+function matchOneColor(tokens: string[], start: number): MatchedColor | null {
+  const token = tokens[start]?.toLowerCase();
+  if (!token) return null;
+  if (token === "holographic" || token === "holo") {
+    return { hex: null, holographic: true, length: 1 };
+  }
+  if (token === "random") {
+    return { hex: randomFgColor(), holographic: false, length: 1 };
+  }
+  for (let len = Math.min(3, tokens.length - start); len >= 1; len--) {
+    const parsed = parseFgColor(tokens.slice(start, start + len).join(" "));
+    if (parsed) return { hex: parsed, holographic: false, length: len };
+  }
+  return null;
+}
+
+export type FgColorParseError = "invalid" | "too-many";
+
+export type FgColorParseResult =
+  | { choice: FgColorChoice; consumed: number; colorText: string }
+  | { error: FgColorParseError };
+
+/**
+ * Parse Greed/Bleed-style colors from the front of a token list: one color
+ * = solid, two = gradient, `holographic`/`holo` on its own, `random` = a
+ * random hex. Colors may be names (multi-word: "light blue"), hex in any
+ * form, separated by spaces or commas. Returns how many tokens the colors
+ * used, so the caller knows where the role name starts. More than two
+ * colors is an error ("too-many"), never silently ignored.
+ */
+export function parseFgColorTokens(tokens: string[]): FgColorParseResult {
+  const first = matchOneColor(tokens, 0);
+  if (!first) return { error: "invalid" };
+  if (first.holographic) {
+    return {
+      choice: {
+        kind: "holographic",
+        primary: HOLOGRAPHIC_COLORS.primary,
+        secondary: HOLOGRAPHIC_COLORS.secondary,
+      },
+      consumed: 1,
+      colorText: tokens.slice(0, 1).join(" "),
+    };
+  }
+  const colors: string[] = [first.hex!];
+  let pos = first.length;
+  const second = matchOneColor(tokens, pos);
+  if (second) {
+    if (second.holographic) return { error: "too-many" };
+    colors.push(second.hex!);
+    pos += second.length;
+    if (matchOneColor(tokens, pos)) return { error: "too-many" };
+  }
+  const choice: FgColorChoice =
+    colors.length === 1
+      ? { kind: "solid", primary: colors[0], secondary: null }
+      : { kind: "gradient", primary: colors[0], secondary: colors[1] };
+  return { choice, consumed: pos, colorText: tokens.slice(0, pos).join(" ") };
+}
+
+/**
+ * Parse a whole color spec string ("red blue", "red, blue", "random",
+ * "holographic"). Returns null unless the ENTIRE string is one or two
+ * colors (or holographic on its own).
+ */
+export function parseFgColorSpec(input: string): FgColorChoice | null {
+  const tokens = splitColorTokens(input);
+  if (tokens.length === 0) return null;
+  const parsed = parseFgColorTokens(tokens);
+  if ("error" in parsed) return null;
+  if (parsed.consumed !== tokens.length) return null;
+  return parsed.choice;
+}
+
+export type FgColorFromEndResult =
+  | { choice: FgColorChoice; nameTokens: string[]; colorText: string }
+  | { error: FgColorParseError };
+
+/**
+ * Parse colors from the END of a token list (for `,fg create`, where the
+ * name comes first and the color(s) last). Same rules as the front parser:
+ * at most two colors, holographic on its own, `random` allowed.
+ */
+export function parseFgColorTokensFromEnd(
+  tokens: string[],
+): FgColorFromEndResult {
+  const matchEndingAt = (end: number): MatchedColor | null => {
+    const token = tokens[end - 1]?.toLowerCase();
+    if (!token) return null;
+    if (token === "holographic" || token === "holo") {
+      return { hex: null, holographic: true, length: 1 };
+    }
+    if (token === "random") {
+      return { hex: randomFgColor(), holographic: false, length: 1 };
+    }
+    for (let len = 3; len >= 1; len--) {
+      if (end - len < 0) continue;
+      const parsed = parseFgColor(tokens.slice(end - len, end).join(" "));
+      if (parsed) return { hex: parsed, holographic: false, length: len };
+    }
+    return null;
+  };
+  const last = matchEndingAt(tokens.length);
+  if (!last) return { error: "invalid" };
+  if (last.holographic) {
+    return {
+      choice: {
+        kind: "holographic",
+        primary: HOLOGRAPHIC_COLORS.primary,
+        secondary: HOLOGRAPHIC_COLORS.secondary,
+      },
+      nameTokens: tokens.slice(0, tokens.length - 1),
+      colorText: tokens.slice(tokens.length - 1).join(" "),
+    };
+  }
+  const colors: string[] = [last.hex!];
+  let pos = tokens.length - last.length;
+  const second = matchEndingAt(pos);
+  if (second) {
+    if (second.holographic) return { error: "too-many" };
+    colors.unshift(second.hex!);
+    pos -= second.length;
+    if (matchEndingAt(pos)) return { error: "too-many" };
+  }
+  const choice: FgColorChoice =
+    colors.length === 1
+      ? { kind: "solid", primary: colors[0], secondary: null }
+      : { kind: "gradient", primary: colors[0], secondary: colors[1] };
+  return { choice, nameTokens: tokens.slice(0, pos), colorText: tokens.slice(pos).join(" ") };
+}
+
 function isValidFgName(name: string): boolean {
   const trimmed = name.trim();
   return (
@@ -85,7 +267,7 @@ function isValidFgName(name: string): boolean {
 
 export const fgCommand = new SlashCommandBuilder()
   .setName("fg")
-  .setDescription("Your own FG role — colour, name, icon, and sharing")
+  .setDescription("Your own FG role — color, name, icon, and sharing")
   .addSubcommand((command) =>
     command
       .setName("base")
@@ -97,12 +279,12 @@ export const fgCommand = new SlashCommandBuilder()
   .addSubcommand((command) =>
     command
       .setName("color")
-      .setDescription("Create your own FG role with a colour")
+      .setDescription("Create your own FG role with a color")
       .addStringOption((option) =>
-        option.setName("color").setDescription("Colour: hex or name").setRequired(true),
+        option.setName("color").setDescription("Color: hex, name, random, or holographic").setRequired(true),
       )
       .addStringOption((option) =>
-        option.setName("second_color").setDescription("Second colour for a gradient"),
+        option.setName("second_color").setDescription("Second color for a gradient"),
       )
       .addStringOption((option) =>
         option
@@ -126,10 +308,10 @@ export const fgCommand = new SlashCommandBuilder()
           .setRequired(true),
       )
       .addStringOption((option) =>
-        option.setName("color").setDescription("Colour: hex or name").setRequired(true),
+        option.setName("color").setDescription("Color: hex, name, random, or holographic").setRequired(true),
       )
       .addStringOption((option) =>
-        option.setName("second_color").setDescription("Second colour for a gradient"),
+        option.setName("second_color").setDescription("Second color for a gradient"),
       )
       .addUserOption((option) =>
         option.setName("member").setDescription("Member the FG role is for (default: you)"),
@@ -234,10 +416,10 @@ async function replyText(
   isError = true,
 ): Promise<void> {
   // Small replies are embeds, not plain text: the short message goes in
-  // the description of a colourless embed with no title (see embeds.ts).
+  // the description of a colorless embed with no title (see embeds.ts).
   // Most replies from the FG commands are errors, so the default is
   // error. Success replies pass false explicitly (see saveSettings and
-  // the colour/rename/icon confirmations). The flag is a symbol-keyed
+  // the color/rename/icon confirmations). The flag is a symbol-keyed
   // property: discord.js builds the reply payload from named fields
   // only, so it never reaches Discord. The prefix adapter reads it to
   // auto-delete visible error replies.
@@ -340,7 +522,7 @@ async function handleBaseCommand(
     interaction,
     store,
     { ...settings, fgBaseRoleId: role.id },
-    `${roleDisplayName(role)} is now the FG base role. FG roles sit just under it — keep it above any coloured roles or the colour won't show.${warning}`,
+    `${roleDisplayName(role)} is now the FG base role. FG roles sit just under it.${warning}`,
   );
 }
 
@@ -377,18 +559,38 @@ async function createFgRole(
     return;
   }
 
-  const color = parseFgColor(colorInput);
-  if (!color) {
+  // Greed/Bleed-style color spec: the `color` option may itself hold one
+  // or two colors ("red blue", "red, blue", "random", "holographic"), and
+  // `second_color` adds a second one. More than two colors total is an
+  // error, never silently ignored.
+  const spec = parseFgColorSpec(colorInput);
+  if (!spec) {
     await replyText(
       interaction,
-      "That isn't a colour. Use a hex colour like #ff0000 or a name like blue.",
+      "That isn't a color. Use a hex color like #ff0000, a name like blue, random, or holographic.",
     );
     return;
   }
-  const secondColor = secondColorInput ? parseFgColor(secondColorInput) : null;
-  if (secondColorInput && !secondColor) {
-    await replyText(interaction, "That second colour isn't a colour.");
-    return;
+  let choice = spec;
+  if (secondColorInput) {
+    if (spec.kind !== "solid") {
+      await replyText(
+        interaction,
+        "Too many colors — give one color, or two for a gradient.",
+      );
+      return;
+    }
+    const second = parseFgColorSpec(secondColorInput);
+    if (!second || second.kind !== "solid") {
+      await replyText(
+        interaction,
+        second?.kind === "holographic"
+          ? "Holographic can't be a second color — use it on its own."
+          : "That second color isn't a color.",
+      );
+      return;
+    }
+    choice = { kind: "gradient", primary: spec.primary, secondary: second.primary };
   }
   const name = nameInput.trim();
   if (!isValidFgName(name)) {
@@ -421,23 +623,67 @@ async function createFgRole(
     return;
   }
 
+  // Gradients and holographic are Discord's Enhanced Role Styles: the
+  // role gets real primary/secondary (and tertiary) colors. The API
+  // enforces the holographic preset values. If the server hasn't
+  // unlocked the perk (3 server boosts on it), Discord rejects the
+  // style — like Greed, fall back to a solid role in the first color
+  // and say why, instead of failing the whole creation.
+  type RoleColorSet = {
+    primaryColor: `#${string}`;
+    secondaryColor?: `#${string}`;
+    tertiaryColor?: `#${string}`;
+  };
+  const roleColors: RoleColorSet =
+    choice.kind === "holographic"
+      ? {
+          primaryColor: HOLOGRAPHIC_COLORS.primary,
+          secondaryColor: HOLOGRAPHIC_COLORS.secondary,
+          tertiaryColor: HOLOGRAPHIC_COLORS.tertiary,
+        }
+      : choice.kind === "gradient"
+        ? {
+            primaryColor: choice.primary as `#${string}`,
+            secondaryColor: choice.secondary! as `#${string}`,
+          }
+        : { primaryColor: choice.primary as `#${string}` };
+  const createOptions = {
+    name,
+    colors: roleColors,
+    permissions: [],
+    hoist: false,
+    mentionable: false,
+    position: baseRole ? Math.max(0, baseRole.position - 1) : undefined,
+    reason: `FG role created by ${interaction.user.id} for ${targetId}`,
+  };
   let role: Role;
+  let styleNote = "";
   try {
-    role = await guild.roles.create({
-      name,
-      color: color as `#${string}`,
-      permissions: [],
-      hoist: false,
-      mentionable: false,
-      position: baseRole ? Math.max(0, baseRole.position - 1) : undefined,
-      reason: `FG role created by ${interaction.user.id} for ${targetId}`,
-    });
+    role = await guild.roles.create(createOptions);
   } catch {
-    await replyText(
-      interaction,
-      "The bot couldn't create that FG role. Check its permissions and role order and try again.",
-    );
-    return;
+    if (choice.kind === "solid") {
+      await replyText(
+        interaction,
+        "The bot couldn't create that FG role. Check its permissions and role order and try again.",
+      );
+      return;
+    }
+    try {
+      role = await guild.roles.create({
+        ...createOptions,
+        colors: { primaryColor: choice.primary as `#${string}` },
+      });
+    } catch {
+      await replyText(
+        interaction,
+        "The bot couldn't create that FG role. Check its permissions and role order and try again.",
+      );
+      return;
+    }
+    styleNote =
+      choice.kind === "holographic"
+        ? ` Holographic needs the Enhanced Role Styles perk (3 server boosts on it), so your role is solid ${choice.primary} for now.`
+        : ` Gradients need the Enhanced Role Styles perk (3 server boosts on it), so your role is solid ${choice.primary} for now.`;
   }
 
   const nextSettings = store.get(guild.id);
@@ -462,14 +708,11 @@ async function createFgRole(
     return;
   }
 
-  const gradientNote = secondColor
-    ? " Discord roles only show one colour, so your role uses the first colour."
-    : "";
   await replyText(
     interaction,
     forSelf
-      ? `${roleDisplayName(role)} is your FG role now. It's protected, so only whitelisted people can give it to anyone else.${gradientNote}`
-      : `Created FG role ${roleDisplayName(role)} for ${memberDisplayName(target)}. It's protected, so only whitelisted people can give it to anyone else.${gradientNote}`,
+      ? `${roleDisplayName(role)} is your FG role now. It's protected, so only whitelisted people can give it to anyone else.${styleNote}`
+      : `Created FG role ${roleDisplayName(role)} for ${memberDisplayName(target)}. It's protected, so only whitelisted people can give it to anyone else.${styleNote}`,
     false,
   );
 }
@@ -626,22 +869,130 @@ async function handleRemoveCommand(
   }
   const roleId = own?.roleId ?? ownedRoleId!;
   const role = own?.role ?? guild.roles.cache.get(roleId);
-  if (role) {
-    await role.delete(`FG role removed by ${interaction.user.id}`).catch(() => undefined);
-  }
-  const nextSettings = store.get(guild.id);
-  delete nextSettings.fgRoles[roleId];
-  delete nextSettings.fgRoleOwners[roleId];
-  delete nextSettings.fgRoleSharers[roleId];
-  nextSettings.protectedRoleIds = nextSettings.protectedRoleIds.filter(
-    (id) => id !== roleId,
-  );
-  await saveSettings(
-    interaction,
-    store,
-    nextSettings,
-    "Your FG role is gone.",
-  );
+  const roleName = role ? roleDisplayName(role) : "your FG role";
+
+  // Ask first, delete after — same Yes/No pattern as the share offer.
+  // Slash: ephemeral. Prefix: public (the fake interaction ignores the
+  // ephemeral flag and sends to the channel).
+  await interaction.reply({
+    embeds: [
+      wildFieldEmbed(
+        "Remove FG role",
+        [{ name: "Role", value: role ? roleMention(role) : "FG role" }],
+        `Delete ${roleName} for good? Tap Yes to delete it.`,
+      ),
+    ],
+    components: [buildDecisionButtons("fg-remove")],
+    ephemeral: true,
+    allowedMentions: { parse: [] },
+  });
+  const confirm = await interaction.fetchReply();
+  const collector = confirm.createMessageComponentCollector({
+    componentType: ComponentType.Button,
+    time: SHARE_TIMEOUT_MS,
+  });
+
+  let finishing = false;
+  collector.on("collect", async (button) => {
+    if (button.customId !== "fg-remove:yes" && button.customId !== "fg-remove:no") {
+      await button.deferUpdate();
+      return;
+    }
+    if (button.user.id !== interaction.user.id) {
+      await button
+        .reply({
+          embeds: [wildMessageEmbed("This confirmation isn't for you.")],
+          ephemeral: true,
+        })
+        .catch(() => undefined);
+      return;
+    }
+    if (finishing) {
+      await button.deferUpdate();
+      return;
+    }
+    finishing = true;
+    try {
+      if (button.customId === "fg-remove:no") {
+        await button.update({
+          embeds: [wildMessageEmbed("Your FG role was kept.")],
+          components: [],
+          allowedMentions: { parse: [] },
+        });
+      } else {
+        // Re-check at click time: the role may already be gone, or no
+        // longer theirs (removed by staff, or cleanup ran).
+        const fresh = store.get(guild.id);
+        const stillOwns =
+          fresh.fgRoleOwners[roleId] === interaction.user.id &&
+          Boolean(fresh.fgRoles[roleId]);
+        const liveRole = guild.roles.cache.get(roleId);
+        if (!stillOwns) {
+          await button.update({
+            embeds: [wildMessageEmbed("That FG role is already gone.")],
+            components: [],
+            allowedMentions: { parse: [] },
+          });
+        } else {
+          if (liveRole) {
+            await liveRole
+              .delete(`FG role removed by ${interaction.user.id}`)
+              .catch(() => undefined);
+          }
+          const nextSettings = store.get(guild.id);
+          delete nextSettings.fgRoles[roleId];
+          delete nextSettings.fgRoleOwners[roleId];
+          delete nextSettings.fgRoleSharers[roleId];
+          nextSettings.protectedRoleIds = nextSettings.protectedRoleIds.filter(
+            (id) => id !== roleId,
+          );
+          try {
+            await store.set(guild.id, nextSettings);
+          } catch {
+            await button.update({
+              embeds: [
+                wildMessageEmbed("The bot couldn't save that change. Try again."),
+              ],
+              components: [],
+              allowedMentions: { parse: [] },
+            });
+            collector.stop("answered");
+            return;
+          }
+          await button.update({
+            embeds: [wildMessageEmbed("Your FG role is gone.")],
+            components: [],
+            allowedMentions: { parse: [] },
+          });
+        }
+      }
+    } catch {
+      if (!button.replied && !button.deferred) {
+        await button
+          .reply({
+            embeds: [
+              wildMessageEmbed("The bot couldn't finish removing that FG role."),
+            ],
+            ephemeral: true,
+          })
+          .catch(() => undefined);
+      }
+    }
+    collector.stop("answered");
+  });
+
+  collector.on("end", async (_collected, reason) => {
+    if (reason !== "time") return;
+    await confirm
+      .edit({
+        embeds: [
+          wildMessageEmbed("FG role removal expired — your FG role was kept."),
+        ],
+        components: [buildDecisionButtons("fg-remove", true)],
+        allowedMentions: { parse: [] },
+      })
+      .catch(() => undefined);
+  });
 }
 
 async function handleListCommand(
@@ -965,15 +1316,15 @@ function buildShareEmbed(
   );
 }
 
-function buildDecisionButtons(disabled = false): ActionRowBuilder<ButtonBuilder> {
+function buildDecisionButtons(prefix = "fg-share", disabled = false): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId("fg-share:yes")
+      .setCustomId(`${prefix}:yes`)
       .setLabel("Yes")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
     new ButtonBuilder()
-      .setCustomId("fg-share:no")
+      .setCustomId(`${prefix}:no`)
       .setLabel("No")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
@@ -1256,7 +1607,7 @@ async function handleShareCommand(
             "This offer expired without a response.",
           ),
         ],
-        components: [buildDecisionButtons(true)],
+        components: [buildDecisionButtons("fg-share", true)],
         allowedMentions: { parse: [] },
       })
       .catch(() => undefined);

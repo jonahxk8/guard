@@ -4,7 +4,7 @@ import {
 } from "discord.js";
 import { ConfigStore } from "./config-store.js";
 import { handleGuardCommand } from "./commands.js";
-import { handleFgCommand, parseFgColor } from "./fg-booster.js";
+import { handleFgCommand, parseFgColor, parseFgColorTokens, parseFgColorTokensFromEnd, splitColorTokens } from "./fg-booster.js";
 import { handleHelpCommand } from "./help.js";
 import { wildMessageEmbed } from "./embeds.js";
 import { WILD_ERROR_REPLY } from "./reply.js";
@@ -228,38 +228,65 @@ function parseFgPrefix(
       return { command: "fg", args };
     }
     case "color": {
-      const color = tail[0] ? parseFgColor(tail[0]) : null;
-      if (!color) {
+      // Greed/Bleed-style colors up front: one color = solid, two =
+      // gradient (separated by a space or a comma), `random` or
+      // `holographic` on its own. Everything after the color(s) is the
+      // role name, which is required.
+      const tokens = splitColorTokens(tail.join(" "));
+      const parsed = parseFgColorTokens(tokens);
+      if ("error" in parsed) {
+        return usage(
+          parsed.error === "too-many"
+            ? "Too many colors — give one color, or two for a gradient."
+            : "Usage: ,fg color <color> <name> [second_color]",
+        );
+      }
+      const rest = tokens.slice(parsed.consumed);
+      if (rest.length === 0) {
         return usage("Usage: ,fg color <color> <name> [second_color]");
       }
-      const nameTokens = tail.slice(1);
-      if (nameTokens.length === 0) {
-        return usage("Usage: ,fg color <color> <name> [second_color]");
-      }
-      // A trailing colour is the second colour; everything before it is
-      // the name (names may contain spaces). A single token that happens
-      // to be a colour word is the name, not a second colour.
+      // A trailing color after the name is the second color (the old
+      // convention) — unless the colors already make a gradient or
+      // holographic, in which case a trailing color is a third color
+      // and is rejected, like Greed does.
       let secondColor: string | null = null;
-      let nameParts = nameTokens;
-      if (nameTokens.length >= 2) {
-        const last = parseFgColor(nameTokens[nameTokens.length - 1]);
-        if (last) {
-          secondColor = last;
-          nameParts = nameTokens.slice(0, -1);
+      let nameParts = rest;
+      if (parsed.choice.kind === "solid") {
+        const trailing = parseFgColorTokensFromEnd(rest);
+        if ("error" in trailing) {
+          if (trailing.error === "too-many") {
+            return usage("Too many colors — give one color, or two for a gradient.");
+          }
+          // No trailing color: the whole rest is the name.
+        } else if (trailing.choice.kind === "holographic") {
+          return usage("Holographic can't be a second color — use it on its own.");
+        } else if (trailing.choice.kind === "gradient") {
+          return usage("Too many colors — give one color, or two for a gradient.");
+        } else if (trailing.nameTokens.length >= 1) {
+          secondColor = trailing.colorText;
+          nameParts = trailing.nameTokens;
+        }
+        // trailing.nameTokens empty means the rest was one color word
+        // on its own — that stays the name.
+      } else if (parsed.choice.kind === "gradient") {
+        const trailing = parseFgColorTokensFromEnd(rest);
+        if (!("error" in trailing)) {
+          return usage("Too many colors — give one color, or two for a gradient.");
         }
       }
+      // Holographic: everything after it is the name, no second color.
       args.subcommand = "color";
-      args.strings.color = tail[0];
+      args.strings.color = parsed.colorText;
       args.strings.name = nameParts.join(" ");
       if (secondColor) args.strings.second_color = secondColor;
       return { command: "fg", args };
     }
     case "create": {
       // ,fg create <name> <color> [second_color] [@member]
-      // Name comes first and may contain spaces; the colour is the
-      // hex/name token after it. A trailing @member mention (or a raw
-      // id after a colour) is the member the role is for.
-      let tokens = [...tail];
+      // Name comes first and may contain spaces; the color(s) are the
+      // trailing tokens. A trailing @member mention (or a raw id after
+      // a color) is the member the role is for.
+      let tokens = splitColorTokens(tail.join(" "));
       const last = tokens[tokens.length - 1];
       const memberId = parseUserToken(last);
       if (memberId && last && /^<@!?\d+>$/.test(last)) {
@@ -273,34 +300,20 @@ function parseFgPrefix(
         args.users.member = memberId;
         tokens = tokens.slice(0, -1);
       }
-      if (tokens.length < 2) {
-        return usage("Usage: ,fg create <name> <color> [second_color] [@member]");
+      const parsed = parseFgColorTokensFromEnd(tokens);
+      if ("error" in parsed) {
+        return usage(
+          parsed.error === "too-many"
+            ? "Too many colors — give one color, or two for a gradient."
+            : "Usage: ,fg create <name> <color> [second_color] [@member]",
+        );
       }
-      let secondColor: string | null = null;
-      let colorToken: string | null = null;
-      let nameParts = tokens;
-      // Two trailing colours = colour + second colour; one trailing
-      // colour = just the colour. A name that is one colour word on its
-      // own stays the name (same rule as ,fg color).
-      if (
-        tokens.length >= 3 &&
-        parseFgColor(tokens[tokens.length - 1]) &&
-        parseFgColor(tokens[tokens.length - 2])
-      ) {
-        secondColor = parseFgColor(tokens[tokens.length - 1]);
-        colorToken = tokens[tokens.length - 2];
-        nameParts = tokens.slice(0, -2);
-      } else if (parseFgColor(tokens[tokens.length - 1])) {
-        colorToken = tokens[tokens.length - 1];
-        nameParts = tokens.slice(0, -1);
-      }
-      if (!colorToken || nameParts.length === 0) {
+      if (parsed.nameTokens.length === 0) {
         return usage("Usage: ,fg create <name> <color> [second_color] [@member]");
       }
       args.subcommand = "create";
-      args.strings.name = nameParts.join(" ");
-      args.strings.color = colorToken;
-      if (secondColor) args.strings.second_color = secondColor;
+      args.strings.name = parsed.nameTokens.join(" ");
+      args.strings.color = parsed.colorText;
       return { command: "fg", args };
     }
     case "rename": {

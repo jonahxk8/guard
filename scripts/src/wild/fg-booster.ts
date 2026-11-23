@@ -13,7 +13,7 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
-import { BOT_BLACK, wildEmbed } from "./embeds.js";
+import { wildFieldEmbed } from "./embeds.js";
 import { canShareRole, isWhitelisted } from "./authorization.js";
 import { memberDisplayName, roleDisplayName, roleMention } from "./names.js";
 import { isDangerousRole } from "./role-guard.js";
@@ -626,20 +626,24 @@ async function handleListCommand(
     return;
   }
   const entries = Object.entries(settings.fgRoleOwners).slice(0, 25);
-  const lines = entries.map(([roleId, ownerId], index) => {
+  const fields = entries.map(([roleId, ownerId]) => {
     const role = guild.roles.cache.get(roleId);
-    return `\`${index + 1}.\` ${role ? `<@&${roleId}>` : `Deleted role \`${roleId}\``} — <@${ownerId}>`;
+    return {
+      name: role ? roleDisplayName(role) : `Deleted role \`${roleId}\``,
+      value: `Owner: <@${ownerId}>`,
+    };
   });
-  if (Object.keys(settings.fgRoleOwners).length > lines.length) {
-    lines.push(
-      `…and ${Object.keys(settings.fgRoleOwners).length - lines.length} more.`,
-    );
-  }
+  const extra = Object.keys(settings.fgRoleOwners).length - entries.length;
   await interaction.reply({
     embeds: [
-      wildEmbed(
+      wildFieldEmbed(
         "FG roles",
-        lines.length > 0 ? lines.join("\n") : "No FG roles yet.",
+        fields,
+        fields.length === 0
+          ? "No FG roles yet."
+          : extra > 0
+            ? `Showing ${fields.length} of ${Object.keys(settings.fgRoleOwners).length} FG roles.`
+            : undefined,
       ),
     ],
     ephemeral: true,
@@ -755,14 +759,15 @@ function buildShareEmbed(
   role: Role | null,
   status?: string,
 ): EmbedBuilder {
-  const roleMentionText = role ? roleMention(role) : "FG role";
-  return new EmbedBuilder()
-    .setColor(BOT_BLACK)
-    .setTitle(title)
-    .setDescription(
-      status ??
-        `<@${requesterId}> wants to share ${roleMentionText} with <@${targetId}>.\n\nTap Yes to accept.`,
-    );
+  return wildFieldEmbed(
+    title,
+    [
+      { name: "Role", value: role ? roleMention(role) : "FG role" },
+      { name: "From", value: `<@${requesterId}>` },
+      { name: "To", value: `<@${targetId}>` },
+    ],
+    status ?? "Tap Yes to accept.",
+  );
 }
 
 function buildDecisionButtons(disabled = false): ActionRowBuilder<ButtonBuilder> {

@@ -288,10 +288,16 @@ test(",status sends the black embed and ,logchannel off turns alerts off", async
   await handlePrefixMessage(status.message, config.store);
   assert.equal(status.sent.length, 1);
   assert.equal(status.sent[0].embeds?.[0].toJSON().color, 0);
-  assert.match(
-    (status.sent[0].embeds?.[0].toJSON().description as string) ?? "",
-    /Protected roles \(1\)/,
+  const statusFields = Object.fromEntries(
+    (
+      (status.sent[0].embeds?.[0].toJSON().fields ?? []) as {
+        name: string;
+        value: string;
+      }[]
+    ).map((field) => [field.name, field.value]),
   );
+  assert.ok(`Protected roles (1)` in statusFields);
+  assert.equal(statusFields["Bot"], "Ready");
 
   const setup = createMessage({ content: ",logchannel off" });
   await handlePrefixMessage(setup.message, config.store);
@@ -460,22 +466,45 @@ test(",help shows the main page, a topic page, and one command", async () => {
   await handlePrefixMessage(main.message, config.store);
   assert.equal(main.sent.length, 1);
   assert.equal(main.sent[0].embeds?.[0].toJSON().color, 0);
-  const mainText = main.sent[0].embeds?.[0].toJSON().description as string;
-  assert.match(mainText, /\*\*Guard\*\*/);
-  assert.match(mainText, /\*\*FG\*\*/);
-  assert.match(mainText, /\*\*Blacklist\*\*/);
-  assert.match(mainText, /\/fg create/);
+  const mainEmbed = main.sent[0].embeds?.[0].toJSON();
+  const mainFields = (mainEmbed?.fields ?? []) as {
+    name: string;
+    value: string;
+  }[];
+  assert.deepEqual(
+    mainFields.map((field) => field.name),
+    ["Guard", "FG", "Blacklist"],
+  );
+  const mainText = mainFields
+    .map((field) => `${field.name}\n${field.value}`)
+    .join("\n");
+  assert.match(mainText, /\/help fg/);
   assert.doesNotMatch(mainText, /\|/);
 
   const fg = createMessage({ content: ",help fg" });
   await handlePrefixMessage(fg.message, config.store);
-  const fgText = fg.sent[0].embeds?.[0].toJSON().description as string;
+  const fgEmbed = fg.sent[0].embeds?.[0].toJSON();
+  assert.equal(fgEmbed?.title, "Wild help - FG (1/2)");
+  const fgFields = (fgEmbed?.fields ?? []) as {
+    name: string;
+    value: string;
+  }[];
+  const fgText = fgFields
+    .map((field) => `${field.name}\n${field.value}`)
+    .join("\n");
   assert.match(fgText, /\/fg create/);
   assert.doesNotMatch(fgText, /\/blacklist/);
 
   const create = createMessage({ content: ",help fg create" });
   await handlePrefixMessage(create.message, config.store);
-  const createText = create.sent[0].embeds?.[0].toJSON().description as string;
+  const createEmbed = create.sent[0].embeds?.[0].toJSON();
+  const createFields = (createEmbed?.fields ?? []) as {
+    name: string;
+    value: string;
+  }[];
+  const createText = createFields
+    .map((field) => `${field.name}\n${field.value}`)
+    .join("\n");
   assert.match(createText, /\/fg create <name> <color>/);
   assert.match(createText, /Server owner or whitelisted members/);
 

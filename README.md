@@ -90,13 +90,51 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
 
 ## Help
 
-`/help` shows every command in one black embed, grouped by category
-(Guard, FG, Blacklist), one line per command with a one-line purpose.
-`/help guard`, `/help fg`, or `/help blacklist` shows one category
-with each command's exact slash and prefix syntax, and `/help fg
-create` or `/help blacklist add` shows one command's syntax, purpose,
-and who can use it. Unknown topics get a short error pointing at
-`/help`.
+`/help` / `,help` opens a paged help menu — one black embed per page,
+one field per command, plain text only, no emojis. The main page lists
+the three categories (Guard, FG, Blacklist) with buttons to jump to
+each one:
+
+```
+Wild help
+  Guard — Protect roles and whitelist the people who can assign them
+          Use /help guard - 4 commands
+  FG — Personal FG roles - make, colour, rename, icon, share
+       Use /help fg - 12 commands
+  Blacklist — Block members from protected roles
+              Use /help blacklist - 3 commands
+  [Guard] [FG] [Blacklist]
+```
+
+Each category page lists its commands the same way — one field per
+command, slash syntax first, prefix syntax second, then one purpose
+line and a "Who: ..." line:
+
+```
+Wild help - FG (1/2)
+  /fg base @role
+  ,fg base @role
+  Set the base role FG roles sit under
+  Who: Manage Server
+  ...
+  [Next] [Back]
+```
+
+FG has 12 subcommands, so it splits into 2 pages of 6
+("Wild help - FG (1/2)" and "(2/2)") with Prev/Next buttons. Guard
+and Blacklist fit on one page each. `/help fg create` or
+`/help blacklist add` (`,help fg create` and so on) shows just that
+one command: Syntax, What it does, Who can use it, and an Example,
+with a Back button to its category page. Unknown topics get a short
+error pointing at `/help`. Only the person who ran /help can use its
+buttons — anyone else gets told to run /help for their own menu — and
+the buttons stop working after 5 minutes.
+
+Every other Wild embed uses the same style: black (colour 0), plain
+title, no footer, no timestamp, one field per item — /status (one
+field per section), /fg list (one field per FG role, with its owner),
+the guard log embed (Role / Assigned by / Reason fields), and the FG
+share offer (Role / From / To fields, with its Yes / No buttons).
 
 ## Prefix commands — read this first
 
@@ -105,8 +143,8 @@ message replies, so a `,` reply is always visible in the channel.
 That is a Discord limitation, not a bug. Wild mitigates it two ways:
 your `,` command message is deleted after handling (best-effort), and
 error replies auto-delete after 10 seconds (best-effort). Success
-replies stay. Only `/status`, `/fg list`, and the share offer use
-embeds; everything else is short plain text. If you need invisible
+replies stay. Only `/status`, `/fg list`, `/help`, and the share offer
+use embeds; everything else is short plain text. If you need invisible
 errors, use the slash versions instead.
 
 Unknown `,` commands get no reply at all — the bot stays silent, so

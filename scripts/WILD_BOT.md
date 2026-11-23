@@ -67,13 +67,26 @@ FG roles — Bleed booster-role style. Each member makes their own unique, perso
 
 ## Help
 
-`/help` / `,help` shows the commands in one black embed, grouped by
-category (Guard, FG, Blacklist), one command per line with a one-line
-purpose. `/help fg`, `/help guard`, or `/help blacklist` (`,help fg`
-and so on) shows one category, with each command's exact slash and
-prefix syntax. `/help fg create`, `/help blacklist add`, or
-`/help protect` shows just that command: its syntax, purpose, and who
-can use it. An unknown topic gets a short error pointing at `/help`.
+`/help` / `,help` opens a paged help menu — one black embed per page,
+one field per command, plain text only, no emojis. The main page lists
+the three categories (Guard, FG, Blacklist) with buttons to jump to
+each one. Each category page lists its commands the same way: one
+field per command, slash syntax first, prefix syntax second, then one
+purpose line and a "Who: ..." line. FG has 12 subcommands, so it
+splits into 2 pages of 6 ("Wild help - FG (1/2)" and "(2/2)") with
+Prev/Next buttons and a Back button to the main page; Guard and
+Blacklist fit on one page each. `/help fg create`, `/help blacklist
+add`, or `/help protect` shows just that command — Syntax, What it
+does, Who can use it, and an Example — with a Back button to its
+category page. An unknown topic gets a short error pointing at `/help`.
+Only the person who ran /help can use its buttons, and they stop
+working after 5 minutes.
+
+Every other Wild embed uses the same style: black (colour 0), plain
+title, no footer, no timestamp, one field per item — /status (one
+field per section), /fg list (one field per FG role, with its owner),
+the guard log embed (Role / Assigned by / Reason fields), and the FG
+share offer (Role / From / To fields, with its Yes / No buttons).
 
 A bare `,fg` or `,blacklist` (or an unknown subcommand) no longer
 dumps every usage variant — it just says "Use ,help fg" (or

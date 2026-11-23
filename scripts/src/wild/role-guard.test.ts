@@ -220,6 +220,11 @@ test("removes watched roles assigned by an unapproved actor", async () => {
   assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
   const embed = getLoggedEmbed(setup);
   assert.equal(embed.title, "Unauthorized role assignment");
+  // Plain text only: no emoji anywhere in the log embed.
+  assert.doesNotMatch(
+    JSON.stringify(embed),
+    /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{25A0}-\u{25FF}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{FE0F}\u{200D}]/u,
+  );
   assert.equal(
     embed.fields?.find((field) => field.name === "Assigned by")?.value,
     `<@${UNAPPROVED_ACTOR_ID}>`,

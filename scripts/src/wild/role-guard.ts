@@ -9,7 +9,7 @@ import {
   TextChannel,
 } from "discord.js";
 import { ConfigStore, GuildSettings, isBlacklisted } from "./config-store.js";
-import { BOT_BLACK } from "./embeds.js";
+import { wildFieldEmbed } from "./embeds.js";
 import { canAssignFgRole, memberMatchesWhitelist } from "./authorization.js";
 import {
   REPEAT_OFFENDER_THRESHOLD,
@@ -214,39 +214,30 @@ function createBlockedAssignmentEmbed(
       : "Bot could not verify the assigner.";
   }
 
-  const embed = new EmbedBuilder()
-    .setColor(BOT_BLACK)
-    .setTitle(
-      blacklistNote === "only"
-        ? "Blacklisted role assignment"
-        : "Unauthorized role assignment",
-    )
-    .setDescription(`Bot removed watched role(s) from <@${memberId}>.`)
-    .addFields(
-      { name: "Role(s)", value: roleMentions, inline: false },
-      { name: "Assigned by", value: actor, inline: true },
-      {
-        name: "Reason",
-        value: reason,
-        inline: true,
-      },
-    );
-
+  const fields: { name: string; value: string; inline?: boolean }[] = [
+    { name: "Role(s)", value: roleMentions },
+    { name: "Assigned by", value: actor, inline: true },
+    { name: "Reason", value: reason, inline: true },
+  ];
   if (
     typeof offenseCount === "number" &&
     offenseCount >= REPEAT_OFFENDER_THRESHOLD
   ) {
-    embed.addFields({
+    fields.push({
       name: "Repeat offender",
       value: "3+ unauthorised assignments",
-      inline: false,
     });
   }
-
   if (actionNeeded) {
-    embed.addFields({ name: "Action needed", value: actionNeeded, inline: false });
+    fields.push({ name: "Action needed", value: actionNeeded });
   }
-  return embed;
+  return wildFieldEmbed(
+    blacklistNote === "only"
+      ? "Blacklisted role assignment"
+      : "Unauthorized role assignment",
+    fields,
+    `Bot removed watched role(s) from <@${memberId}>.`,
+  );
 }
 
 async function notifyActor(

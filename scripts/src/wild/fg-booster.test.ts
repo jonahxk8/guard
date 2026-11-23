@@ -634,8 +634,15 @@ test("/fg list shows FG roles with owners in a black embed", async () => {
   const embed = replies[0].embeds?.[0].toJSON();
   assert.equal(embed?.color, 0);
   assert.equal(embed?.footer, undefined);
-  assert.match(embed?.description ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
-  assert.match(embed?.description ?? "", new RegExp(`<@${MEMBER_ID}>`));
+  assert.equal(embed?.timestamp, undefined);
+  assert.equal(embed?.fields?.length, 1);
+  assert.equal(embed?.fields?.[0]?.name, "My FG");
+  assert.match(embed?.fields?.[0]?.value ?? "", new RegExp(`<@${MEMBER_ID}>`));
+  // Plain text only: no emoji anywhere in the FG list embed.
+  assert.doesNotMatch(
+    JSON.stringify(embed),
+    /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{25A0}-\u{25FF}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{FE0F}\u{200D}]/u,
+  );
 });
 
 test("/fg cleanup removes FG roles whose owner left", async () => {

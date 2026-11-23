@@ -5,7 +5,7 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { ConfigStore, GuildSettings, blacklistCount, blacklistEntries, isBlacklisted } from "./config-store.js";
-import { wildEmbed } from "./embeds.js";
+import { wildFieldEmbed } from "./embeds.js";
 import { isWhitelisted } from "./authorization.js";
 import {
   channelDisplayName,
@@ -458,26 +458,41 @@ async function handleStatusCommand(
   if (settings.protectedRoleIds.length > protectedRoles.length) {
     protectedRoles.push(`…and ${settings.protectedRoleIds.length - protectedRoles.length} more.`);
   }
-  const description = [
-    `Protected roles (${settings.protectedRoleIds.length}): ${
-      protectedRoles.length > 0 ? protectedRoles.join(", ") : "none"
-    }`,
-    `FG roles: ${Object.keys(settings.fgRoles).length}`,
-    `Whitelisted: ${settings.allowedUserIds.length} members, ${settings.allowedRoleIds.length} roles`,
-    `Blacklisted: ${blacklistCount(settings)}`,
-    `Alerts: ${settings.logChannelId ? `<#${settings.logChannelId}>` : "Off"}`,
-    `Bot: ${guardReady ? "Ready" : "Needs setup"}`,
-    missingPermissions.length > 0
-      ? `Missing permissions: ${missingPermissions.join(", ")}`
-      : null,
-    unmanageableRoleIds.length > 0
-      ? `Bot can't manage: ${unmanageableRoleIds.map((id) => `<@&${id}>`).join(", ")} — move the bot's role above these roles.`
-      : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const fields: { name: string; value: string }[] = [
+    {
+      name: `Protected roles (${settings.protectedRoleIds.length})`,
+      value:
+        protectedRoles.length > 0 ? protectedRoles.join(", ") : "none",
+    },
+    {
+      name: "FG roles",
+      value: `${Object.keys(settings.fgRoles).length}`,
+    },
+    {
+      name: "Whitelisted",
+      value: `${settings.allowedUserIds.length} members, ${settings.allowedRoleIds.length} roles`,
+    },
+    { name: "Blacklisted", value: `${blacklistCount(settings)}` },
+    {
+      name: "Alerts",
+      value: settings.logChannelId ? `<#${settings.logChannelId}>` : "Off",
+    },
+    { name: "Bot", value: guardReady ? "Ready" : "Needs setup" },
+  ];
+  if (missingPermissions.length > 0) {
+    fields.push({
+      name: "Missing permissions",
+      value: missingPermissions.join(", "),
+    });
+  }
+  if (unmanageableRoleIds.length > 0) {
+    fields.push({
+      name: "Bot can't manage",
+      value: `${unmanageableRoleIds.map((id) => `<@&${id}>`).join(", ")} - move the bot's role above these roles.`,
+    });
+  }
   await interaction.reply({
-    embeds: [wildEmbed("Wild", description)],
+    embeds: [wildFieldEmbed("Wild", fields)],
     ephemeral: true,
     allowedMentions: { parse: [] },
   });

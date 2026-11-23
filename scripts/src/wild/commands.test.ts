@@ -299,12 +299,22 @@ test("/status shows protected, FG, whitelisted — and no command list", async (
   assert.equal(embed?.color, 0);
   assert.equal(embed?.footer, undefined);
   assert.equal(embed?.timestamp, undefined);
-  assert.match(embed?.description ?? "", /Protected roles \(1\)/);
-  assert.match(embed?.description ?? "", /FG roles: 1/);
-  assert.match(embed?.description ?? "", /Whitelisted: 1 members, 0 roles/);
-  assert.doesNotMatch(embed?.description ?? "", /Commands:/);
-  assert.doesNotMatch(embed?.description ?? "", /\/protect \/whitelist \/status \/setup \/fg/);
-  assert.doesNotMatch(embed?.description ?? "", /\/wild |\/roles|\/watch/);
+  const fields = Object.fromEntries(
+    (embed?.fields ?? []).map((field) => [field.name, field.value]),
+  );
+  assert.equal(fields["Protected roles (1)"], `<@&${ROLE_ID}>`);
+  assert.equal(fields["FG roles"], "1");
+  assert.equal(fields["Whitelisted"], "1 members, 0 roles");
+  assert.equal(fields["Blacklisted"], "0");
+  assert.equal(fields["Bot"], "Ready");
+  assert.equal(embed?.description, undefined);
+  // Plain text only: no emoji anywhere in the status embed.
+  assert.doesNotMatch(
+    JSON.stringify(embed),
+    /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{25A0}-\u{25FF}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{FE0F}\u{200D}]/u,
+  );
+  assert.doesNotMatch(JSON.stringify(embed?.fields ?? []), /Commands:/);
+  assert.doesNotMatch(JSON.stringify(embed?.fields ?? []), /\/wild |\/roles|\/watch/);
 });
 
 test("/status lists a protected role the bot cannot manage", async () => {
@@ -317,9 +327,12 @@ test("/status lists a protected role the bot cannot manage", async () => {
 
   await handleGuardCommand(interaction.interaction, config.store);
 
-  const description = interaction.replies[0].embeds?.[0].toJSON().description ?? "";
-  assert.match(description, /Bot: Needs setup/);
-  assert.match(description, /Bot can't manage: <@&333333333333333333>/);
+  const embed = interaction.replies[0].embeds?.[0].toJSON();
+  const fields = Object.fromEntries(
+    (embed?.fields ?? []).map((field) => [field.name, field.value]),
+  );
+  assert.equal(fields["Bot"], "Needs setup");
+  assert.match(fields["Bot can't manage"] ?? "", /<@&333333333333333333>/);
 });
 
 test("/blacklist add requires the role to be protected first", async () => {
@@ -449,9 +462,12 @@ test("/status shows the blacklist count", async () => {
 
   await handleGuardCommand(interaction.interaction, config.store);
 
-  const description = interaction.replies[0].embeds?.[0].toJSON().description ?? "";
-  assert.match(description, /Blacklisted: 1/);
-  assert.doesNotMatch(description, /Commands:/);
+  const embed = interaction.replies[0].embeds?.[0].toJSON();
+  const fields = Object.fromEntries(
+    (embed?.fields ?? []).map((field) => [field.name, field.value]),
+  );
+  assert.equal(fields["Blacklisted"], "1");
+  assert.doesNotMatch(JSON.stringify(embed?.fields ?? []), /Commands:/);
 });
 
 test("/status shows Blacklisted: 1 after a blacklist add (count is live)", async () => {
@@ -467,6 +483,9 @@ test("/status shows Blacklisted: 1 after a blacklist add (count is live)", async
 
   const status = createInteraction({ commandName: "status", roleId: ROLE_ID });
   await handleGuardCommand(status.interaction, config.store);
-  const description = status.replies[0].embeds?.[0].toJSON().description ?? "";
-  assert.match(description, /Blacklisted: 1/);
+  const embed = status.replies[0].embeds?.[0].toJSON();
+  const fields = Object.fromEntries(
+    (embed?.fields ?? []).map((field) => [field.name, field.value]),
+  );
+  assert.equal(fields["Blacklisted"], "1");
 });

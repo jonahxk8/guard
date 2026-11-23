@@ -9,10 +9,16 @@ import { handleHelpCommand } from "./help.js";
 import { WILD_ERROR_REPLY } from "./reply.js";
 
 /**
- * Prefix (",") commands. Every slash command also works with ",":
+ * Prefix (",") commands. Every slash command also works with ","
+ * (one per line):
  *
- *   ,guard @role | ,whitelist @user / @role | ,status
- *   ,logchannel #channel (or "off") | ,fg ... | ,blacklist ...
+ *   ,guard @role
+ *   ,whitelist @user / @role
+ *   ,status
+ *   ,logchannel #channel (or "off")
+ *   ,fg ...
+ *   ,blacklist ...
+ *   ,help
  *
  * The prefix names for two commands differ from their slash names on
  * purpose: Greed owns ,protect and ,setup, so Wild's prefix versions

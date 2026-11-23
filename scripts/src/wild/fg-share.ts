@@ -413,7 +413,7 @@ export async function handleFgShareMessage(
 
   if (eligibleRoles.length === 0) {
     await message.reply(
-      "You need to hold an FG role and be individually allowlisted to share it.",
+      "You need to hold an FG role and be individually whitelisted to share it.",
     );
     return;
   }

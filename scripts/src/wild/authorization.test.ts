@@ -39,7 +39,7 @@ function makeSettings(access: FgRoleAccess): GuildSettings {
   };
 }
 
-test("FG assignment requires FG staff or a per-role assign allowlist", () => {
+test("FG assignment requires FG staff or a per-role assign whitelist", () => {
   const settings = makeSettings({
     assignUserIds: [],
     assignRoleIds: [ASSIGNER_ROLE_ID],
@@ -55,7 +55,7 @@ test("FG assignment requires FG staff or a per-role assign allowlist", () => {
   assert.equal(isFgStaff(makeMember(MEMBER_ID), settings), true);
 });
 
-test("FG sharing requires holding and being allowlisted for that FG role", () => {
+test("FG sharing requires holding and being whitelisted for that FG role", () => {
   const access = {
     assignUserIds: [],
     assignRoleIds: [],

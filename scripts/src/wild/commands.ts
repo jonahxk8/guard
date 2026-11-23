@@ -13,103 +13,97 @@ import {
   isDangerousRole,
 } from "./role-guard.js";
 
-export const wildCommand = new SlashCommandBuilder()
-  .setName("wild")
-  .setDescription("Browse roles and manage role protection")
+export const rolesCommand = new SlashCommandBuilder()
+  .setName("roles")
+  .setDescription("Browse every role in this server");
+
+export const statusCommand = new SlashCommandBuilder()
+  .setName("status")
+  .setDescription("View role protection settings");
+
+export const watchCommand = new SlashCommandBuilder()
+  .setName("watch")
+  .setDescription("Choose which roles are protected")
   .addSubcommand((command) =>
-    command.setName("roles").setDescription("Browse every role in this server"),
+    command
+      .setName("add")
+      .setDescription("Protect a role from unapproved assignments")
+      .addRoleOption((option) =>
+        option.setName("role").setDescription("Role to protect").setRequired(true),
+      ),
   )
   .addSubcommand((command) =>
-    command.setName("status").setDescription("View role protection settings"),
-  )
-  .addSubcommandGroup((group) =>
-    group
-      .setName("enforcement")
-      .setDescription("Pause or resume automatic role removal")
-      .addSubcommand((command) =>
-        command
-          .setName("pause")
-          .setDescription("Pause role removal for this server"),
-      )
-      .addSubcommand((command) =>
-        command
-          .setName("resume")
-          .setDescription("Resume role removal for this server"),
+    command
+      .setName("remove")
+      .setDescription("Stop protecting a role")
+      .addRoleOption((option) =>
+        option.setName("role").setDescription("Role to stop protecting").setRequired(true),
       ),
   )
-  .addSubcommandGroup((group) =>
-    group
-      .setName("watch")
-      .setDescription("Choose which roles are protected")
-      .addSubcommand((command) =>
-        command
-          .setName("add")
-          .setDescription("Protect a role from unapproved assignments")
-          .addRoleOption((option) =>
-            option.setName("role").setDescription("Role to protect").setRequired(true),
-          ),
+  .addSubcommand((command) =>
+    command.setName("list").setDescription("List all protected roles"),
+  );
+
+export const whitelistCommand = new SlashCommandBuilder()
+  .setName("whitelist")
+  .setDescription("Manage who may assign protected roles")
+  .addSubcommand((command) =>
+    command
+      .setName("add")
+      .setDescription("Whitelist a member or role to assign protected roles")
+      .addUserOption((option) =>
+        option.setName("user").setDescription("Member to whitelist"),
       )
-      .addSubcommand((command) =>
-        command
-          .setName("remove")
-          .setDescription("Stop protecting a role")
-          .addRoleOption((option) =>
-            option.setName("role").setDescription("Role to stop protecting").setRequired(true),
-          ),
-      )
-      .addSubcommand((command) =>
-        command.setName("list").setDescription("List all protected roles"),
+      .addRoleOption((option) =>
+        option.setName("role").setDescription("Role to whitelist"),
       ),
   )
-  .addSubcommandGroup((group) =>
-    group
-      .setName("allow")
-      .setDescription("Manage who may assign protected roles")
-      .addSubcommand((command) =>
-        command
-          .setName("add")
-          .setDescription("Allow a member or role to assign protected roles")
-          .addUserOption((option) =>
-            option.setName("user").setDescription("Member to allow"),
-          )
-          .addRoleOption((option) =>
-            option.setName("role").setDescription("Role to allow"),
-          ),
+  .addSubcommand((command) =>
+    command
+      .setName("remove")
+      .setDescription("Remove a member or role from the whitelist")
+      .addUserOption((option) =>
+        option.setName("user").setDescription("Member to remove"),
       )
-      .addSubcommand((command) =>
-        command
-          .setName("remove")
-          .setDescription("Remove a member or role from the allowlist")
-          .addUserOption((option) =>
-            option.setName("user").setDescription("Member to remove"),
-          )
-          .addRoleOption((option) =>
-            option.setName("role").setDescription("Role to remove"),
-          ),
-      )
-      .addSubcommand((command) =>
-        command.setName("list").setDescription("List members and roles allowed to assign protected roles"),
+      .addRoleOption((option) =>
+        option.setName("role").setDescription("Role to remove"),
       ),
   )
-  .addSubcommandGroup((group) =>
-    group
-      .setName("logs")
-      .setDescription("Choose where guard alerts are sent")
-      .addSubcommand((command) =>
-        command
-          .setName("set")
-          .setDescription("Set the channel for guard alerts")
-          .addChannelOption((option) =>
-            option
-              .setName("channel")
-              .setDescription("Channel where the bot should send alerts")
-              .addChannelTypes(ChannelType.GuildText)
-              .setRequired(true),
-          ),
-      )
-      .addSubcommand((command) =>
-        command.setName("clear").setDescription("Turn off guard alerts"),
+  .addSubcommand((command) =>
+    command.setName("list").setDescription("List members and roles whitelisted to assign protected roles"),
+  );
+
+export const enforcementCommand = new SlashCommandBuilder()
+  .setName("enforcement")
+  .setDescription("Pause or resume automatic role removal")
+  .addSubcommand((command) =>
+    command
+      .setName("pause")
+      .setDescription("Pause role removal for this server"),
+  )
+  .addSubcommand((command) =>
+    command
+      .setName("resume")
+      .setDescription("Resume role removal for this server"),
+  );
+
+export const logsCommand = new SlashCommandBuilder()
+  .setName("logs")
+  .setDescription("Choose where guard alerts are sent")
+  .addSubcommand((command) =>
+    command
+      .setName("set")
+      .setDescription("Set the channel for guard alerts")
+      .addChannelOption((option) =>
+        option
+          .setName("channel")
+          .setDescription("Channel where the bot should send alerts")
+          .addChannelTypes(ChannelType.GuildText)
+          .setRequired(true),
       ),
+  )
+  .addSubcommand((command) =>
+    command.setName("clear").setDescription("Turn off guard alerts"),
   );
 
 export const commandsHelpCommand = new SlashCommandBuilder()
@@ -120,12 +114,12 @@ export async function handleCommandsHelp(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   const lines = [
-    "`/wild roles` — browse server roles",
-    "`/wild watch add|remove|list` — manage protected roles",
-    "`/wild allow add|remove|list` — allow members or roles to assign protected roles",
-    "`/wild enforcement pause|resume` — pause or resume automatic removal",
-    "`/wild logs set|clear` — configure guard alerts",
-    "`/wild status` — view protection status",
+    "`/roles` — browse server roles",
+    "`/watch add|remove|list` — manage protected roles",
+    "`/whitelist add|remove|list` — whitelist members or roles to assign protected roles",
+    "`/enforcement pause|resume` — pause or resume automatic removal",
+    "`/logs set|clear` — configure guard alerts",
+    "`/status` — view protection status",
     "`/fg roles create|assign|list` — manage FG roles",
     "`/fg staff add|remove|list` — manage FG staff",
     "`/fg access add|remove|list` — manage FG assignment and sharing access",
@@ -195,7 +189,7 @@ function makeRoleList(
   );
 }
 
-function makeAllowList(
+function makeWhitelist(
   userIds: string[],
   roleIds: string[],
   interaction: ChatInputCommandInteraction,
@@ -215,7 +209,7 @@ function makeAllowList(
   const hiddenRoles = Math.max(0, roleIds.length - roleLines.length);
   if (hiddenRoles > 0) roleLines.push(`…and ${hiddenRoles} more.`);
 
-  return wildEmbed("Allowed assigners", "Members and roles that may assign protected roles.")
+  return wildEmbed("Whitelisted assigners", "Members and roles that may assign protected roles.")
     .addFields(
       {
         name: `Members (${userIds.length})`,
@@ -267,7 +261,7 @@ async function handleWatchCommand(
     if (isDangerousRole(role)) {
       await interaction.reply({
         content:
-          "That role has the Administrator permission, so it can't be protected or handed out through the bot. Protecting it would let allowlisted members grant full admin.",
+          "That role has the Administrator permission, so it can't be protected or handed out through the bot. Protecting it would let whitelisted members grant full admin.",
         ephemeral: true,
       });
       return;
@@ -302,7 +296,7 @@ async function handleWatchCommand(
       interaction,
       store,
       { ...settings, protectedRoleIds: [...settings.protectedRoleIds, role.id] },
-      `${role} is now protected. If the assigner isn't allowlisted, the bot removes the role.`,
+      `${role} is now protected. If the assigner isn't whitelisted, the bot removes the role.`,
     );
     return;
   }
@@ -327,7 +321,7 @@ async function handleWatchCommand(
   );
 }
 
-async function handleAllowCommand(
+async function handleWhitelistCommand(
   interaction: ChatInputCommandInteraction,
   store: ConfigStore,
   action: string,
@@ -338,7 +332,7 @@ async function handleAllowCommand(
   if (action === "list") {
     await interaction.reply({
       embeds: [
-        makeAllowList(settings.allowedUserIds, settings.allowedRoleIds, interaction),
+        makeWhitelist(settings.allowedUserIds, settings.allowedRoleIds, interaction),
       ],
       ephemeral: true,
       allowedMentions: { parse: [] },
@@ -366,7 +360,7 @@ async function handleAllowCommand(
       const member = await guild.members.fetch(user.id).catch(() => null);
       if (!member) {
         await interaction.reply({
-          content: "That person must be a member of this server before they can be allowlisted.",
+          content: "That person must be a member of this server before they can be whitelisted.",
           ephemeral: true,
         });
         return;
@@ -390,7 +384,7 @@ async function handleAllowCommand(
   const isPresent = currentIds.includes(targetId);
   if (action === "add" && isPresent) {
     await interaction.reply({
-      content: `${targetLabel} is already allowlisted.`,
+      content: `${targetLabel} is already whitelisted.`,
       ephemeral: true,
       allowedMentions: { parse: [] },
     });
@@ -398,7 +392,7 @@ async function handleAllowCommand(
   }
   if (action === "remove" && !isPresent) {
     await interaction.reply({
-      content: `${targetLabel} isn't currently allowlisted.`,
+      content: `${targetLabel} isn't currently whitelisted.`,
       ephemeral: true,
       allowedMentions: { parse: [] },
     });
@@ -536,7 +530,7 @@ async function handleStatusCommand(
     !botMember?.permissions.has(PermissionFlagsBits.ViewAuditLog) ? "View Audit Log" : null,
   ].filter((permission): permission is string => permission !== null);
   const protectedCount = settings.protectedRoleIds.length;
-  const allowCount = settings.allowedUserIds.length;
+  const whitelistedCount = settings.allowedUserIds.length;
   const channel = settings.logChannelId
     ? `<#${settings.logChannelId}>`
     : "Off";
@@ -552,8 +546,8 @@ async function handleStatusCommand(
     missingPermissions.length === 0 && unmanageableRoleIds.length === 0;
   const description = [
     `**Protected roles**  ${protectedCount}`,
-    `**Allowed members**  ${allowCount}`,
-    `**Allowed roles**  ${settings.allowedRoleIds.length}`,
+    `**Whitelisted members**  ${whitelistedCount}`,
+    `**Whitelisted roles**  ${settings.allowedRoleIds.length}`,
     `**FG roles**  ${Object.keys(settings.fgRoles).length}`,
     `**Alert channel**  ${channel}`,
     `**Enforcement**  ${settings.enforcementEnabled ? "Active" : "Paused"}`,
@@ -575,7 +569,7 @@ async function handleStatusCommand(
   });
 }
 
-export async function handleWildCommand(
+export async function handleGuardCommand(
   interaction: ChatInputCommandInteraction,
   store: ConfigStore,
 ): Promise<void> {
@@ -583,7 +577,15 @@ export async function handleWildCommand(
     await handleCommandsHelp(interaction);
     return;
   }
-  if (interaction.commandName !== "wild") return;
+  const guardCommands = new Set([
+    "roles",
+    "status",
+    "watch",
+    "whitelist",
+    "enforcement",
+    "logs",
+  ]);
+  if (!guardCommands.has(interaction.commandName)) return;
   if (!requireGuild(interaction)) {
     await interaction.reply({
       content: "These commands are only available inside a server.",
@@ -592,36 +594,28 @@ export async function handleWildCommand(
     return;
   }
 
-  const group = interaction.options.getSubcommandGroup(false);
-  const action = interaction.options.getSubcommand();
-
-  // Every /wild subcommand, including /wild roles, requires Manage Server.
+  // Every guard command, including /roles, requires Manage Server.
   if (!(await requireManageServer(interaction))) return;
 
-  if (!group && action === "roles") {
-    await showRoleBrowser(interaction);
-    return;
-  }
-
-  if (group === "watch") {
-    await handleWatchCommand(interaction, store, action);
-    return;
-  }
-  if (group === "allow") {
-    await handleAllowCommand(interaction, store, action);
-    return;
-  }
-  if (group === "logs") {
-    await handleLogsCommand(interaction, store, action);
-    return;
-  }
-  if (group === "enforcement") {
-    await handleEnforcementCommand(interaction, store, action);
-    return;
-  }
-  if (!group && action === "status") {
-    await handleStatusCommand(interaction, store);
-    return;
+  switch (interaction.commandName) {
+    case "roles":
+      await showRoleBrowser(interaction);
+      return;
+    case "status":
+      await handleStatusCommand(interaction, store);
+      return;
+    case "watch":
+      await handleWatchCommand(interaction, store, interaction.options.getSubcommand());
+      return;
+    case "whitelist":
+      await handleWhitelistCommand(interaction, store, interaction.options.getSubcommand());
+      return;
+    case "enforcement":
+      await handleEnforcementCommand(interaction, store, interaction.options.getSubcommand());
+      return;
+    case "logs":
+      await handleLogsCommand(interaction, store, interaction.options.getSubcommand());
+      return;
   }
 
   await interaction.reply({
@@ -629,3 +623,6 @@ export async function handleWildCommand(
     ephemeral: true,
   });
 }
+
+/** Backwards-compatible alias: the old /wild entry point is now handleGuardCommand. */
+export const handleWildCommand = handleGuardCommand;

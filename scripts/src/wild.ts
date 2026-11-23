@@ -9,11 +9,16 @@ import {
 } from "discord.js";
 import {
   commandsHelpCommand,
+  enforcementCommand,
   handleCommandsHelp,
-  handleWildCommand,
+  handleGuardCommand,
+  logsCommand,
+  rolesCommand,
+  statusCommand,
+  watchCommand,
+  whitelistCommand,
 } from "./wild/commands.js";
 import { fgCommand, handleFgCommand } from "./wild/fg-commands.js";
-import { wildCommand } from "./wild/commands.js";
 import { ConfigStore } from "./wild/config-store.js";
 import { handleFgShareMessage } from "./wild/fg-share.js";
 import { getUnmanageableRoleIds, guardAuditLogEntry } from "./wild/role-guard.js";
@@ -47,7 +52,12 @@ async function main(): Promise<void> {
   client.once(Events.ClientReady, async (readyClient) => {
     try {
       await readyClient.application.commands.set([
-        wildCommand.toJSON(),
+        rolesCommand.toJSON(),
+        statusCommand.toJSON(),
+        watchCommand.toJSON(),
+        whitelistCommand.toJSON(),
+        enforcementCommand.toJSON(),
+        logsCommand.toJSON(),
         commandsHelpCommand.toJSON(),
         fgCommand.toJSON(),
       ]);
@@ -69,7 +79,7 @@ async function main(): Promise<void> {
 
     log(`Connected as ${readyClient.user.tag}.`);
     log(`Invite the bot to a server: ${installUrl.toString()}`);
-    log("Global /wild, /commands, and /fg commands are registered.");
+    log("Global /roles, /status, /watch, /whitelist, /enforcement, /logs, /commands, and /fg commands are registered.");
 
     // Best-effort hierarchy check: warn per server about protected/FG roles
     // the bot cannot manage. Never let this crash startup.
@@ -108,7 +118,7 @@ async function main(): Promise<void> {
       } else if (interaction.commandName === "commands") {
         await handleCommandsHelp(interaction);
       } else {
-        await handleWildCommand(interaction, store);
+        await handleGuardCommand(interaction, store);
       }
     } catch (error) {
       log(`Command failed: ${describeError(error)}`);

@@ -86,7 +86,7 @@ export async function showRoleBrowser(
   const guild = interaction.guild;
   if (!guild) {
     await interaction.reply({
-      content: "Run `/wild roles` inside a server.",
+      content: "Run `/roles` inside a server.",
       ephemeral: true,
     });
     return;
@@ -114,7 +114,7 @@ export async function showRoleBrowser(
   collector.on("collect", async (button) => {
     if (button.user.id !== interaction.user.id) {
       await button.reply({
-        content: "Run `/wild roles` to open your own role browser.",
+        content: "Run `/roles` to open your own role browser.",
         ephemeral: true,
       });
       return;

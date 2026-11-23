@@ -173,7 +173,7 @@ function getLoggedEmbed(setup: GuardSetup): ReturnType<EmbedBuilder["toJSON"]> {
   return setup.sentMessages[0].embeds[0].toJSON();
 }
 
-test("keeps watched roles assigned by an allowlisted actor", async () => {
+test("keeps watched roles assigned by a whitelisted actor", async () => {
   const setup = createSetup({ allowedUserIds: [ALLOWED_ACTOR_ID] });
 
   await guardAuditLogEntry(
@@ -187,7 +187,7 @@ test("keeps watched roles assigned by an allowlisted actor", async () => {
   assert.equal(setup.sentMessages.length, 0);
 });
 
-test("keeps watched roles assigned by a member of an allowlisted role", async () => {
+test("keeps watched roles assigned by a member of a whitelisted role", async () => {
   const setup = createSetup({
     allowedRoleIds: [ALLOWED_ROLE_ID],
     actorRoleIds: [ALLOWED_ROLE_ID],
@@ -322,7 +322,7 @@ test("DMs the unapproved actor even with no log channel set", async () => {
   assert.equal(setup.sentMessages.length, 0);
   assert.equal(setup.dms.length, 1);
   assert.match(setup.dms[0], new RegExp(ROLE_ID));
-  assert.match(setup.dms[0], /allowlist/i);
+  assert.match(setup.dms[0], /whitelist/i);
 });
 
 test("flags a repeat offender on the third unauthorised assignment", async () => {
@@ -350,7 +350,7 @@ test("flags a repeat offender on the third unauthorised assignment", async () =>
   );
 });
 
-test("keeps a grant when the audit log corroborates an allowlisted executor", async () => {
+test("keeps a grant when the audit log corroborates a whitelisted executor", async () => {
   const setup = createSetup({
     allowedUserIds: [ALLOWED_ACTOR_ID],
     fetchAuditLogs: async () => ({

@@ -54,7 +54,7 @@ export const fgCommand = new SlashCommandBuilder()
   .addSubcommandGroup((group) =>
     group
       .setName("staff")
-      .setDescription("Manage staff allowed to create and assign FG roles")
+      .setDescription("Manage staff whitelisted to create and assign FG roles")
       .addSubcommand((command) =>
         command
           .setName("add")
@@ -213,7 +213,7 @@ async function handleStaffCommand(
   if (action === "list") {
     await interaction.reply({
       embeds: [
-        wildEmbed("FG staff", "Members and roles allowed to create and assign FG roles.")
+        wildEmbed("FG staff", "Members and roles whitelisted to create and assign FG roles.")
           .addFields(
             {
               name: `Members (${settings.fgStaffUserIds.length})`,
@@ -331,7 +331,7 @@ async function handleRoleCommand(
     const staff = await guild.members.fetch(interaction.user.id).catch(() => null);
     if (!staff || !isFgStaff(staff, settings)) {
       await interaction.reply({
-        content: "Only allowlisted FG staff can create FG roles.",
+        content: "Only whitelisted FG staff can create FG roles.",
         ephemeral: true,
       });
       return;
@@ -396,7 +396,7 @@ async function handleRoleCommand(
   const actor = await guild.members.fetch(interaction.user.id).catch(() => null);
   if (!actor || !canAssignFgRole(actor, role.id, settings)) {
     await interaction.reply({
-      content: "You aren't allowlisted to assign this FG role.",
+      content: "You aren't whitelisted to assign this FG role.",
       ephemeral: true,
     });
     return;

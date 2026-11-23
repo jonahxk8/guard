@@ -2,7 +2,7 @@
 
 Wild protects selected server roles. When a protected role is added, it
 checks Discord's audit log for who assigned it. If the assigner isn't
-allowlisted, the bot removes the role, DMs the assigner to explain why,
+whitelisted, the bot removes the role, DMs the assigner to explain why,
 and logs the removal. If it can't verify who assigned the role, it
 removes the role by default (fail closed) instead of allowing an
 unverified assignment.
@@ -21,25 +21,25 @@ the log.
 4. Invite the bot with Manage Roles, View Audit Log, View Channel,
    Send Messages, and Embed Links.
 5. Move the bot's role above every role it needs to manage.
-6. Run `/wild allow add user:@member` (or `role:@role`) to authorise
-   assigners, then `/wild watch add role:@role` for each role to protect.
-7. Optionally set alerts with `/wild logs set channel:#mod-logs`.
+6. Run `/whitelist add user:@member` (or `role:@role`) to authorise
+   assigners, then `/watch add role:@role` for each role to protect.
+7. Optionally set alerts with `/logs set channel:#mod-logs`.
 
 Administrator roles can never be protected or assigned through the bot,
-and `/wild roles` requires Manage Server. All embeds are black
+and `/roles` requires Manage Server. All embeds are black
 (colour 0, no footer, no timestamp).
 
 ## Commands
 
 - `/commands` — list command names.
-- `/wild roles` — browse server roles (Manage Server required).
-- `/wild status` — view protection status, including any protected or FG
+- `/roles` — browse server roles (Manage Server required).
+- `/status` — view protection status, including any protected or FG
   roles the bot can't manage.
-- `/wild watch add|remove|list` — manage protected roles.
-- `/wild allow add|remove|list` — allow members or roles to assign
+- `/watch add|remove|list` — manage protected roles.
+- `/whitelist add|remove|list` — whitelist members or roles to assign
   protected roles.
-- `/wild enforcement pause|resume` — pause or resume automatic removal.
-- `/wild logs set|clear` — configure guard alerts.
+- `/enforcement pause|resume` — pause or resume automatic removal.
+- `/logs set|clear` — configure guard alerts.
 - `/fg staff add|remove|list` — manage FG staff.
 - `/fg roles create|assign|list` — create and assign FG roles. FG roles
   are created with no permissions.
@@ -77,7 +77,8 @@ Deploy as a long-running worker service from the repository root:
 
 ## Notes
 
-- Slash commands are registered globally, so `/wild`, `/commands`, and
+- Slash commands are registered globally, so `/roles`, `/status`,
+  `/watch`, `/whitelist`, `/enforcement`, `/logs`, `/commands`, and
   `/fg` can take up to an hour to appear in Discord after the bot first
   starts.
 - The bot code lives in `scripts/src/`. The other workspace packages

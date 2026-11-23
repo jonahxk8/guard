@@ -208,7 +208,7 @@ function createBlockedAssignmentEmbed(
       {
         name: "Reason",
         value: actorId
-          ? "The assigner is not on the allowlist."
+          ? "The assigner is not on the whitelist."
           : "Bot could not verify the assigner.",
         inline: true,
       },
@@ -243,9 +243,9 @@ async function notifyActor(
   await actor
     .send(
       `Wild removed ${roleMentions} from <@${memberId}> in ${guild.name} because ` +
-        `you aren't allowlisted to assign protected roles. ` +
-        `Ask a server admin with Manage Server to allowlist you with ` +
-        `/wild allow add.`,
+        `you aren't whitelisted to assign protected roles. ` +
+        `Ask a server admin with Manage Server to whitelist you with ` +
+        `/whitelist add.`,
     )
     .catch(() => undefined);
 }
@@ -329,7 +329,7 @@ export async function guardAuditLogEntry(
     try {
       await member.roles.remove(
         removableRoleIds,
-        "Bot: role assigner is not allowlisted",
+        "Bot: role assigner is not whitelisted",
       );
     } catch {
       actionNeeded = "Bot could not remove the role. Check Manage Roles and role order.";

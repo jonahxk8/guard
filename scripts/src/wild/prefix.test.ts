@@ -164,7 +164,8 @@ function createMessage(options: {
           premiumTier: 0,
           members: {
             me: botMember,
-            fetch: async (memberId: string) => getMember(memberId),
+            fetch: async (arg: string | { user?: string }) =>
+              getMember(typeof arg === "string" ? arg : (arg.user ?? "")),
             fetchMe: async () => botMember,
           },
           roles: {

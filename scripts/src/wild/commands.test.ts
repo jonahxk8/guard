@@ -122,8 +122,8 @@ function createInteraction(options: {
       ownerId: "999999999999999999",
       members: {
         me: botMember,
-        fetch: async (memberId: string) => ({
-          id: memberId,
+        fetch: async (arg: string | { user?: string }) => ({
+          id: typeof arg === "string" ? arg : (arg.user ?? ""),
           displayName: "Alex",
           roles: { cache: { has: () => false, some: () => false } },
         }),

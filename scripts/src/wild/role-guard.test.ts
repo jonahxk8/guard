@@ -11,7 +11,9 @@ import {
 import { ConfigStore, GuildSettings } from "./config-store.js";
 import {
   guardAuditLogEntry,
+  getOffenseCount,
   isDangerousRole,
+  sweepMissedGrants,
   verifyExecutor,
 } from "./role-guard.js";
 import { clearOffenses } from "./offenders.js";
@@ -44,6 +46,7 @@ interface GuardSetup {
   sentMessages: SentMessage[];
   dms: DmMessage[];
   memberFetchCount: number;
+  memberFetchCalls: Array<{ user: string; force: boolean }>;
 }
 
 function createSetup(
@@ -66,6 +69,14 @@ function createSetup(
     fgRoleSharers?: string[];
     fgStaffUserIds?: string[];
     fgStaffRoleIds?: string[];
+    // Simulates the discord.js cache: when set, a fetch WITHOUT
+    // force returns a stale member whose Administrator bit is
+    // actorCachedIsAdmin, while a force fetch returns the fresh member
+    // (Administrator = actorIsAdmin). This is the reported live bug.
+    actorCachedIsAdmin?: boolean;
+    // Whether the target member currently holds the watched role
+    // (roles.cache.has). Defaults to true.
+    targetHoldsRole?: boolean;
   } = {},
 ): GuardSetup {
   const fgRoleId = options.fgRoleId;
@@ -100,11 +111,17 @@ function createSetup(
   const removedRoleIds: string[][] = [];
   const sentMessages: SentMessage[] = [];
   const dms: DmMessage[] = [];
+  const memberFetchCalls: Array<{ user: string; force: boolean }> = [];
   let memberFetchCount = 0;
 
   const member = {
     id: MEMBER_ID,
     roles: {
+      cache: {
+        // The target currently holds the watched role unless the test
+        // says otherwise (already-removed case).
+        has: () => options.targetHoldsRole ?? true,
+      },
       remove: async (roleIds: string[]) => {
         removedRoleIds.push(roleIds);
       },
@@ -125,7 +142,9 @@ function createSetup(
     },
     roles: {
       cache: {
-        has: (_roleId: string) => false,
+        // The actor holds the watched role when it is also the target
+        // (self-grant), unless the test says the role is already gone.
+        has: () => options.targetHoldsRole ?? true,
         some: (predicate: (role: { id: string }) => boolean) =>
           (options.actorRoleIds ?? []).some((roleId) => predicate({ id: roleId })),
       },
@@ -139,6 +158,26 @@ function createSetup(
       dms.push(message);
     },
   };
+  // Stale cached copy of the actor: same member, but with the
+  // Administrator bit as it was when the member was first cached.
+  // Only used when the test sets actorCachedIsAdmin.
+  const staleActor =
+    options.actorCachedIsAdmin === undefined
+      ? null
+      : {
+          ...actor,
+          permissions: {
+            has: (permission: bigint) => {
+              if (permission === PermissionFlagsBits.Administrator) {
+                return options.actorCachedIsAdmin ?? false;
+              }
+              if (permission === PermissionFlagsBits.ManageRoles) {
+                return options.actorHasManageRoles ?? true;
+              }
+              return false;
+            },
+          },
+        };
   const botMember = {
     permissions: {
       has: (permission: bigint) =>
@@ -167,9 +206,17 @@ function createSetup(
     },
     members: {
       me: botMember,
-      fetch: async (memberId: string) => {
+      // Simulates discord.js `GuildMemberManager.fetch`: without
+      // `force: true` a cached member is returned with no API call,
+      // with `force: true` the fresh member comes back.
+      fetch: async (arg: string | { user?: string; force?: boolean }) => {
+        const userId = typeof arg === "string" ? arg : (arg.user ?? "");
+        const force = typeof arg === "object" && arg.force === true;
         memberFetchCount += 1;
-        return memberId === MEMBER_ID ? member : actor;
+        memberFetchCalls.push({ user: userId, force });
+        if (userId === MEMBER_ID) return member;
+        if (!force && staleActor) return staleActor;
+        return actor;
       },
       fetchMe: async () => botMember,
     },
@@ -187,6 +234,7 @@ function createSetup(
     removedRoleIds,
     sentMessages,
     dms,
+    memberFetchCalls,
     get memberFetchCount() {
       return memberFetchCount;
     },
@@ -825,4 +873,99 @@ test("tells the giver when the bot could not remove a watched role", async () =>
     dm.fields?.find((field) => field.name === "Action needed")?.value ?? "",
     /cannot manage one or more watched roles/i,
   );
+});
+
+test("reverts an FG role self-grant when the cached member still shows Administrator but a fresh fetch does not", async () => {
+  clearOffenses();
+  // The reported live bug: the account had Administrator when the bot
+  // cached it, then lost Administrator. A plain fetch returns the stale
+  // cached member, so the old guard let the grant stand. The guard must
+  // fetch fresh and revert.
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+    actorCachedIsAdmin: true,
+    actorIsAdmin: false,
+    actorHasManageRoles: true,
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-stale-admin", UNAPPROVED_ACTOR_ID, NOW, {
+      roleId: FG_ROLE_ID,
+      targetId: UNAPPROVED_ACTOR_ID,
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[FG_ROLE_ID]]);
+  assert.equal(setup.dms.length, 1);
+  assert.equal(setup.sentMessages.length, 1);
+  // The authorisation fetch went to the API (force), it did not trust
+  // the cache — that is what makes the stale Administrator invisible.
+  assert.ok(
+    setup.memberFetchCalls.some(
+      (call) => call.user === UNAPPROVED_ACTOR_ID && call.force,
+    ),
+    "expected a force fetch of the actor",
+  );
+});
+
+test("does nothing when the target no longer holds the watched role", async () => {
+  clearOffenses();
+  const setup = createSetup({ targetHoldsRole: false });
+
+  await guardAuditLogEntry(
+    createEntry("audit-already-gone", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.dms.length, 0);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(getOffenseCount(GUILD_ID, UNAPPROVED_ACTOR_ID), 0);
+});
+
+test("sweepMissedGrants re-checks recent entries and skips old ones", async () => {
+  clearOffenses();
+  const recent = createEntry("audit-recent", UNAPPROVED_ACTOR_ID, NOW, {
+    roleId: ROLE_ID,
+  });
+  const old = createEntry("audit-old", UNAPPROVED_ACTOR_ID, NOW - 11 * 60 * 1000, {
+    roleId: ROLE_ID,
+  });
+  const setup = createSetup({
+    fetchAuditLogs: async () => ({
+      entries: new Map([
+        ["audit-recent", recent],
+        ["audit-old", old],
+      ]),
+    }),
+  });
+
+  await sweepMissedGrants(setup.guild, createStore(setup.settings), NOW);
+
+  // Only the recent grant was re-checked and removed.
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
+});
+
+test("sweepMissedGrants never throws when the audit log cannot be read", async () => {
+  const setup = createSetup({
+    fetchAuditLogs: async () => {
+      throw new Error("no audit log access");
+    },
+  });
+  await sweepMissedGrants(setup.guild, createStore(setup.settings), NOW);
+  assert.deepEqual(setup.removedRoleIds, []);
+
+  const noFetchSetup = createSetup();
+  await sweepMissedGrants(
+    { ...noFetchSetup.guild, fetchAuditLogs: undefined } as unknown as Guild,
+    createStore(noFetchSetup.settings),
+    NOW,
+  );
+  assert.deepEqual(noFetchSetup.removedRoleIds, []);
 });

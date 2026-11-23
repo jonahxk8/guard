@@ -12,7 +12,7 @@ import {
 } from "discord.js";
 import { ConfigStore, GuildSettings, blacklistCount, blacklistEntries, isBlacklisted } from "./config-store.js";
 import { wildFieldEmbed, wildMessageEmbed } from "./embeds.js";
-import { isBotAdmin, isBotAdminPermissions, isWhitelisted } from "./authorization.js";
+import { fetchMemberFresh, isBotAdmin, isBotAdminPermissions, isWhitelisted } from "./authorization.js";
 import {
   channelDisplayName,
   memberDisplayName,
@@ -433,8 +433,9 @@ async function handleBlacklistList(
   const guild = interaction.guild!;
   const settings = store.get(guild.id);
   // Manage Server or whitelisted (the server owner and Administrators
-  // bypass too).
-  const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+  // bypass too). Fresh fetch: a cached member could still show an
+  // Administrator bit or whitelisted role that was already removed.
+  const member = await fetchMemberFresh(guild, interaction.user.id);
   if (
     !isBotAdmin(member, guild.ownerId) &&
     !hasManageServer(interaction) &&

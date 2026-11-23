@@ -14,7 +14,7 @@ import {
   roleDisplayName,
 } from "./names.js";
 import { wildFieldEmbed } from "./embeds.js";
-import { canAssignFgRole, isBotAdmin, isFgSharer, memberMatchesWhitelist } from "./authorization.js";
+import { canAssignFgRole, fetchBotMemberFresh, fetchMemberFresh, isBotAdmin, isFgSharer, memberMatchesWhitelist } from "./authorization.js";
 import {
   REPEAT_OFFENDER_THRESHOLD,
   getOffenseCount,
@@ -186,9 +186,12 @@ async function isAllowedForRole(
     return true;
   }
 
-  // Only now fetch the member: an id-whitelisted giver costs no fetch,
-  // and a verified Administrator counts as owner.
-  const actor = await guild.members.fetch(actorId).catch(() => null);
+  // Only now fetch the member — FRESH from the API, never the cache:
+  // a plain fetch returns the cached member, whose Administrator bit
+  // and roles are frozen from when the member was first cached (the bot
+  // has no GuildMembers intent, so nothing ever refreshes the cache).
+  // A giver who lost Administrator must not keep passing this check.
+  const actor = await fetchMemberFresh(guild, actorId);
   if (actor && isBotAdmin(actor, guild.ownerId)) return true;
 
   if (!actor) return false;
@@ -416,24 +419,71 @@ export async function guardAuditLogEntry(
   );
   let actorIsExempt = actorId === guild.ownerId;
   if (targetIsBlacklisted && actorId && !actorIsExempt) {
-    const actorMember = await guild.members.fetch(actorId).catch(() => null);
+    const actorMember = await fetchMemberFresh(guild, actorId);
     actorIsExempt = isBotAdmin(actorMember, guild.ownerId);
   }
   const blacklistedRoleIds = addedRoleIds.filter(
     (roleId) => !actorIsExempt && isBlacklisted(settings, targetId, roleId),
   );
 
-  const watchedRoleIds: string[] = [];
+  let watchedRoleIds: string[] = [];
   for (const roleId of addedRoleIds) {
     if (!(await isAllowedForRole(actorId, guild, settings, roleId))) {
       watchedRoleIds.push(roleId);
     }
   }
+  if (watchedRoleIds.length === 0 && blacklistedRoleIds.length === 0) return;
+
+  // Fetch the target fresh: the still-holds check below needs current
+  // roles, and a cached member could claim roles it no longer has.
+  const member = await fetchMemberFresh(guild, targetId);
+  if (!member) {
+    let offenseCount = 0;
+    if (actorId && watchedRoleIds.length > 0) {
+      offenseCount = recordOffense(guild.id, actorId);
+    }
+    const actionNeeded =
+      "Bot could not fetch the member to remove the role. Check its server permissions.";
+    await sendLog(
+      guild,
+      settings,
+      createBlockedAssignmentEmbed(
+        targetId,
+        [...new Set([...watchedRoleIds, ...blacklistedRoleIds])],
+        actorId,
+        actionNeeded,
+        offenseCount,
+        blacklistedRoleIds.length > 0
+          ? watchedRoleIds.length > 0
+            ? "also"
+            : "only"
+          : undefined,
+      ),
+    );
+    if (actorId) {
+      await notifyRemovalFailed(
+        guild,
+        actorId,
+        targetId,
+        [...new Set([...watchedRoleIds, ...blacklistedRoleIds])],
+        actionNeeded,
+      );
+    }
+    return;
+  }
+
+  // Idempotency: only act on roles the target still holds right now.
+  // This makes re-processing an entry safe (e.g. the startup sweep
+  // re-seeing an entry the bot already handled before a restart): a
+  // role that is already gone produces no DM, no log, and no offence.
+  const held = (roleId: string) => member.roles.cache.has(roleId);
+  watchedRoleIds = watchedRoleIds.filter(held);
+  const heldBlacklistedRoleIds = blacklistedRoleIds.filter(held);
   // Exactly one removal path: the union of both checks.
-  const removalRoleIds = [...new Set([...watchedRoleIds, ...blacklistedRoleIds])];
+  const removalRoleIds = [...new Set([...watchedRoleIds, ...heldBlacklistedRoleIds])];
   if (removalRoleIds.length === 0) return;
   const blacklistNote: "only" | "also" | undefined =
-    blacklistedRoleIds.length > 0
+    heldBlacklistedRoleIds.length > 0
       ? watchedRoleIds.length > 0
         ? "also"
         : "only"
@@ -451,36 +501,7 @@ export async function guardAuditLogEntry(
     offenseCount = recordOffense(guild.id, actorId);
   }
 
-  const member = await guild.members.fetch(targetId).catch(() => null);
-  if (!member) {
-    const actionNeeded =
-      "Bot could not fetch the member to remove the role. Check its server permissions.";
-    await sendLog(
-      guild,
-      settings,
-      createBlockedAssignmentEmbed(
-        targetId,
-        removalRoleIds,
-        actorId,
-        actionNeeded,
-        offenseCount,
-        blacklistNote,
-      ),
-    );
-    if (actorId) {
-      await notifyRemovalFailed(
-        guild,
-        actorId,
-        targetId,
-        removalRoleIds,
-        actionNeeded,
-      );
-    }
-    return;
-  }
-
-  const botMember =
-    guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+  const botMember = await fetchBotMemberFresh(guild);
   const removableRoleIds = removalRoleIds.filter((roleId) => {
     const role = guild.roles.cache.get(roleId);
     return Boolean(
@@ -524,7 +545,7 @@ export async function guardAuditLogEntry(
         guild,
         actorId,
         targetId,
-        blacklistedRoleIds,
+        heldBlacklistedRoleIds,
       );
     }
   }
@@ -541,6 +562,51 @@ export async function guardAuditLogEntry(
       blacklistNote,
     ),
   );
+}
+
+/**
+ * Re-check recent role grants after the bot (re)starts.
+ *
+ * `GuildAuditLogEntryCreate` only fires while the bot is online, so a
+ * grant made while the bot is down — e.g. during a Railway redeploy —
+ * is never seen live. On startup, sweep the last 10 minutes of
+ * MemberRoleUpdate audit entries through the normal guard path. The
+ * still-holds check inside `guardAuditLogEntry` makes this safe to
+ * re-run: an entry already handled before the restart is skipped
+ * because the target no longer holds the role. Never throws.
+ */
+const SWEEP_WINDOW_MS = 10 * 60 * 1000;
+
+export async function sweepMissedGrants(
+  guild: Guild,
+  store: ConfigStore,
+  now: number = Date.now(),
+): Promise<void> {
+  const fetchAuditLogs = (
+    guild as unknown as { fetchAuditLogs?: unknown }
+  ).fetchAuditLogs;
+  if (typeof fetchAuditLogs !== "function") return;
+
+  let logs: unknown;
+  try {
+    logs = await (
+      fetchAuditLogs as (
+        options: { type: AuditLogEvent; limit: number },
+      ) => Promise<unknown>
+    ).call(guild, { type: AuditLogEvent.MemberRoleUpdate, limit: 10 });
+  } catch {
+    return;
+  }
+
+  for (const entry of auditLogCandidates(logs)) {
+    if (
+      typeof entry.createdTimestamp === "number" &&
+      now - entry.createdTimestamp > SWEEP_WINDOW_MS
+    ) {
+      continue;
+    }
+    await guardAuditLogEntry(entry, guild, store).catch(() => undefined);
+  }
 }
 
 export { getOffenseCount };

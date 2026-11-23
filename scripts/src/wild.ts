@@ -20,7 +20,7 @@ import { fgCommand, handleFgCommand } from "./wild/fg-booster.js";
 import { handleHelpCommand, helpCommand } from "./wild/help.js";
 import { handlePrefixMessage } from "./wild/prefix.js";
 import { ConfigStore } from "./wild/config-store.js";
-import { getUnmanageableRoleIds, guardAuditLogEntry } from "./wild/role-guard.js";
+import { getUnmanageableRoleIds, guardAuditLogEntry, sweepMissedGrants } from "./wild/role-guard.js";
 
 function log(message: string): void {
   process.stdout.write(`[Bot] ${message}\n`);
@@ -89,6 +89,14 @@ async function main(): Promise<void> {
     log(`Invite the bot to a server: ${installUrl.toString()}`);
     log("Global /protect, /whitelist, /status, /setup, /fg, /blacklist, and /help commands are registered.");
     log("Prefix commands also work: ,guard ,whitelist ,status ,logchannel ,fg ,blacklist ,help");
+
+    // Grants made while the bot was down (e.g. during a Railway
+    // redeploy) never fire GuildAuditLogEntryCreate — sweep the last
+    // 10 minutes of role grants so they are still caught. Best-effort;
+    // a failure here never blocks startup.
+    for (const guild of readyClient.guilds.cache.values()) {
+      await sweepMissedGrants(guild, store).catch(() => undefined);
+    }
 
     // Best-effort hierarchy check: warn per server about protected/FG roles
     // the bot cannot manage. Never let this crash startup.

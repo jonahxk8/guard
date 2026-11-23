@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GuildMember, PermissionFlagsBits } from "discord.js";
+import { Guild, GuildMember, PermissionFlagsBits } from "discord.js";
 import {
   canAssignFgRole,
   canAuthFgRole,
   canShareFgRole,
+  fetchMemberFresh,
   isBotAdmin,
   isBotAdminPermissions,
   isFgSharer,
@@ -181,4 +182,39 @@ test("isBotAdminPermissions: owner or Administrator bit", () => {
     isBotAdminPermissions(null, "222222222222222222", ownerId),
     false,
   );
+});
+
+test("fetchMemberFresh bypasses the cache with force: true", async () => {
+  const fresh = makeMember(MEMBER_ID, []);
+  const stale = makeMember(MEMBER_ID, []);
+  const calls: unknown[] = [];
+  const guild = {
+    members: {
+      // Simulates discord.js: without force the cached member comes
+      // back, with force the API (fresh) member comes back.
+      fetch: async (arg: unknown) => {
+        calls.push(arg);
+        const force =
+          typeof arg === "object" &&
+          arg !== null &&
+          (arg as { force?: boolean }).force === true;
+        return force ? fresh : stale;
+      },
+    },
+  } as unknown as Guild;
+
+  assert.equal(await fetchMemberFresh(guild, MEMBER_ID), fresh);
+  assert.deepEqual(calls, [{ user: MEMBER_ID, force: true }]);
+});
+
+test("fetchMemberFresh returns null when the fetch fails", async () => {
+  const guild = {
+    members: {
+      fetch: async () => {
+        throw new Error("API down");
+      },
+    },
+  } as unknown as Guild;
+
+  assert.equal(await fetchMemberFresh(guild, MEMBER_ID), null);
 });

@@ -1,8 +1,10 @@
 import {
   ChatInputCommandInteraction,
+  GuildMember,
   Message,
 } from "discord.js";
 import { ConfigStore } from "./config-store.js";
+import { fetchMemberFresh } from "./authorization.js";
 import { handleGuardCommand } from "./commands.js";
 import { handleFgCommand, parseFgColor, parseFgColorTokens, parseFgColorTokensFromEnd, splitColorTokens } from "./fg-booster.js";
 import { handleHelpCommand } from "./help.js";
@@ -398,6 +400,7 @@ function buildFakeInteraction(
   message: Message,
   commandName: string,
   args: PrefixArgs,
+  member: GuildMember | null,
 ): ChatInputCommandInteraction {
   let lastSent: Message | null = null;
 
@@ -435,14 +438,19 @@ function buildFakeInteraction(
     };
   };
 
+  // The fake interaction's member drives every permission gate the
+  // shared handlers run (owner/Administrator/whitelist). It is passed in
+  // already fetched fresh from the API by handlePrefixMessage:
+  // `message.member` is cached and can be stale — a member who lost
+  // Administrator still looks like one.
   const fake = {
     commandName,
     guild: message.guild,
     guildId: message.guild?.id ?? null,
     user: message.author,
-    member: message.member,
+    member,
     memberPermissions:
-      message.member?.permissions ?? { has: () => false },
+      member?.permissions ?? { has: () => false },
     options: {
       getRole: (name: string) => {
         if (commandName === "whitelist") {
@@ -514,7 +522,19 @@ export async function handlePrefixMessage(
   // ,guard and ,logchannel are prefix-only names for the /protect and
   // /setup slash commands — map them back so the shared handler routes.
   const slashCommand = SLASH_COMMAND_NAME[command] ?? command;
-  const interaction = buildFakeInteraction(message, slashCommand, args);
+  // Fetch the author fresh from the API: `message.member` is cached and
+  // can be stale (a member who lost Administrator still looks like one),
+  // and the fake interaction's member drives every permission gate.
+  // Fall back to the cached member only when the fetch fails.
+  const freshMember = message.guild
+    ? await fetchMemberFresh(message.guild, message.author.id)
+    : null;
+  const interaction = buildFakeInteraction(
+    message,
+    slashCommand,
+    args,
+    (freshMember ?? message.member ?? null) as GuildMember | null,
+  );
   try {
     if (slashCommand === "fg") {
       await handleFgCommand(interaction, store);

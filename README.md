@@ -317,5 +317,17 @@ Deploy as a long-running worker service from the repository root:
 - The bot code lives in `scripts/src/`. The other workspace packages
   (`artifacts/`, `lib/`) are unrelated Replit scaffold and are not used
   by the bot.
+- Permission checks always fetch the member fresh from Discord, never
+  from the bot's cache — so removing Administrator (or a whitelisted
+  role) from someone takes effect immediately, with no restart. The bot
+  does not need the Server Members privileged intent for this.
+- On startup the bot re-checks the last 10 minutes of role-change audit
+  entries, so a grant made while it was down (e.g. during a redeploy)
+  is still caught. If the role is already gone by then, nothing happens
+  — no DM, no log, no offence.
+- If the guard ever ignores a role you expect it to watch, check that
+  the bot actually knows it: `/fg list` shows the FG roles it knows.
+  An FG role made by another bot is not an FG role to Wild until you
+  protect it with `/protect @role`.
 
 Full setup and troubleshooting: see `scripts/WILD_BOT.md`.

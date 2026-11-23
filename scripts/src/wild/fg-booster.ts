@@ -19,6 +19,7 @@ import { FG_COLOR_NAMES, normalizeColorName } from "./colors.js";
 import { wildFieldEmbed, wildMessageEmbed } from "./embeds.js";
 import {
   canAuthFgRole,
+  fetchMemberFresh,
   isBotAdmin,
   isBotAdminPermissions,
   isFgSharer,
@@ -724,7 +725,7 @@ async function requireFgCreator(
 ): Promise<GuildMember | null> {
   const guild = interaction.guild!;
   const settings = store.get(guild.id);
-  const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+  const member = await fetchMemberFresh(guild, interaction.user.id);
   if (!member) {
     await replyText(interaction, "You need to be a member of this server first.");
     return null;
@@ -1001,7 +1002,9 @@ async function handleListCommand(
 ): Promise<void> {
   const guild = interaction.guild!;
   const settings = store.get(guild.id);
-  const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+  // Fresh fetch: a cached member could still show an Administrator bit
+  // or whitelisted role that was already removed.
+  const member = await fetchMemberFresh(guild, interaction.user.id);
   if (
     !isBotAdmin(member, guild.ownerId) &&
     !hasManageServer(interaction) &&
@@ -1199,7 +1202,9 @@ async function handleAuthCommand(
   const settings = store.get(guild.id);
   const role = await resolveFgRole(interaction, settings);
   if (!role) return;
-  const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+  // Fresh fetch: a cached member could still show an Administrator bit
+  // or whitelisted role that was already removed.
+  const member = await fetchMemberFresh(guild, interaction.user.id);
   if (!member) {
     await replyText(interaction, "You need to be a member of this server first.");
     return;
@@ -1383,7 +1388,7 @@ async function finishShareOffer(
     return true;
   }
 
-  const requester = await guild.members.fetch(requesterId).catch(() => null);
+  const requester = await fetchMemberFresh(guild, requesterId);
   if (
     !requester ||
     (!isBotAdmin(requester, guild.ownerId) && !isFgSharer(requester, roleId, settings))
@@ -1501,7 +1506,10 @@ async function handleShareCommand(
     return;
   }
 
-  const requester = await guild.members.fetch(interaction.user.id).catch(() => null);
+  // Fresh fetch for the requester: their share access is an
+  // authorisation decision, so a cached member could still show an
+  // Administrator bit or whitelisted role that was already removed.
+  const requester = await fetchMemberFresh(guild, interaction.user.id);
   const target = await guild.members.fetch(memberUser.id).catch(() => null);
   if (!requester || !target) {
     await replyText(interaction, "Both people need to be members of this server.");

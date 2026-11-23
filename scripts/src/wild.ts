@@ -8,19 +8,16 @@ import {
   PermissionFlagsBits,
 } from "discord.js";
 import {
-  commandsHelpCommand,
-  enforcementCommand,
-  handleCommandsHelp,
   handleGuardCommand,
-  logsCommand,
-  rolesCommand,
+  blacklistCommand,
+  protectCommand,
+  setupCommand,
   statusCommand,
-  watchCommand,
   whitelistCommand,
 } from "./wild/commands.js";
-import { fgCommand, handleFgCommand } from "./wild/fg-commands.js";
+import { fgCommand, handleFgCommand } from "./wild/fg-booster.js";
+import { handlePrefixMessage } from "./wild/prefix.js";
 import { ConfigStore } from "./wild/config-store.js";
-import { handleFgShareMessage } from "./wild/fg-share.js";
 import { getUnmanageableRoleIds, guardAuditLogEntry } from "./wild/role-guard.js";
 
 function log(message: string): void {
@@ -44,6 +41,9 @@ async function main(): Promise<void> {
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildModeration,
+      // Needed for the "," prefix commands (reading message content).
+      // Enable Message Content Intent in the Developer Portal too
+      // (Bot > Privileged Gateway Intents), or prefix commands won't fire.
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
     ],
@@ -52,14 +52,12 @@ async function main(): Promise<void> {
   client.once(Events.ClientReady, async (readyClient) => {
     try {
       await readyClient.application.commands.set([
-        rolesCommand.toJSON(),
-        statusCommand.toJSON(),
-        watchCommand.toJSON(),
+        protectCommand.toJSON(),
         whitelistCommand.toJSON(),
-        enforcementCommand.toJSON(),
-        logsCommand.toJSON(),
-        commandsHelpCommand.toJSON(),
+        statusCommand.toJSON(),
+        setupCommand.toJSON(),
         fgCommand.toJSON(),
+        blacklistCommand.toJSON(),
       ]);
     } catch (error) {
       log(`Could not register slash commands: ${describeError(error)}`);
@@ -68,6 +66,7 @@ async function main(): Promise<void> {
 
     const requiredPermissions =
       PermissionFlagsBits.ManageRoles |
+      PermissionFlagsBits.ManageMessages |
       PermissionFlagsBits.ViewAuditLog |
       PermissionFlagsBits.ViewChannel |
       PermissionFlagsBits.SendMessages |
@@ -79,7 +78,8 @@ async function main(): Promise<void> {
 
     log(`Connected as ${readyClient.user.tag}.`);
     log(`Invite the bot to a server: ${installUrl.toString()}`);
-    log("Global /roles, /status, /watch, /whitelist, /enforcement, /logs, /commands, and /fg commands are registered.");
+    log("Global /protect, /whitelist, /status, /setup, /fg, and /blacklist commands are registered.");
+    log("Prefix commands also work: ,guard ,whitelist ,status ,logchannel ,fg ,blacklist");
 
     // Best-effort hierarchy check: warn per server about protected/FG roles
     // the bot cannot manage. Never let this crash startup.
@@ -115,8 +115,6 @@ async function main(): Promise<void> {
     try {
       if (interaction.commandName === "fg") {
         await handleFgCommand(interaction, store);
-      } else if (interaction.commandName === "commands") {
-        await handleCommandsHelp(interaction);
       } else {
         await handleGuardCommand(interaction, store);
       }
@@ -135,12 +133,22 @@ async function main(): Promise<void> {
   });
 
   client.on(Events.MessageCreate, async (message) => {
+    // Prefix commands: only non-bot messages in guilds. Unknown ","
+    // commands are ignored silently (they may belong to Bleed).
+    if (message.author.bot || !message.guild) return;
+    if (!message.content.startsWith(",")) return;
     try {
-      await handleFgShareMessage(message, store);
+      await handlePrefixMessage(message, store);
     } catch (error) {
-      log(`FG share failed: ${describeError(error)}`);
-      await message
-        .reply("The bot couldn't complete that FG role share. Check its permissions and try again.")
+      log(`Prefix command failed: ${describeError(error)}`);
+      await message.channel
+        .send("The bot couldn't complete that command. Check its permissions and try again.")
+        .then((sent) => {
+          const timer = setTimeout(() => {
+            sent.delete().catch(() => undefined);
+          }, 10_000);
+          timer.unref?.();
+        })
         .catch(() => undefined);
     }
   });

@@ -34,6 +34,10 @@ function makeSettings(access: FgRoleAccess): GuildSettings {
     fgStaffUserIds: [],
     fgStaffRoleIds: [],
     fgRoles: { [FG_ROLE_ID]: access },
+    fgBaseRoleId: null,
+    fgAwardRoleId: null,
+    fgRoleOwners: {},
+    blacklist: {},
     logChannelId: null,
     enforcementEnabled: true,
   };

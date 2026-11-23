@@ -48,6 +48,7 @@ function createSetup(
     botAboveRole?: boolean;
     enforcementEnabled?: boolean;
     ownerId?: string;
+    blacklist?: Record<string, string[]>;
     logChannelId?: string | null;
     fetchAuditLogs?: (options: unknown) => Promise<unknown>;
   } = {},
@@ -59,6 +60,10 @@ function createSetup(
     fgStaffUserIds: [],
     fgStaffRoleIds: [],
     fgRoles: {},
+    fgBaseRoleId: null,
+    fgAwardRoleId: null,
+    fgRoleOwners: {},
+    blacklist: options.blacklist ?? {},
     logChannelId: options.logChannelId === undefined ? "666666666666666666" : options.logChannelId,
     enforcementEnabled: options.enforcementEnabled ?? true,
   };
@@ -225,7 +230,9 @@ test("removes watched roles assigned by an unapproved actor", async () => {
   );
 });
 
-test("does not remove roles or send alerts while enforcement is paused", async () => {
+test("a legacy paused config does not stop enforcement anymore", async () => {
+  // There is no pause command anymore, so a stale enforcementEnabled: false
+  // in an old config file must not silently turn the guard off.
   const setup = createSetup({ enforcementEnabled: false });
 
   await guardAuditLogEntry(
@@ -234,9 +241,8 @@ test("does not remove roles or send alerts while enforcement is paused", async (
     createStore(setup.settings),
   );
 
-  assert.deepEqual(setup.removedRoleIds, []);
-  assert.equal(setup.memberFetchCount, 0);
-  assert.equal(setup.sentMessages.length, 0);
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
 });
 
 test("removes watched roles when the audit log does not verify an actor", async () => {
@@ -412,4 +418,86 @@ test("isDangerousRole flags Administrator roles and only those", () => {
   } as unknown as Role;
   assert.equal(isDangerousRole(adminRole), true);
   assert.equal(isDangerousRole(normalRole), false);
+});
+
+test("removes a blacklisted grant even when the giver is whitelisted", async () => {
+  clearOffenses();
+  const setup = createSetup({
+    allowedUserIds: [ALLOWED_ACTOR_ID],
+    blacklist: { [MEMBER_ID]: [ROLE_ID] },
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-blacklist-whitelisted-giver", ALLOWED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  const embed = getLoggedEmbed(setup);
+  assert.equal(embed.title, "Blacklisted role assignment");
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Reason")?.value,
+    "The member is blacklisted from this role.",
+  );
+  // The giver was authorised, so this is not recorded as an offence —
+  // the DM explains the blacklist instead of the whitelist.
+  assert.equal(setup.dms.length, 1);
+  assert.match(setup.dms[0], /blacklisted/i);
+  assert.doesNotMatch(setup.dms[0], /whitelisted to assign/i);
+});
+
+test("does not remove a blacklisted grant given by the server owner", async () => {
+  const setup = createSetup({
+    ownerId: ALLOWED_ACTOR_ID,
+    allowedUserIds: [ALLOWED_ACTOR_ID],
+    blacklist: { [MEMBER_ID]: [ROLE_ID] },
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-blacklist-owner", ALLOWED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("a grant to a non-blacklisted user by a whitelisted giver is unaffected", async () => {
+  const setup = createSetup({
+    allowedUserIds: [ALLOWED_ACTOR_ID],
+    blacklist: { ["121212121212121213"]: [ROLE_ID] },
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-blacklist-other-user", ALLOWED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("still removes a blacklisted grant when the assigner cannot be verified", async () => {
+  clearOffenses();
+  const setup = createSetup({
+    blacklist: { [MEMBER_ID]: [ROLE_ID] },
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-blacklist-unverified", null),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  const embed = getLoggedEmbed(setup);
+  assert.match(
+    embed.fields?.find((field) => field.name === "Reason")?.value ?? "",
+    /blacklisted/i,
+  );
 });

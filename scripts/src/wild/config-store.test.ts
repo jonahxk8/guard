@@ -108,6 +108,53 @@ test("treats saved settings without enforcement state as active", async () => {
   }
 });
 
+test("persists FG base, award, and owner settings", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "wild-config-fg-test-"));
+  const configPath = path.join(directory, "wild-config.json");
+  const previousConfigPath = process.env.WILD_CONFIG_PATH;
+  process.env.WILD_CONFIG_PATH = configPath;
+
+  try {
+    const store = new ConfigStore();
+    await store.load();
+    await store.set(GUILD_ID, {
+      ...store.get(GUILD_ID),
+      fgBaseRoleId: "222222222222222222",
+      fgAwardRoleId: "333333333333333333",
+      fgRoleOwners: { "444444444444444444": "555555555555555555" },
+    });
+
+    const reloaded = new ConfigStore();
+    await reloaded.load();
+    assert.equal(reloaded.get(GUILD_ID).fgBaseRoleId, "222222222222222222");
+    assert.equal(reloaded.get(GUILD_ID).fgAwardRoleId, "333333333333333333");
+    assert.deepEqual(reloaded.get(GUILD_ID).fgRoleOwners, {
+      "444444444444444444": "555555555555555555",
+    });
+
+    // Old configs without the FG fields load as null / empty.
+    const legacy = new ConfigStore();
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        guilds: { [GUILD_ID]: { protectedRoleIds: [], allowedUserIds: [], logChannelId: null } },
+      }),
+    );
+    await legacy.load();
+    assert.equal(legacy.get(GUILD_ID).fgBaseRoleId, null);
+    assert.equal(legacy.get(GUILD_ID).fgAwardRoleId, null);
+    assert.deepEqual(legacy.get(GUILD_ID).fgRoleOwners, {});
+  } finally {
+    if (previousConfigPath === undefined) {
+      delete process.env.WILD_CONFIG_PATH;
+    } else {
+      process.env.WILD_CONFIG_PATH = previousConfigPath;
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("creates a .bak backup of the previous settings on save", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "wild-config-bak-test-"));
   const configPath = path.join(directory, "wild-config.json");
@@ -133,6 +180,76 @@ test("creates a .bak backup of the previous settings on save", async () => {
     assert.equal(backup.guilds[GUILD_ID].enforcementEnabled, false);
     const current = JSON.parse(await readFile(configPath, "utf8"));
     assert.equal(current.guilds[GUILD_ID].enforcementEnabled, true);
+  } finally {
+    if (previousConfigPath === undefined) {
+      delete process.env.WILD_CONFIG_PATH;
+    } else {
+      process.env.WILD_CONFIG_PATH = previousConfigPath;
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("persists the blacklist and loads legacy configs without one", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "wild-config-blacklist-test-"));
+  const configPath = path.join(directory, "wild-config.json");
+  const previousConfigPath = process.env.WILD_CONFIG_PATH;
+  process.env.WILD_CONFIG_PATH = configPath;
+
+  try {
+    const store = new ConfigStore();
+    await store.load();
+    assert.deepEqual(store.get(GUILD_ID).blacklist, {});
+
+    await store.set(GUILD_ID, {
+      ...store.get(GUILD_ID),
+      blacklist: {
+        "222222222222222222": ["333333333333333333", "444444444444444444"],
+        "555555555555555555": ["333333333333333333"],
+      },
+    });
+
+    const reloaded = new ConfigStore();
+    await reloaded.load();
+    assert.deepEqual(reloaded.get(GUILD_ID).blacklist, {
+      "222222222222222222": ["333333333333333333", "444444444444444444"],
+      "555555555555555555": ["333333333333333333"],
+    });
+
+    // Old configs without the blacklist field load as empty.
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        guilds: { [GUILD_ID]: { protectedRoleIds: [], allowedUserIds: [], logChannelId: null } },
+      }),
+    );
+    const legacy = new ConfigStore();
+    await legacy.load();
+    assert.deepEqual(legacy.get(GUILD_ID).blacklist, {});
+
+    // Lenient: an array of { userId, roleId } pairs is accepted too.
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        guilds: {
+          [GUILD_ID]: {
+            protectedRoleIds: [],
+            allowedUserIds: [],
+            logChannelId: null,
+            blacklist: [
+              { userId: "222222222222222222", roleId: "333333333333333333" },
+            ],
+          },
+        },
+      }),
+    );
+    const pairs = new ConfigStore();
+    await pairs.load();
+    assert.deepEqual(pairs.get(GUILD_ID).blacklist, {
+      "222222222222222222": ["333333333333333333"],
+    });
   } finally {
     if (previousConfigPath === undefined) {
       delete process.env.WILD_CONFIG_PATH;

@@ -20,6 +20,29 @@ export function isFgStaff(member: GuildMember, settings: GuildSettings): boolean
   );
 }
 
+/** Whitelisted directly, or via a whitelisted role, or legacy FG staff. */
+export function isWhitelisted(member: GuildMember, settings: GuildSettings): boolean {
+  return (
+    memberMatchesWhitelist(
+      member,
+      settings.allowedUserIds,
+      settings.allowedRoleIds,
+    ) || isFgStaff(member, settings)
+  );
+}
+
+/**
+ * Can this member share a role: they hold it and are whitelisted for it.
+ * The server owner is handled by callers (owner bypasses the guard).
+ */
+export function canShareRole(
+  member: GuildMember,
+  roleId: string,
+  settings: GuildSettings,
+): boolean {
+  return member.roles.cache.has(roleId) && isWhitelisted(member, settings);
+}
+
 export function canAssignFgRole(
   member: GuildMember,
   roleId: string,

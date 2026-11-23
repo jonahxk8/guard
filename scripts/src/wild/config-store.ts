@@ -8,6 +8,18 @@ export interface GuildSettings {
   fgStaffUserIds: string[];
   fgStaffRoleIds: string[];
   fgRoles: Record<string, FgRoleAccess>;
+  /** Role all FG roles sit under (Bleed-style base role). Null = not set. */
+  fgBaseRoleId: string | null;
+  /** Shared role auto-granted when a member creates their FG role. Null = none. */
+  fgAwardRoleId: string | null;
+  /** FG role id -> owner user id. One FG role per member (Wild rule). */
+  fgRoleOwners: Record<string, string>;
+  /**
+   * Blacklist: user id -> protected role ids that user may never be given.
+   * A blacklisted grant is removed instantly, whoever gave it (except the
+   * server owner). Works for any protected role, not just one role.
+   */
+  blacklist: Record<string, string[]>;
   logChannelId: string | null;
   enforcementEnabled: boolean;
 }
@@ -31,9 +43,40 @@ const emptySettings = (): GuildSettings => ({
   fgStaffUserIds: [],
   fgStaffRoleIds: [],
   fgRoles: {},
+  fgBaseRoleId: null,
+  fgAwardRoleId: null,
+  fgRoleOwners: {},
+  blacklist: {},
   logChannelId: null,
   enforcementEnabled: true,
 });
+
+function parseOptionalSnowflake(
+  value: unknown,
+  fieldName: string,
+  guildId: string,
+): string | null {
+  if (value === undefined || value === null) return null;
+  if (!isSnowflake(value)) {
+    throw new Error(`Wild settings field ${fieldName} for server ${guildId} is invalid.`);
+  }
+  return value;
+}
+
+function parseFgRoleOwners(value: unknown, guildId: string): Record<string, string> {
+  if (value === undefined) return {};
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`FG role owners for server ${guildId} are invalid.`);
+  }
+  const owners: Record<string, string> = {};
+  for (const [roleId, userId] of Object.entries(value)) {
+    if (!isSnowflake(roleId) || !isSnowflake(userId)) {
+      throw new Error(`FG role owners for server ${guildId} are invalid.`);
+    }
+    owners[roleId] = userId;
+  }
+  return owners;
+}
 
 function isSnowflake(value: unknown): value is string {
   return typeof value === "string" && /^\d{5,25}$/.test(value);
@@ -53,6 +96,37 @@ function parseOptionalSnowflakeArray(
     throw new Error(`Wild settings field ${fieldName} for server ${guildId} is invalid.`);
   }
   return [...value];
+}
+
+function parseBlacklist(value: unknown, guildId: string): Record<string, string[]> {
+  if (value === undefined) return {};
+  // Lenient: also accept an array of { userId, roleId } pairs.
+  if (Array.isArray(value)) {
+    const map: Record<string, string[]> = {};
+    for (const entry of value) {
+      if (typeof entry !== "object" || entry === null) {
+        throw new Error(`Blacklist settings for server ${guildId} are invalid.`);
+      }
+      const { userId, roleId } = entry as Record<string, unknown>;
+      if (!isSnowflake(userId) || !isSnowflake(roleId)) {
+        throw new Error(`Blacklist settings for server ${guildId} are invalid.`);
+      }
+      const list = map[userId] ?? (map[userId] = []);
+      if (!list.includes(roleId)) list.push(roleId);
+    }
+    return map;
+  }
+  if (typeof value !== "object" || value === null) {
+    throw new Error(`Blacklist settings for server ${guildId} are invalid.`);
+  }
+  const map: Record<string, string[]> = {};
+  for (const [userId, roleIds] of Object.entries(value)) {
+    if (!isSnowflake(userId) || !isSnowflakeArray(roleIds)) {
+      throw new Error(`Blacklist settings for server ${guildId} are invalid.`);
+    }
+    map[userId] = [...new Set(roleIds)];
+  }
+  return map;
 }
 
 function parseFgRoles(value: unknown, guildId: string): Record<string, FgRoleAccess> {
@@ -132,9 +206,48 @@ function parseSettings(value: unknown, guildId: string): GuildSettings {
       guildId,
     ),
     fgRoles: parseFgRoles(candidate.fgRoles, guildId),
+    fgBaseRoleId: parseOptionalSnowflake(
+      candidate.fgBaseRoleId,
+      "fgBaseRoleId",
+      guildId,
+    ),
+    fgAwardRoleId: parseOptionalSnowflake(
+      candidate.fgAwardRoleId,
+      "fgAwardRoleId",
+      guildId,
+    ),
+    fgRoleOwners: parseFgRoleOwners(candidate.fgRoleOwners, guildId),
+    blacklist: parseBlacklist(candidate.blacklist, guildId),
     logChannelId: candidate.logChannelId,
     enforcementEnabled: candidate.enforcementEnabled ?? true,
   };
+}
+
+/** Is this user blacklisted from this protected role? */
+export function isBlacklisted(
+  settings: GuildSettings,
+  userId: string,
+  roleId: string,
+): boolean {
+  return (settings.blacklist?.[userId] ?? []).includes(roleId);
+}
+
+/** Total number of blacklist pairs (user, role) in this server. */
+export function blacklistCount(settings: GuildSettings): number {
+  return Object.values(settings.blacklist ?? {}).reduce(
+    (total, roleIds) => total + roleIds.length,
+    0,
+  );
+}
+
+/** Every blacklist pair, as { userId, roleId }. */
+export function blacklistEntries(settings: GuildSettings): Array<{
+  userId: string;
+  roleId: string;
+}> {
+  return Object.entries(settings.blacklist ?? {}).flatMap(([userId, roleIds]) =>
+    roleIds.map((roleId) => ({ userId, roleId })),
+  );
 }
 
 export class ConfigStore {
@@ -203,6 +316,15 @@ export class ConfigStore {
               },
             ]),
           ),
+          fgBaseRoleId: current.fgBaseRoleId ?? null,
+          fgAwardRoleId: current.fgAwardRoleId ?? null,
+          fgRoleOwners: { ...current.fgRoleOwners },
+          blacklist: Object.fromEntries(
+            Object.entries(current.blacklist ?? {}).map(([userId, roleIds]) => [
+              userId,
+              [...roleIds],
+            ]),
+          ),
           logChannelId: current.logChannelId,
           enforcementEnabled: current.enforcementEnabled,
         }
@@ -226,6 +348,15 @@ export class ConfigStore {
             shareUserIds: [...access.shareUserIds],
             shareRoleIds: [...access.shareRoleIds],
           },
+        ]),
+      ),
+      fgBaseRoleId: next.fgBaseRoleId ?? null,
+      fgAwardRoleId: next.fgAwardRoleId ?? null,
+      fgRoleOwners: { ...(next.fgRoleOwners ?? {}) },
+      blacklist: Object.fromEntries(
+        Object.entries(next.blacklist ?? {}).map(([userId, roleIds]) => [
+          userId,
+          [...roleIds],
         ]),
       ),
       logChannelId: next.logChannelId,

@@ -200,7 +200,6 @@ function parseSettings(value: unknown, guildId: string): GuildSettings {
     !candidate.protectedRoleIds.every(isSnowflake) ||
     !Array.isArray(candidate.allowedUserIds) ||
     !candidate.allowedUserIds.every(isSnowflake) ||
-    !(candidate.logChannelId === null || isSnowflake(candidate.logChannelId)) ||
     !(
       candidate.enforcementEnabled === undefined ||
       typeof candidate.enforcementEnabled === "boolean"
@@ -239,7 +238,11 @@ function parseSettings(value: unknown, guildId: string): GuildSettings {
     fgRoleOwners: parseFgRoleOwners(candidate.fgRoleOwners, guildId),
     fgRoleSharers: parseFgRoleSharers(candidate.fgRoleSharers, guildId),
     blacklist: parseBlacklist(candidate.blacklist, guildId),
-    logChannelId: candidate.logChannelId,
+    logChannelId: parseOptionalSnowflake(
+      candidate.logChannelId,
+      "logChannelId",
+      guildId,
+    ),
     enforcementEnabled: candidate.enforcementEnabled ?? true,
   };
 }
@@ -269,11 +272,6 @@ export function blacklistEntries(settings: GuildSettings): Array<{
   return Object.entries(settings.blacklist ?? {}).flatMap(([userId, roleIds]) =>
     roleIds.map((roleId) => ({ userId, roleId })),
   );
-}
-
-/** User ids explicitly authorised to share one FG role (owner not included). */
-export function fgSharersFor(settings: GuildSettings, roleId: string): string[] {
-  return [...(settings.fgRoleSharers?.[roleId] ?? [])];
 }
 
 export class ConfigStore {

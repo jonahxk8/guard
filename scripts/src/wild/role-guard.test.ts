@@ -71,6 +71,8 @@ function createSetup(
     actorHasManageRoles?: boolean;
     blacklist?: Record<string, string[]>;
     logChannelId?: string | null;
+    /** Make the alerts-channel send throw, like Discord rejecting it. */
+    failLogSend?: boolean;
     fetchAuditLogs?: (options: unknown) => Promise<unknown>;
     protectedRoleIds?: string[];
     fgRoleId?: string;
@@ -291,6 +293,7 @@ function createSetup(
   const channel = {
     isTextBased: () => true,
     send: async (message: SentMessage) => {
+      if (options.failLogSend) throw new Error("Missing Access");
       sentMessages.push(message);
     },
   };
@@ -465,6 +468,41 @@ test("logs watched roles assigned by a whitelisted actor", async () => {
   assert.equal(setup.memberFetchCount, 1);
   assertAuthorizedLog(setup, ROLE_ID, ALLOWED_ACTOR_ID);
   assert.equal(getOffenseCount(GUILD_ID, ALLOWED_ACTOR_ID), 0);
+});
+
+test("a failed log-channel send is logged instead of swallowed", async () => {
+  // The alerts channel is the bot's only record of reverts: if its
+  // send fails (deleted channel, lost access), the failure must be
+  // visible in the logs, not vanish silently.
+  const setup = createSetup({
+    allowedUserIds: [ALLOWED_ACTOR_ID],
+    failLogSend: true,
+  });
+  const errors: unknown[][] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+  try {
+    await guardAuditLogEntry(
+      // A fresh entry id: the guard dedups by id, and "audit-allowed"
+      // is already handled by the test above.
+      createEntry("audit-allowed-log-fail", ALLOWED_ACTOR_ID),
+      setup.guild,
+      createStore(setup.settings),
+    );
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.removedRoleIds.length, 0);
+  assert.ok(
+    errors.some((args) =>
+      String(args[0]).includes("[wild] failed to send log to alerts channel:"),
+    ),
+    `expected a [wild] log-send failure line, got: ${JSON.stringify(errors)}`,
+  );
 });
 
 test("logs watched roles assigned by a member of a whitelisted role", async () => {

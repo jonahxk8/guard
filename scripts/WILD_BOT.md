@@ -10,7 +10,7 @@ The bot protects selected server roles. It checks Discord's audit log when a pro
    Privileged Gateway Intents). Wild needs it to read "," prefix
    commands — it was removed when Wild was slash-only, and it must be
    turned back on for prefix commands to fire.
-4. Start the **Wild Discord Bot** workflow on Replit, or follow the Railway setup below.
+4. Follow the Railway setup below to deploy it.
 5. Invite the bot with the required scopes and permissions shown in its startup logs.
 6. Move the bot's role above every role it needs to manage.
 7. Give it **Manage Roles**, **Manage Messages**, and **View Audit Log**.
@@ -36,7 +36,7 @@ six staff roles (baked into the bot, by role ID):
 Those roles grant admin access wherever they exist. A server without
 them has owner-only admin access. The Discord Administrator permission
 alone grants nothing — a member with Administrator but no staff admin
-role (and not the owner) is an ordinary member: their unauthorised
+role (and not the owner) is an ordinary member: their unauthorized
 grants are reverted, they are silently ignored on admin commands (see
 "Silent ignore" below), and they see only the plain-member help. There is
 no command to change the six roles (a future option).
@@ -47,7 +47,7 @@ When someone who is not allowed uses an admin command, the bot sends
 no reply at all — not even an ephemeral error. On slash it briefly
 shows "thinking" (it defers, then deletes the deferred reply) and
 then nothing; on prefix it simply never replies, and the command
-message is still deleted as usual. This covers only authorisation
+message is still deleted as usual. This covers only authorization
 failures on admin commands (`/protect`, `/whitelist`, `/status`,
 `/setup`, `/blacklist`, `/fg base`, `/fg create`, `/fg add`,
 `/fg cleanup`, `/fg auth`). Functional errors still reply as before
@@ -57,7 +57,7 @@ commands used by someone who qualifies for them still work — a
 non-whitelisted admin who owns an FG role can still `/fg share` /
 `/fg color` / `/fg auth` for their own role. Ignoring is reply-only:
 the gates are still enforced server-side and nothing happens. `/fg
-list` is not part of the silent-ignore rule: its authorisation failure
+list` is not part of the silent-ignore rule: its authorization failure
 still replies with an error, and it is gated to owner / staff admin /
 Manage Server / whitelisted — it is not open to everyone.
 
@@ -71,24 +71,24 @@ The bot listens for Discord audit-log events. If the actor is not whitelisted, i
 
 When a grant is removed, the bot DMs the assigner an embed (Role /
 Member / Server / Reason fields) stating which role was removed and
-why. The DM never asks to get whitelisted. After 3 unauthorised assignments by the same person in the same server, the log embed flags them as a repeat offender. If no alert channel is set, the removal and DM still happen — nothing is silently skipped.
+why. The DM never asks to get whitelisted. After 3 unauthorized assignments by the same person in the same server, the log embed flags them as a repeat offender. If no alert channel is set, the removal and DM still happen — nothing is silently skipped.
 
-Grants by whitelisted users are logged too: an "Authorized role assignment" entry goes to the same alert channel (who got the role, which role, who assigned it, "The assigner is on the whitelist."), the role stays, and nobody is DM'd. Grants through Bleed or Greed by a whitelisted requester log the same way, with a "Via" line naming the bot. The server owner, staff admins, FG owners sharing their own role, and authorised sharers stay silent — the log shows whitelist grants only.
+Grants by whitelisted users are logged too: an "Authorized role assignment" entry goes to the same alert channel (who got the role, which role, who assigned it, "The assigner is on the whitelist."), the role stays, and nobody is DM'd. Grants through Bleed or Greed by a whitelisted requester log the same way, with a "Via" line naming the bot. The server owner, staff admins, FG owners sharing their own role, and authorized sharers stay silent — the log shows whitelist grants only.
 
 The bot also corroborates each audit-log event against the guild's recent audit log (up to 10 entries, matched by target, role, and time). When it can't verify who assigned a role, it removes the role by default.
 
-Bleed and Greed interop: Wild guards roles granted through Bleed and Greed the same way. When either bot adds a role, the audit log shows that bot as the executor — but the bot passes a reason naming the human who asked for it. Wild reads that reason, checks that person against the whitelist, and if they aren't authorised the role is removed, they are DM'd, and it is logged — for FG and protected roles alike. Bleed writes "added role by <user>"; Greed writes "Role update by <name> (<user id>)", and Wild uses the ID when one is present — it is authoritative, since usernames can change or be reused — falling back to the name. If the reason is missing, Wild falls back to attributing the grant to the FG role's owner; if there is no one to attribute it to, the role is still removed and logged, with no DM.
+Bleed and Greed interop: Wild guards roles granted through Bleed and Greed the same way. When either bot adds a role, the audit log shows that bot as the executor — but the bot passes a reason naming the human who asked for it. Wild reads that reason, checks that person against the whitelist, and if they aren't authorized the role is removed, they are DM'd, and it is logged — for FG and protected roles alike. Bleed writes "added role by <user>"; Greed writes "Role update by <name> (<user id>)", and Wild uses the ID when one is present — it is authoritative, since usernames can change or be reused — falling back to the name. If the reason is missing, Wild falls back to attributing the grant to the FG role's owner; if there is no one to attribute it to, the role is still removed and logged, with no DM.
 
-Every reply is a colorless embed (no color set, so it blends in with no accent bar; plain title and description, no footer, no timestamp) — confirmations, errors, `/status`, `/fg list`, the log embed, and the share offer alike. Slash replies are invisible (ephemeral). `/status` lists any protected or FG roles the bot can't manage and shows "Needs setup" until the bot's role is moved above them; the same check runs at startup and logs a warning per server.
+Every reply is a colorless embed (no color set, so it blends in with no accent bar; plain title and description, no footer, no timestamp) — confirmations, errors, `/status`, `/fg list`, and the log embed. The share offer is the exception: a plain message, not an embed. Slash replies are invisible (ephemeral). `/status` lists any protected or FG roles the bot can't manage and shows "Needs setup" until the bot's role is moved above them; the same check runs at startup and logs a warning per server.
 
-Prefix (",") replies cannot be invisible — Discord has no ephemeral message replies, so a `,` reply is always visible in the channel. That is a Discord limitation, not a bug. Wild mitigates it: your `,` command message is deleted after handling (best-effort), and error replies auto-delete after 10 seconds (best-effort). Success replies stay. If you need invisible errors, use the slash versions. Unauthorised use of an admin `,` command gets no reply at all (see "Silent ignore" above) — the command message is still deleted. Unknown `,` commands get no reply at all, and the message is never deleted — it may belong to Greed or another bot.
+Prefix (",") replies cannot be invisible — Discord has no ephemeral message replies, so a `,` reply is always visible in the channel. That is a Discord limitation, not a bug. Wild mitigates it: your `,` command message is deleted after handling (best-effort), and error replies auto-delete after 10 seconds (best-effort). Success replies auto-delete after 1 minute 30 seconds (best-effort); interactive messages — share offers, the /fg remove confirmation, paged help and blacklist lists — stay until their buttons expire (5 minutes). If you need invisible errors, use the slash versions. Unauthorized use of an admin `,` command gets no reply at all (see "Silent ignore" above) — the command message is still deleted. Unknown `,` commands get no reply at all, and the message is never deleted — it may belong to Greed or another bot.
 
 There is no pause command: the guard always enforces. An old config with enforcement paused is ignored.
 
 ## Commands
 
 Every command works as a slash command and as a "," prefix command —
-same behaviour, same handler. Prefix examples use mentions or raw IDs.
+same behavior, same handler. Prefix examples use mentions or raw IDs.
 
 Core — all need the server owner, a staff admin role, a whitelisted
 member, or literal Manage Server, except `/blacklist list` (same set):
@@ -104,7 +104,7 @@ Blacklist — blocks a member from a protected role. If that role is ever given 
 - `/blacklist remove @user @role` / `,blacklist remove @user @role` — unblacklist them (owner, staff admin, whitelisted, or Manage Server).
 - `/blacklist list` / `,blacklist list` — list the blacklist as a paginated embed, 10 users per page with Prev/Next buttons, one field per user (owner, staff admin, whitelisted, or Manage Server).
 
-FG roles — Bleed booster-role style. Each member makes their own unique, personal, cosmetic role under one base role and customises it (name, color, icon). FG roles are created with no permissions, are automatically protected, and the guard applies to them like any other protected role — even when an FG role is not listed under `/protect` (for example it was made before auto-protect existed, or unprotected with `/protect`): any grant by someone who is not the server owner, a staff admin, whitelisted, the FG role's owner, or an authorised sharer is removed instantly, including self-grants. Having Manage Roles alone never authorises a grant. `/protect` cannot unprotect an FG role — FG roles are always protected. If the bot cannot remove a role (its own role sits below it, or it lost Manage Roles), the giver is DM'd that the removal failed instead of being told the role was removed.
+FG roles — Bleed booster-role style. Each member makes their own unique, personal, cosmetic role under one base role and customizes it (name, color, icon). FG roles are created with no permissions, are automatically protected, and the guard applies to them like any other protected role — even when an FG role is not listed under `/protect` (for example it was made before auto-protect existed): any grant by someone who is not the server owner, a staff admin, whitelisted, the FG role's owner, or an authorized sharer is removed instantly, including self-grants. Having Manage Roles alone never authorizes a grant. `/protect` cannot unprotect an FG role — FG roles are always protected. If the bot cannot remove a role (its own role sits below it, or it lost Manage Roles), the giver is DM'd that the removal failed instead of being told the role was removed.
 
 - `/fg base @role` / `,fg base @role` — set the base role FG roles sit under (owner, staff admin, or Manage Server).
 - `/fg color <color> [second_color]` / `,fg color <color> [second_color]` — recolor your own FG role. One hex = solid, two = gradient, separated by a space or a comma. Colors are hex codes only: `#rrggbb`, `rrggbb`, `#rgb`, `rgb`, or `0xrrggbb` — any hex code works, so 16,777,216 colors are possible, no names. `random` picks a random color, `holographic` (alias `holo`) gives the role Discord's holographic style, and `dominant` uses the color of your profile picture. More than two colors is rejected. Gradients and holographic need the Enhanced Role Styles perk (3 server boosts on it); without it the role is made solid in the first color instead, and the bot says so. Anyone who owns an FG role can use it, and only one FG role per member (Wild rule — Bleed gates this on boosting instead).
@@ -117,12 +117,12 @@ FG roles — Bleed booster-role style. Each member makes their own unique, perso
 - `/fg members` / `,fg members` — list the members of your FG role, owner first, plain names, one per line (25 max with a "+N more" line). The role is worked out from you, like `/fg share`.
 - `/fg list` / `,fg list` — list all FG roles and their owners, one line per role: the role itself, then the owner's name (owner, staff admin, whitelisted, or Manage Server).
 - `/fg cleanup` / `,fg cleanup` — remove FG roles whose owners left the server (owner, staff admin, or Manage Server).
-- `/fg share @member` / `,fg share @member` — offer an FG role to a member. Wild-only extra — Bleed documents no share command. You may share only if you are the server owner, a staff admin, whitelisted, the FG role's owner, or authorised to share that role (see below). The role is picked for you: your own FG role first, otherwise the one FG role you can share. The offer is a plain message, Greed-style: line 1 is the member and the role ("@member @role"), line 2 is "Would you like to accept @owner's FG role?" (the owner's username), with green Approve and red Decline buttons below. Approve adds the role; Decline adds nothing. The offer lasts 5 minutes, then it expires. On slash the bot defers first, so the offer can never be cut off by the 3-second interaction window. The offer pings the member it is for, and so does the accepted/declined/expired message. When someone other than the owner shares the role and the member accepts, the owner gets a one-line DM about it. All errors are invisible (ephemeral) on slash, or auto-deleting on prefix; only the offer itself is public.
+- `/fg share @member` / `,fg share @member` — offer an FG role to a member. Wild-only extra — Bleed documents no share command. You may share only if you are the server owner, a staff admin, whitelisted, the FG role's owner, or authorized to share that role (see below). The role is picked for you: your own FG role first, otherwise the one FG role you can share. The offer is a plain message, Greed-style: line 1 is the member and the role ("@member @role"), line 2 is "Would you like to accept @owner's FG role?" (the owner's username), with green Approve and red Decline buttons below. Approve adds the role; Decline adds nothing. The offer lasts 5 minutes, then it expires. On slash the bot defers first, so the offer can never be cut off by the 3-second interaction window. The offer pings the member it is for, and so does the accepted/declined/expired message. When someone other than the owner shares the role and the member accepts, the owner gets a one-line DM about it. All errors are invisible (ephemeral) on slash, or auto-deleting on prefix; only the offer itself is public.
 - `/fg auth add @member` / `,fg auth add @member` — let someone share one of your FG roles, without giving them the role (the FG role's owner, the server owner, staff admins, or whitelisted only). The role is worked out from you: your own FG role, or the one FG role you can share.
 - `/fg auth remove @member` / `,fg auth remove @member` — take someone's permission to share an FG role away (same gate as auth add; the FG role owner themself can never be removed).
 - `/fg auth list [@role]` / `,fg auth list [@role]` — list who can share an FG role, owner first (same gate as auth add). The role is optional: leave it out and the bot uses your FG role.
 
-Sharing FG roles, in three lines: staff share FG roles with people, so only those people are authorised to share them; an FG owner can authorise others to share their role; auth is permission to share, not the role itself. The old `/fg assign` command was removed — sharing is the only way to give someone an existing FG role — and the old shared "award" role was removed too, because it was confusing and is gone. A member can hold at most one FG role, owned or shared; a share or create for someone who already holds one is refused. Nobody who already holds more than one has any taken away.
+Sharing FG roles, in three lines: staff share FG roles with people, so only those people are authorized to share them; an FG owner can authorize others to share their role; auth is permission to share, not the role itself. The old `/fg assign` command was removed — sharing is the only way to give someone an existing FG role — and the old shared "award" role was removed too, because it was confusing and is gone. A member can hold at most one FG role, owned or shared; a share or create for someone who already holds one is refused. Nobody who already holds more than one has any taken away.
 
 ## Help
 
@@ -147,7 +147,7 @@ when they hold no FG role, no Guard, no Blacklist, and no fg base /
 fg cleanup / fg list; if they hold an FG role or are a listed sharer,
 they see exactly what a plain member holding that FG role sees,
 nothing more. An FG owner sees only FG — their own
-role's commands (rename, icon, remove, drop), sharing, members, and
+role's commands (color, rename, icon, remove, drop), sharing, members, and
 auth. Someone holding a shared FG role sees FG share, FG drop, and FG
 members; someone authed to share one sees FG share and FG members. A
 normal member with no FG role sees the FG category with the note
@@ -211,7 +211,7 @@ Deploy this repository as a long-running worker service, using the repository ro
 
 ## Local running and checks
 
-- `pnpm --filter @workspace/scripts run wild` — start directly from TypeScript for local/Replit use.
+- `pnpm --filter @workspace/scripts run wild` — start directly from TypeScript for local use.
 - `pnpm run build:wild` — compile the bot for Railway.
 - `pnpm run start:wild` — start the compiled bot.
 - `pnpm --filter @workspace/scripts run typecheck` — check the TypeScript sources.

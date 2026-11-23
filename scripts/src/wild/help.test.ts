@@ -798,6 +798,37 @@ function adminOnlyMember(roleIds: string[] = []): unknown {
   };
 }
 
+test("holdsFgRole follows fgRoles, not fgRoleOwners", () => {
+  // An FG role recorded in fgRoles but with no owner record (e.g. the
+  // owner entry was removed) is still a role the member holds — the
+  // handlers check fgRoles keys, so help must too, or a holder would
+  // lose /fg drop from their help while the command still works.
+  const FG_ROLE_ID = "666666666666666666";
+  const settings = makeSettings({
+    fgRoles: {
+      [FG_ROLE_ID]: {
+        assignUserIds: [],
+        assignRoleIds: [],
+        shareUserIds: [],
+        shareRoleIds: [],
+      },
+    },
+  });
+  const caps = computeHelpCapabilities(
+    helpMember([FG_ROLE_ID]),
+    "999999999999999999",
+    settings,
+  );
+  assert.equal(caps.holdsFgRole, true);
+  assert.equal(caps.ownsFgRole, false);
+  const fg = resolveHelpTopic("fg", { caps, mode: "slash" });
+  assert.equal(fg.kind, "embed");
+  if (fg.kind === "embed") {
+    assert.match(fieldTextFromPage(fg.page), /fg drop/i);
+    assert.doesNotMatch(fieldTextFromPage(fg.page), /no FG role yet/i);
+  }
+});
+
 test("computeHelpCapabilities: each of the six staff admin roles grants admin help", () => {
   for (const roleId of ADMIN_ROLE_IDS) {
     const caps = computeHelpCapabilities(
@@ -911,6 +942,16 @@ test("a Discord-Admin-only member holding an FG role sees exactly what a plain h
   const FG_ROLE_ID = "666666666666666666";
   const OTHER_ID = "333333333333333333";
   const settings = makeSettings({
+    // A real FG role always has an fgRoles entry alongside its owner
+    // entry (both are written together at /fg create and /fg add).
+    fgRoles: {
+      [FG_ROLE_ID]: {
+        assignUserIds: [],
+        assignRoleIds: [],
+        shareUserIds: [],
+        shareRoleIds: [],
+      },
+    },
     fgRoleOwners: { [FG_ROLE_ID]: OTHER_ID },
     fgRoleSharers: { [FG_ROLE_ID]: ["222222222222222222"] },
   });

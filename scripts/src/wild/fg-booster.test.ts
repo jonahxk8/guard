@@ -184,6 +184,8 @@ function createGuild(options: {
   failRoleAddMemberIds?: string[];
   /** Make member.send reject for these members, like closed DMs. */
   failSendMemberIds?: string[];
+  /** Make guild.members.fetch throw this error for a member, like a Discord API failure. */
+  fetchMemberErrors?: Record<string, unknown>;
 }) {
   const rolesCache = new Map<string, MockRole>(
     (options.roles ?? []).map((role) => [role.id, role]),
@@ -204,6 +206,9 @@ function createGuild(options: {
   };
   const members = new Map<string, Record<string, unknown>>();
   const getMember = (memberId: string) => {
+    if (options.fetchMemberErrors?.[memberId] !== undefined) {
+      throw options.fetchMemberErrors[memberId];
+    }
     if ((options.missingMemberIds ?? []).includes(memberId)) return null;
     if (!addedByMember.has(memberId)) addedByMember.set(memberId, []);
     if (!members.has(memberId)) {
@@ -1250,6 +1255,32 @@ test("/fg add refuses the base role, @everyone, and managed roles", async () => 
   assert.match(replyTextOf(managedInteraction.replies[0]), /can't be an FG role/i);
 });
 
+test("/fg add refuses an Administrator role", async () => {
+  // An Administrator role must never become an FG role: /fg share
+  // would hand the whole server to whoever accepts it. Same refusal
+  // as /protect.
+  const adminRole = makeRole(EXISTING_ROLE_ID, "Admin Role", 8);
+  adminRole.permissions = {
+    has: (permission: bigint) => permission === PermissionFlagsBits.Administrator,
+  };
+  const config = createStore(
+    makeSettings({ allowedUserIds: [MEMBER_ID], fgBaseRoleId: BASE_ROLE_ID }),
+  );
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10), adminRole],
+  });
+  const { interaction, replies } = createInteraction({
+    action: "add",
+    roleId: EXISTING_ROLE_ID,
+    memberId: OTHER_ID,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(config.getSettings().fgRoleOwners[EXISTING_ROLE_ID], undefined);
+  assert.match(replyTextOf(replies[0]), /has Administrator, so it can't be an FG role/i);
+});
+
 test("/fg add refuses a role above the bot's role", async () => {
   const config = createStore(
     makeSettings({ allowedUserIds: [MEMBER_ID], fgBaseRoleId: BASE_ROLE_ID }),
@@ -1424,6 +1455,41 @@ test("/fg remove asks for confirmation and Yes deletes the role", async () => {
   assert.match(buttonTextOf(yes), /is gone/i);
 });
 
+test("/fg remove keeps the role when the Discord delete fails", async () => {
+  // The delete failing (role order, permissions) must not unregister
+  // the role and claim it is gone — the role still exists.
+  const config = createStore(
+    makeSettings({
+      protectedRoleIds: [FG_ROLE_ID],
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoleSharers: { [FG_ROLE_ID]: [OTHER_ID] },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const fgRole = makeRole(FG_ROLE_ID, "My FG", 9);
+  fgRole.delete = async () => {
+    throw new Error("Missing Permissions");
+  };
+  const { guild } = createGuild({ roles: [fgRole] });
+  const { interaction, replies, collector } = createInteraction({ action: "remove" });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  const yes = makeButton("fg-remove:yes", MEMBER_ID);
+  await collector.fireCollect(yes);
+  assert.equal(fgRole.deleted, false);
+  assert.deepEqual(config.getSettings().fgRoleOwners, { [FG_ROLE_ID]: MEMBER_ID });
+  assert.deepEqual(Object.keys(config.getSettings().fgRoles), [FG_ROLE_ID]);
+  assert.match(buttonTextOf(yes), /couldn't delete that role/i);
+});
+
 test("/fg remove No keeps the role", async () => {
   const config = createStore(
     makeSettings({
@@ -1484,10 +1550,16 @@ test("/fg share defers first, then sends the Greed-style offer by editing the de
     editReplies[0].content,
     `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
   );
+  // The offer actually pings the target: their mention is in the
+  // message content, and only that one user is allowed to ping — never
+  // the role. Explicit users list ONLY: combining `parse: ["users"]`
+  // with `users` is rejected by Discord as mutually exclusive (50035
+  // MESSAGE_ALLOWED_MENTIONS_PARSE_EXCLUSIVE) and failed every share
+  // offer send deterministically until this was fixed.
   assert.deepEqual(editReplies[0].allowedMentions, {
-    parse: ["users"],
     users: [OTHER_ID],
   });
+  assert.equal("parse" in (editReplies[0].allowedMentions ?? {}), false);
   const buttons = (editReplies[0].components ?? []).flatMap((row) =>
     (row.toJSON() as { components: Array<Record<string, unknown>> }).components,
   );
@@ -1554,6 +1626,32 @@ test("/fg share defers before slow pre-send fetches finish", async () => {
   );
   assert.equal(defers.length, 1);
   assert.equal(editReplies.length, 1);
+});
+
+test("/fg share swallows a failing deferUpdate on a stray button press", async () => {
+  // A press with an unknown custom id is answered with deferUpdate.
+  // If that defer itself fails (expired interaction), the collect
+  // handler must not reject — the stray press is simply dropped.
+  const config = createStore(fgOwnedSettings());
+  const fgRole = makeRole(FG_ROLE_ID, "My FG", 9);
+  const { guild } = createGuild({
+    roles: [fgRole],
+    memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID] },
+  });
+  const { interaction, collector, editReplies, followUps } = createInteraction({
+    action: "share",
+    memberId: OTHER_ID,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  const bogus = makeButton("fg-share:bogus", OTHER_ID);
+  bogus.deferUpdate = async () => {
+    throw new Error("Unknown interaction");
+  };
+  await collector.fireCollect(bogus);
+  assert.equal(editReplies.length, 1);
+  assert.equal(followUps.length, 0);
 });
 
 test("/fg share error after the defer goes out as an ephemeral follow-up", async () => {
@@ -1649,6 +1747,39 @@ test("/fg remove rejects another user's button press", async () => {
   await collector.fireCollect(yes);
   assert.equal(fgRole.deleted, true);
   assert.match(buttonTextOf(yes), /is gone/i);
+});
+
+test("/fg remove swallows a failing deferUpdate on a stray button press", async () => {
+  // Same guard as the share collector: a press with an unknown custom
+  // id is answered with deferUpdate, and if that defer itself fails
+  // the collect handler must not reject.
+  const config = createStore(
+    makeSettings({
+      protectedRoleIds: [FG_ROLE_ID],
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const fgRole = makeRole(FG_ROLE_ID, "My FG", 9);
+  const { guild } = createGuild({ roles: [fgRole] });
+  const { interaction, collector } = createInteraction({ action: "remove" });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  const bogus = makeButton("fg-remove:bogus", MEMBER_ID);
+  bogus.deferUpdate = async () => {
+    throw new Error("Unknown interaction");
+  };
+  await collector.fireCollect(bogus);
+  assert.equal(fgRole.deleted, false);
+  assert.deepEqual(config.getSettings().fgRoleOwners, { [FG_ROLE_ID]: MEMBER_ID });
 });
 
 test("/fg remove without an FG role errors with no buttons", async () => {
@@ -2106,6 +2237,70 @@ test("/fg cleanup removes FG roles whose owner left", async () => {
   assert.match(replyTextOf(replies[0]), /Cleaned up 1 FG role/i);
 });
 
+test("/fg cleanup does not delete a role when the owner fetch fails transiently", async () => {
+  // A network/5xx blip must not be read as "the owner left": deleting
+  // the role on a transient failure would destroy a live owner's FG role.
+  const config = createStore(
+    makeSettings({
+      protectedRoleIds: [FG_ROLE_ID],
+      fgRoleOwners: { [FG_ROLE_ID]: OTHER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const fgRole = makeRole(FG_ROLE_ID, "Gone FG", 9);
+  const { guild } = createGuild({
+    roles: [fgRole],
+    fetchMemberErrors: { [OTHER_ID]: new Error("Service Unavailable") },
+  });
+  const { interaction, replies } = createInteraction({ action: "cleanup" });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(fgRole.deleted, false);
+  assert.deepEqual(config.getSettings().fgRoleOwners, { [FG_ROLE_ID]: OTHER_ID });
+  assert.match(replyTextOf(replies[0]), /Nothing to clean up/i);
+});
+
+test("/fg cleanup deletes the role when the owner fetch is a 10007 Unknown Member", async () => {
+  // The real Discord error for a member who is not in the guild:
+  // only this (and a null fetch, covered by the test above) means left.
+  const config = createStore(
+    makeSettings({
+      protectedRoleIds: [FG_ROLE_ID],
+      fgRoleOwners: { [FG_ROLE_ID]: OTHER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const fgRole = makeRole(FG_ROLE_ID, "Gone FG", 9);
+  const { guild } = createGuild({
+    roles: [fgRole],
+    fetchMemberErrors: {
+      [OTHER_ID]: Object.assign(new Error("Unknown Member"), { code: 10007 }),
+    },
+  });
+  const { interaction, replies } = createInteraction({ action: "cleanup" });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(fgRole.deleted, true);
+  assert.deepEqual(config.getSettings().fgRoleOwners, {});
+  assert.match(replyTextOf(replies[0]), /Cleaned up 1 FG role/i);
+});
+
 test("/fg share errors are ephemeral plain text", async () => {
   const config = createStore(
     makeSettings({
@@ -2497,11 +2692,12 @@ test("/fg share offer is a plain Greed-style message with Approve/Decline button
   );
   // The offer actually pings the target: their mention is in the
   // message content, and only that one user is allowed to ping — never
-  // the role.
+  // the role. Explicit users list ONLY — never `parse` + `users`
+  // (Discord 50035, mutually exclusive).
   assert.deepEqual(editReplies[0].allowedMentions, {
-    parse: ["users"],
     users: [targetId],
   });
+  assert.equal("parse" in (editReplies[0].allowedMentions ?? {}), false);
   const buttons = (editReplies[0].components ?? []).flatMap((row) =>
     (row.toJSON() as { components: Array<Record<string, unknown>> }).components,
   );
@@ -2550,10 +2746,50 @@ test("/fg share accept pings the target on the accepted message", async () => {
 
   assert.match(buttonTextOf(approve), /accepted/i);
   assert.equal(approve.updates[0].content, `<@${targetId}> accepted <@&${FG_ROLE_ID}>.`);
+  // Same rule as the offer itself: explicit users list ONLY, never
+  // `parse` + `users` (Discord 50035).
   assert.deepEqual(approve.updates[0].allowedMentions, {
-    parse: ["users"],
     users: [targetId],
   });
+  assert.equal("parse" in (approve.updates[0].allowedMentions ?? {}), false);
+});
+
+test("/fg share expiry edit lists only the target user (Discord 50035)", async () => {
+  // The collector-end expiry edit goes through offer.edit — the third
+  // site that combined `parse: ["users"]` with an explicit users list.
+  // It was swallowed by a .catch, so it failed silently and left dead
+  // buttons on the expired offer.
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const targetId = "444444444444444444";
+  const fgRole = makeRole(FG_ROLE_ID, "My FG", 9);
+  const { guild } = createGuild({
+    roles: [fgRole],
+    memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
+  });
+  const { interaction, collector, offerEdits } = createInteraction({
+    action: "share",
+    memberId: targetId,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  await collector.fireEnd("time");
+  assert.equal(offerEdits.length, 1);
+  assert.match(offerEdits[0].content ?? "", /expired without a response/);
+  assert.deepEqual(offerEdits[0].allowedMentions, { users: [targetId] });
+  assert.equal("parse" in (offerEdits[0].allowedMentions ?? {}), false);
 });
 
 test("/fg drop gives back a shared FG role and frees the slot", async () => {

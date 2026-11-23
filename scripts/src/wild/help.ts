@@ -219,7 +219,7 @@ export function computeHelpCapabilities(
     ? Object.values(settings.fgRoleOwners ?? {}).includes(userId)
     : false;
   const holdsFgRole = settings
-    ? Object.keys(settings.fgRoleOwners ?? {}).some((roleId) =>
+    ? Object.keys(settings.fgRoles ?? {}).some((roleId) =>
         memberHasRole(member, roleId),
       )
     : false;

@@ -14,6 +14,7 @@ import {
   roleDisplayName,
 } from "./names.js";
 import { wildFieldEmbed } from "./embeds.js";
+import { describeDiscordError } from "./reply.js";
 import { canAssignFgRole, fetchBotMemberFresh, fetchMemberFresh, isBotAdmin, isFgSharer, memberMatchesWhitelist } from "./authorization.js";
 import {
   REPEAT_OFFENDER_THRESHOLD,
@@ -150,9 +151,18 @@ async function sendLog(
   const channel = await guild.channels.fetch(settings.logChannelId).catch(() => null);
   if (!channel?.isTextBased() || !("send" in channel)) return;
 
+  // A failed alert send must not vanish silently: the log channel is
+  // the bot's only record of reverts, so log the failure where the
+  // operator will see it. (DM-send swallows elsewhere are different:
+  // closed DMs fail routinely and are expected.)
   await (channel as TextChannel)
     .send({ embeds: [embed], allowedMentions: { parse: [] } })
-    .catch(() => undefined);
+    .catch((error) => {
+      console.error(
+        "[wild] failed to send log to alerts channel:",
+        describeDiscordError(error),
+      );
+    });
 }
 
 /**

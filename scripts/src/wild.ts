@@ -20,20 +20,17 @@ import { fgCommand, handleFgCommand } from "./wild/fg-booster.js";
 import { handleHelpCommand, helpCommand } from "./wild/help.js";
 import { handlePrefixMessage } from "./wild/prefix.js";
 import { ConfigStore } from "./wild/config-store.js";
+import { describeDiscordError } from "./wild/reply.js";
 import { getUnmanageableRoleIds, guardAuditLogEntry, sweepMissedGrants } from "./wild/role-guard.js";
 
 function log(message: string): void {
   process.stdout.write(`[Bot] ${message}\n`);
 }
 
-function describeError(error: unknown): string {
-  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-}
-
 async function main(): Promise<void> {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) {
-    throw new Error("DISCORD_BOT_TOKEN is not set. Add it in Replit Secrets.");
+    throw new Error("DISCORD_BOT_TOKEN is not set. Add it in Railway Variables.");
   }
 
   const store = new ConfigStore();
@@ -69,7 +66,7 @@ async function main(): Promise<void> {
         helpCommand.toJSON(),
       ]);
     } catch (error) {
-      log(`Could not register slash commands: ${describeError(error)}`);
+      log(`Could not register slash commands: ${describeDiscordError(error)}`);
       return;
     }
 
@@ -121,7 +118,7 @@ async function main(): Promise<void> {
         }
       } catch (error) {
         log(
-          `Could not check role hierarchy in server ${guild.id}: ${describeError(error)}`,
+          `Could not check role hierarchy in server ${guild.id}: ${describeDiscordError(error)}`,
         );
       }
     }
@@ -184,7 +181,7 @@ async function main(): Promise<void> {
         await handleGuardCommand(interaction, store);
       }
     } catch (error) {
-      log(`Command failed: ${describeError(error)}`);
+      log(`Command failed: ${describeDiscordError(error)}`);
       const response = {
         embeds: [
           wildMessageEmbed(
@@ -209,7 +206,7 @@ async function main(): Promise<void> {
     try {
       await handlePrefixMessage(message, store);
     } catch (error) {
-      log(`Prefix command failed: ${describeError(error)}`);
+      log(`Prefix command failed: ${describeDiscordError(error)}`);
       await message.channel
         .send({
           embeds: [
@@ -234,19 +231,19 @@ async function main(): Promise<void> {
     (entry: GuildAuditLogsEntry, guild: Guild) => {
       if (entry.action !== AuditLogEvent.MemberRoleUpdate) return;
       void guardAuditLogEntry(entry, guild, store).catch((error: unknown) => {
-        log(`Guard failed in server ${guild.id}: ${describeError(error)}`);
+        log(`Guard failed in server ${guild.id}: ${describeDiscordError(error)}`);
       });
     },
   );
 
   client.on(Events.Error, (error) => {
-    log(`Discord connection error: ${describeError(error)}`);
+    log(`Discord connection error: ${describeDiscordError(error)}`);
   });
 
   await client.login(token);
 }
 
 main().catch((error: unknown) => {
-  log(`Startup failed: ${describeError(error)}`);
+  log(`Startup failed: ${describeDiscordError(error)}`);
   process.exitCode = 1;
 });

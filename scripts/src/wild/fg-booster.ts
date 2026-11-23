@@ -36,7 +36,9 @@ import {
   describeDiscordError,
   ignoreUnauthorized,
   isRetryableDiscordError,
+  isUnknownMemberError,
 } from "./reply.js";
+import { isDangerousRole } from "./role-guard.js";
 
 /**
  * FG roles, Bleed booster-role style.
@@ -430,8 +432,11 @@ function hasManageServer(interaction: ChatInputCommandInteraction): boolean {
  * The Discord Administrator permission alone grants nothing (see
  * hasManageServer). Fetch the member fresh: a cached member could still
  * show a staff admin role that was already removed. (Whitelisted
- * members are NOT admitted here — help shows fg base and fg cleanup
- * to owner/admin only, and the handler matches.)
+ * members are NOT admitted here. Note the help/handler mismatch, left
+ * as is on purpose: help shows fg base and fg cleanup to owner/admin
+ * only, but this handler also admits literal Manage Server holders,
+ * so they can run commands help does not list them — that is a known
+ * open question, not a bug to fix here.)
  *
  * An authorisation failure is SILENTLY IGNORED — no reply at all, not
  * even an ephemeral error (see ignoreUnauthorized). The gate is still
@@ -901,6 +906,16 @@ async function handleAddCommand(
     await replyText(interaction, "That role can't be an FG role.");
     return;
   }
+  // An Administrator role must never become an FG role: whoever holds
+  // it holds the whole server, and /fg share would hand that out.
+  // Same refusal as /protect.
+  if (isDangerousRole(role)) {
+    await replyText(
+      interaction,
+      "That role has Administrator, so it can't be an FG role.",
+    );
+    return;
+  }
   if (role.id === settings.fgBaseRoleId) {
     await replyText(interaction, "The FG base role can't be an FG role itself.");
     return;
@@ -1109,7 +1124,7 @@ async function handleRemoveCommand(
   let finishing = false;
   collector.on("collect", async (button) => {
     if (button.customId !== "fg-remove:yes" && button.customId !== "fg-remove:no") {
-      await button.deferUpdate();
+      await button.deferUpdate().catch(() => undefined);
       return;
     }
     if (button.user.id !== interaction.user.id) {
@@ -1122,7 +1137,7 @@ async function handleRemoveCommand(
       return;
     }
     if (finishing) {
-      await button.deferUpdate();
+      await button.deferUpdate().catch(() => undefined);
       return;
     }
     finishing = true;
@@ -1148,36 +1163,54 @@ async function handleRemoveCommand(
             allowedMentions: { parse: [] },
           });
         } else {
+          // Delete the Discord role first; only unregister it once the
+          // delete has succeeded. If the delete fails (role order,
+          // permissions), say so and KEEP the registration — claiming
+          // "gone" while the role still exists would strand it.
+          let deleteFailed = false;
           if (liveRole) {
-            await liveRole
+            deleteFailed = await liveRole
               .delete(`FG role removed by ${interaction.user.id}`)
-              .catch(() => undefined);
+              .then(() => false)
+              .catch(() => true);
           }
-          const nextSettings = store.get(guild.id);
-          delete nextSettings.fgRoles[roleId];
-          delete nextSettings.fgRoleOwners[roleId];
-          delete nextSettings.fgRoleSharers[roleId];
-          nextSettings.protectedRoleIds = nextSettings.protectedRoleIds.filter(
-            (id) => id !== roleId,
-          );
-          try {
-            await store.set(guild.id, nextSettings);
-          } catch {
+          if (deleteFailed) {
             await button.update({
               embeds: [
-                wildMessageEmbed("The bot couldn't save that change. Try again."),
+                wildMessageEmbed(
+                  "The bot couldn't delete that role. Check its role order and permissions, then try again.",
+                ),
               ],
               components: [],
               allowedMentions: { parse: [] },
             });
-            collector.stop("answered");
-            return;
+          } else {
+            const nextSettings = store.get(guild.id);
+            delete nextSettings.fgRoles[roleId];
+            delete nextSettings.fgRoleOwners[roleId];
+            delete nextSettings.fgRoleSharers[roleId];
+            nextSettings.protectedRoleIds = nextSettings.protectedRoleIds.filter(
+              (id) => id !== roleId,
+            );
+            try {
+              await store.set(guild.id, nextSettings);
+            } catch {
+              await button.update({
+                embeds: [
+                  wildMessageEmbed("The bot couldn't save that change. Try again."),
+                ],
+                components: [],
+                allowedMentions: { parse: [] },
+              });
+              collector.stop("answered");
+              return;
+            }
+            await button.update({
+              embeds: [wildMessageEmbed("Your FG role is gone.")],
+              components: [],
+              allowedMentions: { parse: [] },
+            });
           }
-          await button.update({
-            embeds: [wildMessageEmbed("Your FG role is gone.")],
-            components: [],
-            allowedMentions: { parse: [] },
-          });
         }
       }
     } catch {
@@ -1290,8 +1323,27 @@ async function handleCleanupCommand(
       unregistered += 1;
       continue;
     }
-    const owner = await guild.members.fetch(ownerId).catch(() => null);
-    if (!owner) {
+    // Fetch forcefully (never the cache — see fetchMemberFresh). Only
+    // a 10007 Unknown Member means the owner left; a fetch that resolves
+    // to null (test doubles model a missing member that way) counts
+    // too. Any other failure is transient — the role is left alone for
+    // a later cleanup run, never deleted on a blip.
+    let ownerGone = false;
+    try {
+      const owner = await guild.members.fetch({ user: ownerId, force: true });
+      ownerGone = owner === null;
+    } catch (error) {
+      if (isUnknownMemberError(error)) {
+        ownerGone = true;
+      } else {
+        console.error(
+          "[wild] fg cleanup: could not fetch owner, skipping role:",
+          describeDiscordError(error),
+        );
+        continue;
+      }
+    }
+    if (ownerGone) {
       await role.delete("FG role owner left the server").catch(() => undefined);
       delete nextSettings.fgRoles[roleId];
       delete nextSettings.fgRoleOwners[roleId];
@@ -1667,7 +1719,7 @@ function resolveShareRole(
   if (shareable.length === 0) {
     return {
       error:
-        "You aren't authorised to share an FG role. Only the server owner, administrators, whitelisted members, the FG role owner, and people authed for it can share it.",
+        "You aren't authorised to share an FG role. Only the server owner, staff admins, whitelisted members, the FG role owner, and people authed for it can share it.",
     };
   }
   const names = shareable.slice(0, 10).map((role) => roleMention(role));
@@ -1680,7 +1732,7 @@ function resolveShareRole(
   };
 }
 
-function buildDecisionButtons(prefix = "fg-share", disabled = false): ActionRowBuilder<ButtonBuilder> {
+function buildDecisionButtons(prefix: string, disabled = false): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`${prefix}:yes`)
@@ -1713,12 +1765,16 @@ async function finishShareOffer(
 
   // Every end state edits the offer message to a plain one-line message
   // (no embed, no buttons) — the same plain style as the offer itself.
-  // The target is the only person ever pinged.
+  // The target is the only person ever pinged. NOTE: never combine
+  // `parse: ["users"]` with an explicit `users` list — Discord rejects
+  // that combination as mutually exclusive (50035
+  // MESSAGE_ALLOWED_MENTIONS_PARSE_EXCLUSIVE), so the end state must
+  // list the target user and nothing else.
   const endOffer = (content: string) =>
     button.update({
       content,
       components: [],
-      allowedMentions: { parse: ["users"], users: [targetId] },
+      allowedMentions: { users: [targetId] },
     });
 
   const role = guild.roles.cache.get(roleId);
@@ -1959,7 +2015,12 @@ async function handleShareCommand(
       {
         content: offerContent,
         components: [buildShareButtons()],
-        allowedMentions: { parse: ["users"], users: [target.id] },
+        // The target is the only person ever pinged: list them
+        // explicitly and nothing else. Do NOT add `parse: ["users"]` —
+        // Discord rejects parse + an explicit users list as mutually
+        // exclusive (50035 MESSAGE_ALLOWED_MENTIONS_PARSE_EXCLUSIVE),
+        // which failed every share offer send deterministically.
+        allowedMentions: { users: [target.id] },
         // Offer with a live collector (5 minutes): never auto-delete.
         [WILD_KEEP_REPLY]: true,
       } as Parameters<ChatInputCommandInteraction["reply"]>[0],
@@ -2003,7 +2064,7 @@ async function handleShareCommand(
       button.customId !== "fg-share:approve" &&
       button.customId !== "fg-share:decline"
     ) {
-      await button.deferUpdate();
+      await button.deferUpdate().catch(() => undefined);
       return;
     }
     if (button.user.id !== target.id) {
@@ -2011,7 +2072,7 @@ async function handleShareCommand(
       return;
     }
     if (finishing) {
-      await button.deferUpdate();
+      await button.deferUpdate().catch(() => undefined);
       return;
     }
     finishing = true;
@@ -2049,7 +2110,9 @@ async function handleShareCommand(
       .edit({
         content: `<@${requester.id}>'s offer of <@&${role.id}> to <@${target.id}> expired without a response.`,
         components: [],
-        allowedMentions: { parse: ["users"], users: [target.id] },
+        // Same rule as the offer itself: explicit users list only,
+        // never parse + users (Discord 50035).
+        allowedMentions: { users: [target.id] },
       })
       .catch(() => undefined);
   });

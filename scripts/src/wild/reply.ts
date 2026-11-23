@@ -57,6 +57,21 @@ export function describeDiscordError(error: unknown): string {
 }
 
 /**
+ * Did a member fetch fail because Discord says the member does not
+ * exist (10007 Unknown Member)? Only that means the member left.
+ * Any other fetch failure (network, 5xx) is transient and must NOT
+ * be treated as "left" — deleting on a blip would destroy a live
+ * member's roles.
+ */
+export function isUnknownMemberError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === 10007
+  );
+}
+
+/**
  * Is this error worth one retry of the send that failed? A 4xx Discord
  * error is deterministic — bad payload, missing permission, unknown
  * interaction — and retrying it is pointless. Anything else (a 5xx,

@@ -130,18 +130,6 @@ export function isWhitelisted(member: GuildMember, settings: GuildSettings): boo
 }
 
 /**
- * Can this member share a role: they hold it and are whitelisted for it.
- * The server owner is handled by callers (owner bypasses the guard).
- */
-export function canShareRole(
-  member: GuildMember,
-  roleId: string,
-  settings: GuildSettings,
-): boolean {
-  return member.roles.cache.has(roleId) && isWhitelisted(member, settings);
-}
-
-/**
  * Can this member share an FG role? Authorised when they own the FG
  * role, are whitelisted (user or role), or are listed in that role's
  * fgRoleSharers (shared with by staff, or authed by the FG owner).

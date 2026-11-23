@@ -49,12 +49,6 @@ export function memberDisplayName(
   return id ? `<@${id}>` : "Unknown member";
 }
 
-/** A user's name: username first (displayName when that is all we have). */
-export function userDisplayName(user: NamedUser | null | undefined): string {
-  if (!user) return "Unknown member";
-  return user.username ?? user.displayName ?? `<@${user.id}>`;
-}
-
 /** A role's plain name (not a mention). */
 export function roleDisplayName(role: NamedRole | null | undefined): string {
   if (!role) return "Unknown role";

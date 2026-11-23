@@ -293,6 +293,7 @@ function createHarness(options: {
         content: messageOptions.content,
         embeds: messageOptions.embeds,
         components: messageOptions.components,
+        allowedMentions: messageOptions.allowedMentions,
         deleted: false,
         edits: [] as Array<Record<string, unknown>>,
         delete: async () => {
@@ -513,6 +514,68 @@ test("repro: offer expires after 5 minutes → plain expired message, buttons go
     assert.equal(edits[0].embeds, undefined);
   } finally {
     harness.restoreConsole();
+  }
+});
+
+test("repro: share offer, accept, and expiry never combine parse with an explicit users list (Discord 50035)", async () => {
+  // Regression: the offer used `allowedMentions: { parse: ["users"],
+  // users: [target] }`, which Discord rejects as mutually exclusive
+  // (50035 MESSAGE_ALLOWED_MENTIONS_PARSE_EXCLUSIVE) — every ,fg share
+  // failed deterministically from the moment the ping was added, and
+  // MessagePayload resolution never caught it because it does not
+  // validate that exclusivity rule. Every message in the share flow
+  // must list the target user explicitly and nothing else.
+  const { store } = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoles: { [FG_ROLE_ID]: fgAccess() },
+    }),
+  );
+  const harness = createHarness({
+    content: `,fg share <@${OTHER_ID}>`,
+    authorId: OWNER_ID,
+    settings: makeSettings(),
+  });
+  try {
+    assert.equal(await handlePrefixMessage(harness.message as never, store), true);
+    assertNoGenericError(harness);
+    // The offer itself (prefix reply → channel.send).
+    assert.deepEqual(harness.sent[0].allowedMentions, { users: [OTHER_ID] });
+    assert.equal(
+      "parse" in ((harness.sent[0].allowedMentions ?? {}) as Record<string, unknown>),
+      false,
+    );
+    // The accept end-state (button.update via endOffer).
+    const approve = makeButton("fg-share:approve", OTHER_ID);
+    await harness.collectors[0].fireCollect(approve);
+    assert.deepEqual(approve.updates[0].allowedMentions, { users: [OTHER_ID] });
+    assert.equal(
+      "parse" in ((approve.updates[0].allowedMentions ?? {}) as Record<string, unknown>),
+      false,
+    );
+  } finally {
+    harness.restoreConsole();
+  }
+
+  // The expiry edit (offer.edit on collector end) — a fresh share run.
+  const harness2 = createHarness({
+    content: `,fg share <@${OTHER_ID}>`,
+    authorId: OWNER_ID,
+    settings: makeSettings(),
+  });
+  try {
+    assert.equal(await handlePrefixMessage(harness2.message as never, store), true);
+    assertNoGenericError(harness2);
+    await harness2.collectors[0].fireEnd("time");
+    const edits = harness2.sent[0].edits as Array<Record<string, unknown>>;
+    assert.equal(edits.length, 1);
+    assert.deepEqual(edits[0].allowedMentions, { users: [OTHER_ID] });
+    assert.equal(
+      "parse" in ((edits[0].allowedMentions ?? {}) as Record<string, unknown>),
+      false,
+    );
+  } finally {
+    harness2.restoreConsole();
   }
 });
 

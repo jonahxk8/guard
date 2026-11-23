@@ -282,3 +282,33 @@ test("persists the blacklist and loads legacy configs without one", async () => 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("loads legacy configs without logChannelId as null", async () => {
+  // Old configs may not have the field at all (it predates the
+  // setting): a missing logChannelId must load as null, like
+  // fgBaseRoleId, not throw the whole config away.
+  const directory = await mkdtemp(path.join(os.tmpdir(), "wild-config-logchannel-test-"));
+  const configPath = path.join(directory, "wild-config.json");
+  const previousConfigPath = process.env.WILD_CONFIG_PATH;
+  process.env.WILD_CONFIG_PATH = configPath;
+
+  try {
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        guilds: { [GUILD_ID]: { protectedRoleIds: [], allowedUserIds: [] } },
+      }),
+    );
+    const store = new ConfigStore();
+    await store.load();
+    assert.equal(store.get(GUILD_ID).logChannelId, null);
+  } finally {
+    if (previousConfigPath === undefined) {
+      delete process.env.WILD_CONFIG_PATH;
+    } else {
+      process.env.WILD_CONFIG_PATH = previousConfigPath;
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});

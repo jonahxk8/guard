@@ -485,6 +485,35 @@ test("/blacklist add requires the role to be protected first", async () => {
   assert.match(replyTextOf(interaction.replies[0]), /Protect that role first/i);
 });
 
+test("/blacklist add works for an FG role without /protect", async () => {
+  // FG roles are always protected — /protect refuses them — so the
+  // blacklist must accept them directly, or nobody could ever be
+  // blocked from an FG role.
+  const config = createStore(
+    makeSettings({
+      fgRoles: {
+        [ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const interaction = createInteraction({
+    commandName: "blacklist",
+    subcommand: "add",
+    userId: USER_ID,
+    roleId: ROLE_ID,
+  });
+
+  await handleGuardCommand(interaction.interaction, config.store);
+
+  assert.deepEqual(config.getSettings().blacklist, { [USER_ID]: [ROLE_ID] });
+  assert.match(replyTextOf(interaction.replies[0]), /is now blacklisted from/);
+});
+
 test("/blacklist add, duplicate add, remove, and list round-trip", async () => {
   const config = createStore(makeSettings({ protectedRoleIds: [ROLE_ID] }));
 

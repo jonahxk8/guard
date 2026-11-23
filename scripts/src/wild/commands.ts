@@ -390,8 +390,10 @@ async function handleBlacklistAdd(
     return;
   }
   // The blacklist only makes sense for a role the guard already watches.
-  // "pic" was just one example role — this works for any protected role.
-  if (!settings.protectedRoleIds.includes(role.id)) {
+  // "pic" was just one example role — this works for any protected role,
+  // including FG roles, which the guard always watches (the guard checks
+  // the blacklist for every role it watches, FG roles included).
+  if (!settings.protectedRoleIds.includes(role.id) && !settings.fgRoles[role.id]) {
     await replyText(interaction, "Protect that role first with /protect @role");
     return;
   }

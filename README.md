@@ -11,16 +11,18 @@ The server owner and holders of the six staff admin roles (see
 "Who is an admin" below) bypass the guard — their grants are never
 reverted. The Discord Administrator permission alone grants nothing:
 a member with Administrator but no staff admin role is treated like
-any ordinary member. Repeat offenders (3+ unauthorised assignments)
+any ordinary member. Repeat offenders (3+ unauthorized assignments)
 are flagged in the log. Grants by whitelisted users are logged too
 ("Authorized role assignment", same alert channel, role stays, no DM)
 — so the log shows who handed out watched roles, not just who tried
-and failed. Owner, staff-admin, FG-owner and authorised-sharer grants
+and failed. Owner, staff-admin, FG-owner and authorized-sharer grants
 stay silent.
 
 Wild is simple on purpose: seven slash commands, each with a "," prefix
-version that works the same way. Every reply is an embed — confirmations
+version that works the same way. Most replies are embeds — confirmations
 and errors are short invisible (ephemeral) embeds, only you can see them.
+The one exception is the FG share offer, which is a plain message (see
+below).
 All embeds use no color at all (no accent bar, so they blend into the
 chat background and look invisible), no footer, no timestamp. Prefix
 replies are public (Discord has no invisible prefix replies): error
@@ -41,7 +43,7 @@ their buttons expire (5 minutes).
    View Channel, Send Messages, and Embed Links. Manage Messages lets
    it delete your "," command message after handling it.
 5. Move the bot's role above every role it needs to manage.
-6. Run `/whitelist @member` (or `@role`) to authorise assigners, then
+6. Run `/whitelist @member` (or `@role`) to authorize assigners, then
    `/protect @role` for each role to protect.
 7. Optionally set alerts with `/setup #mod-logs`.
 
@@ -68,7 +70,7 @@ When someone who is not allowed uses an admin command, the bot sends
 no reply at all — not even an ephemeral error. On slash it briefly
 shows \"thinking\" (it defers, then deletes the deferred reply) and
 then nothing; on prefix it simply never replies, and your command
-message is still deleted as usual. This covers only authorisation
+message is still deleted as usual. This covers only authorization
 failures on admin commands (`/protect`, `/whitelist`, `/status`,
 `/setup`, `/blacklist`, `/fg base`, `/fg create`, `/fg add`,
 `/fg cleanup`, `/fg auth`). Functional errors still reply as before
@@ -94,7 +96,7 @@ six staff roles (baked into the bot, by role ID):
 Those roles grant admin access wherever they exist. A server without
 them has owner-only admin access. The Discord Administrator permission
 alone grants nothing — a member with Administrator but no staff admin
-role (and not the owner) is an ordinary member: their unauthorised
+role (and not the owner) is an ordinary member: their unauthorized
 grants are reverted, they are silently ignored on admin commands (see
 \"Silent ignore\" above), and they see only the plain-member help. There is
 no command to change the six roles (a future option).
@@ -102,7 +104,7 @@ no command to change the six roles (a future option).
 ## Commands
 
 Every command works as a slash command and as a "," prefix command —
-same behaviour, same handler. Prefix examples use mentions or raw IDs.
+same behavior, same handler. Prefix examples use mentions or raw IDs.
 
 - `/protect @role` / `,guard @role` — protect a role, or stop
   protecting it (tap again). The prefix is `,guard`, not `,protect`,
@@ -133,7 +135,7 @@ same behaviour, same handler. Prefix examples use mentions or raw IDs.
   to them right away. The role takes
   the color of that member's profile picture; if the picture can't be
   read, it uses a default color instead. Needs an FG base role set
-  first. Only the server owner, administrators, or whitelisted members
+  first. Only the server owner, staff admins, or whitelisted members
   can use it.
 - `/fg add @role @member` / `,fg add @role @member` — add an
   existing role as an FG role for a named member, and give it to them
@@ -210,7 +212,7 @@ sees — the FG category with the no-FG-role note when they hold no FG
 role, no Guard, no Blacklist, and no fg base / fg cleanup / fg list;
 if they hold an FG role or are a listed sharer, they see exactly what
 a plain member holding that FG role sees, nothing more. An FG owner sees only FG — their own role's commands
-(rename, icon, remove, drop), sharing, members, and auth. Someone
+(color, rename, icon, remove, drop), sharing, members, and auth. Someone
 holding a shared FG role sees FG share, FG drop, and FG members;
 someone authed to share one sees FG share and FG members. A normal member with no FG
 role sees the FG category with the note "You don't have an FG role
@@ -277,9 +279,12 @@ message replies, so a `,` reply is always visible in the channel.
 That is a Discord limitation, not a bug. Wild mitigates it two ways:
 your `,` command message is deleted after handling (best-effort), and
 error replies auto-delete after 10 seconds (best-effort). Success
-replies stay. Every reply is an embed, in the same colorless style as
+replies auto-delete after 1 minute 30 seconds (best-effort).
+Interactive messages — share offers, the /fg remove confirmation,
+paged help and blacklist lists — stay until their buttons expire
+(5 minutes). Every other reply is an embed, in the same colorless style as
 the slash replies. If you need invisible errors, use the slash versions
-instead. Unauthorised use of an admin `,` command gets no reply at
+instead. Unauthorized use of an admin `,` command gets no reply at
 all (see \"Silent ignore\" above) — the command message is still
 deleted.
 
@@ -329,7 +334,7 @@ Wild guards roles granted through Bleed and Greed the same way as any
 other grant. When either bot adds a role, Discord's audit log shows
 that bot as the executor — but the bot passes a reason naming the
 human who asked for it, so Wild reads that reason, checks that person
-against the whitelist, and if they aren't authorised the role is
+against the whitelist, and if they aren't authorized the role is
 removed, they are DM'd, and it is logged — for FG and protected roles
 alike. The two reason formats: Bleed writes "added role by <user>";
 Greed writes "Role update by <name> (<user id>)". Wild uses the ID
@@ -343,10 +348,10 @@ logged, with no DM.
 
 FG roles work like Bleed's booster roles: each member makes their own
 unique, personal, cosmetic role that sits under one base role, and
-customises it themselves (name, color, icon). Set the base once with
+customizes it themselves (name, color, icon). Set the base once with
 `/fg base`.
 
-Wild adaptations (these are Wild rules, not Bleed behaviour):
+Wild adaptations (these are Wild rules, not Bleed behavior):
 
 - **Eligibility is being whitelisted, not boosting.** Bleed gates FG
   roles on boosting the server; Wild gates them on `/whitelist`
@@ -360,8 +365,8 @@ Wild adaptations (these are Wild rules, not Bleed behaviour):
 - **No award role.** Wild used to have one shared "award" role given
   on FG creation; it was removed because it was confusing.
 - **Sharing FG roles.** Only these people can share an FG role: the
-  server owner, whitelisted staff, the FG role's owner, and anyone the
-  owner or staff authorised to share it. `/fg share @member` offers
+  server owner, staff admins, whitelisted members, the FG role's owner, and anyone the
+  owner or staff authorized to share it. `/fg share @member` offers
   the role automatically: your own FG role first, otherwise the one
   FG role you can share. If you can share more than one and own
   none, the bot says so and names them — it can't pick one for you.
@@ -370,7 +375,7 @@ Wild adaptations (these are Wild rules, not Bleed behaviour):
   The old `/fg assign` command was removed: sharing is the only way
   to give someone an existing FG role.
 - **Share is Wild-only.** Bleed documents no share command. In Wild,
-  `/fg share @member` lets someone authorised to share an FG role
+  `/fg share @member` lets someone authorized to share an FG role
   offer it to a friend — the role is auto-detected from the sharer,
   there is no role argument. The offer is a plain message (no
   embed), Greed-style: line 1 is the friend and the role
@@ -389,11 +394,11 @@ Wild adaptations (these are Wild rules, not Bleed behaviour):
 FG roles are created with no permissions, are automatically protected,
 and the audit-log guard applies to them like any other protected role —
 even when an FG role is not listed under `/protect` (for example it was
-made before auto-protect existed, or unprotected with `/protect`): any
+made before auto-protect existed): any
 grant by someone who is not the server owner, a staff admin,
-whitelisted, the FG role's owner, or an authorised sharer is removed
+whitelisted, the FG role's owner, or an authorized sharer is removed
 instantly, including self-grants. Having Manage Roles alone never
-authorises a grant. `/protect` cannot unprotect an FG role — FG roles
+authorizes a grant. `/protect` cannot unprotect an FG role — FG roles
 are always protected. If the bot cannot remove a role (its own role sits
 below it, or it lost Manage Roles), the giver is DM'd that the removal
 failed instead of being told the role was removed.
@@ -454,7 +459,7 @@ Deploy as a long-running worker service from the repository root:
 - If the guard ever ignores a role you expect it to watch, check that
   the bot actually knows it: `/fg list` shows the FG roles it knows.
   An FG role made by another bot is not an FG role to Wild until you
-  protect it with `/protect @role`.
+  add it with `/fg add @role @member` — `/protect` refuses FG roles.
 - If a prefix command answers "The bot couldn't complete that command",
   check the Railway logs for `[wild] prefix command failed:` — the log
   line names the real error, with its Discord error code and HTTP

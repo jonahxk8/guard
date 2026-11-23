@@ -74,8 +74,10 @@ import { isDangerousRole } from "./role-guard.js";
  *
  * All slash replies are ephemeral embeds (short text in the description
  * of a colorless embed), except /fg list (colorless field embeds, no
- * footer/timestamp) and the public share offer, which is a plain
- * message, Greed-style — no embed at all. Errors are never public.
+ * footer/timestamp) and the public share offer, which is Bleed-style:
+ * the target is pinged in the message content, then a colorless embed
+ * follows in the same message with the role and the question. Errors
+ * are never public.
  */
 
 const SHARE_TIMEOUT_MS = 5 * 60 * 1_000;
@@ -1764,7 +1766,8 @@ async function finishShareOffer(
   }
 
   // Every end state edits the offer message to a plain one-line message
-  // (no embed, no buttons) — the same plain style as the offer itself.
+  // (no buttons) and clears the offer embed — without `embeds: []`
+  // the embed (role + question) would stay under the end-state text.
   // The target is the only person ever pinged. NOTE: never combine
   // `parse: ["users"]` with an explicit `users` list — Discord rejects
   // that combination as mutually exclusive (50035
@@ -1774,6 +1777,7 @@ async function finishShareOffer(
     button.update({
       content,
       components: [],
+      embeds: [],
       allowedMentions: { users: [targetId] },
     });
 
@@ -1974,36 +1978,47 @@ async function handleShareCommand(
     return;
   }
 
-  // The offer names the FG role's OWNER by username — not the sharer:
-  // an authorised sharer may be offering someone else's role, as in
-  // Greed's screenshot, where isabell shares ss0bs's role and the
-  // question names ss0bs. Fall back to the requester's username when
-  // the owner can't be fetched.
+  // The offer names the FG role's OWNER by server display name — not
+  // the sharer, and not their username: an authorised sharer may be
+  // offering someone else's role, as in Greed's screenshot, where
+  // isabell shares ss0bs's role and the question names ss0bs.
+  // GuildMember.displayName is the server nickname when set, else the
+  // global display name, else the username. Fallback chain when the
+  // owner can't be fetched: the requester's display name when the
+  // requester IS the owner, else the owner's plain user ID (their
+  // username is only known when the member object exists — and then
+  // displayName already falls back to it).
   const ownerId = settings.fgRoleOwners[role.id];
   const ownerMember = ownerId
     ? await guild.members.fetch(ownerId).catch(() => null)
     : null;
-  const ownerName = ownerMember?.user?.username ?? requester.user.username;
+  const ownerName =
+    ownerMember?.displayName ??
+    ownerMember?.user?.username ??
+    (ownerId && ownerId !== requester.id ? ownerId : requester.displayName);
 
-  // Greed-style offer, plain message, no embed: line 1 pings the
-  // target and mentions the role; line 2 asks whether they want to
-  // accept the owner's FG role. No emoji (standing rule — Greed's
-  // warning emoji is deliberately not copied). Only the target user
-  // is pinged — never the role, never @everyone.
-  const offerContent =
-    `<@${target.id}> <@&${role.id}>\n` +
-    `Would you like to accept ${ownerName}'s FG role?`;
+  // Bleed-style offer: the target is pinged in the message content,
+  // then the embed follows in the same message. The embed holds the
+  // role mention (line 1) and the question naming the owner's server
+  // display name (line 2), in Wild's invisible style (no colour, no
+  // footer, no timestamp). No emoji (standing rule). Only the target
+  // user is pinged — never the role, never @everyone.
+  const offerContent = `<@${target.id}>`;
+  const offerEmbed = wildMessageEmbed(
+    `<@&${role.id}>\nWould you like to accept ${ownerName}'s FG role?`,
+  );
 
   // Sending the offer is the one Discord API call in this handler with
-  // no specific reply of its own. It failed intermittently live
-  // (worked once, failed three times: 08:58, ~10:27, ~10:44) with a
-  // payload that resolves cleanly through discord.js's MessagePayload
-  // and full permissions — the failure is on that one POST, not in the
-  // code around it. The offer is therefore sent with one retry for
-  // retryable errors (see sendOfferWithRetry), and the failure is
-  // named here, in the reply and in the Railway logs, so the cause is
-  // visible. Every other step in this handler already has its own
-  // reply (no FG role, already has one, bot cannot manage the role).
+  // no specific reply of its own. It failed deterministically live
+  // until the allowedMentions were fixed: the offer combined
+  // `parse: ["users"]` with an explicit `users` list, which Discord
+  // rejects as mutually exclusive (50035
+  // MESSAGE_ALLOWED_MENTIONS_PARSE_EXCLUSIVE). The offer is therefore
+  // sent with one retry for retryable errors (see sendOfferWithRetry),
+  // and the failure is named here, in the reply and in the Railway
+  // logs, so the cause is visible. Every other step in this handler
+  // already has its own reply (no FG role, already has one, bot
+  // cannot manage the role).
   // Did the offer actually go out before the failure? If the reply
   // succeeded but fetchReply failed, the offer is in the channel with
   // dead buttons — say that, not that it couldn't be sent.
@@ -2014,6 +2029,7 @@ async function handleShareCommand(
       interaction,
       {
         content: offerContent,
+        embeds: [offerEmbed],
         components: [buildShareButtons()],
         // The target is the only person ever pinged: list them
         // explicitly and nothing else. Do NOT add `parse: ["users"]` —
@@ -2110,6 +2126,8 @@ async function handleShareCommand(
       .edit({
         content: `<@${requester.id}>'s offer of <@&${role.id}> to <@${target.id}> expired without a response.`,
         components: [],
+        // Clear the offer embed with the end state, same as endOffer.
+        embeds: [],
         // Same rule as the offer itself: explicit users list only,
         // never parse + users (Discord 50035).
         allowedMentions: { users: [target.id] },

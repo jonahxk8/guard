@@ -21,7 +21,8 @@ stay silent.
 Wild is simple on purpose: seven slash commands, each with a "," prefix
 version that works the same way. Most replies are embeds — confirmations
 and errors are short invisible (ephemeral) embeds, only you can see them.
-The one exception is the FG share offer, which is a plain message (see
+The FG share offer is an embed too: its message content pings the
+friend it is for, and the embed holds the role and the question (see
 below).
 All embeds use no color at all (no accent bar, so they blend into the
 chat background and look invisible), no footer, no timestamp. Prefix
@@ -267,9 +268,12 @@ guard DM is an embed in the same style (Role / Member / Server /
 Reason fields) that states what was removed and why — it never asks
 you to get whitelisted. The FG remove confirmation is the exception:
 a single one-line embed with no fields ("Delete @role for good? Tap
-Yes to delete it."). The FG share offer is not an embed at all — it
-is a plain message, two lines ("@member @role" then "Would you like
-to accept @owner's FG role?"), with green Approve and red Decline
+Yes to delete it."). The FG share offer is an embed in the same
+invisible style (no title, no color, no footer, no timestamp): the
+message content pings the friend ("@member"), and the embed's
+description has two lines — the role ("@role") then "Would you like
+to accept @owner's FG role?" (the owner's server display name — their
+nickname if they have one), with green Approve and red Decline
 buttons.
 
 ## Prefix commands — read this first
@@ -377,11 +381,12 @@ Wild adaptations (these are Wild rules, not Bleed behavior):
 - **Share is Wild-only.** Bleed documents no share command. In Wild,
   `/fg share @member` lets someone authorized to share an FG role
   offer it to a friend — the role is auto-detected from the sharer,
-  there is no role argument. The offer is a plain message (no
-  embed), Greed-style: line 1 is the friend and the role
-  ("@member @role"), line 2 is "Would you like to accept @owner's
-  FG role?" (the owner's username), with green **Approve** and red
-  **Decline** buttons below. Approve adds the role; Decline adds
+  there is no role argument. The offer is Bleed-style: the message
+  content pings the friend ("@member"), and an embed in the invisible
+  style follows in the same message — its description is the role
+  ("@role") then "Would you like to accept @owner's FG role?" (the
+  owner's server display name — their nickname if they have one),
+  with green **Approve** and red **Decline** buttons below. Approve adds the role; Decline adds
   nothing. The offer lasts 5 minutes, then it expires. On slash the
   bot defers first, so the offer can never be cut off by the
   3-second interaction window. All share errors are invisible
@@ -463,13 +468,15 @@ Deploy as a long-running worker service from the repository root:
 - If a prefix command answers "The bot couldn't complete that command",
   check the Railway logs for `[wild] prefix command failed:` — the log
   line names the real error, with its Discord error code and HTTP
-  status. `,fg share` was rebuilt Greed-style: the offer is a plain
-  message ("@member @role" then "Would you like to accept @owner's
-  FG role?") with green Approve and red Decline buttons, and on slash
-  the bot defers first so slow fetches can't expire the interaction.
-  The failures seen before the rebuild were Discord API failures on
-  sending the offer itself (worked once, failed three times, with full
-  permissions). The offer send is now retried once for retryable
+  status. `,fg share` is now Bleed-style: the message content pings
+  the friend, and an embed follows in the same message — the role,
+  then "Would you like to accept @owner's FG role?" naming the
+  owner's server display name — with green Approve and red Decline
+  buttons, and on slash the bot defers first so slow fetches can't
+  expire the interaction. The failures seen before the rebuild were
+  a Discord 50035 rejection: the offer's allowedMentions combined
+  `parse: ["users"]` with an explicit `users` list, which Discord
+  rejects. The offer send is now retried once for retryable
   errors (a 4xx is never retried), and the share path names the failed
   step in its own reply instead ("Couldn't send the FG role offer...")
   and logs `[wild] fg share: ...` with the error code. Nothing on the

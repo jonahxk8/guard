@@ -171,6 +171,12 @@ function replyTextOf(reply: Reply): string {
   return embed?.description ?? reply.content ?? "";
 }
 
+/** The share offer embed's description (role mention + question). */
+function offerEmbedDescription(reply: Reply): string | undefined {
+  const embed = reply.embeds?.[0]?.toJSON() as { description?: string } | undefined;
+  return embed?.description;
+}
+
 function createGuild(options: {
   roles?: MockRole[];
   memberRoleIds?: Record<string, string[]>;
@@ -186,6 +192,12 @@ function createGuild(options: {
   failSendMemberIds?: string[];
   /** Make guild.members.fetch throw this error for a member, like a Discord API failure. */
   fetchMemberErrors?: Record<string, unknown>;
+  /**
+   * Override a member's server display name (nickname) in tests, so a
+   * test can tell displayName apart from username — by default they
+   * are the same ("Alex" / "Sam" / "Owner").
+   */
+  memberDisplayNames?: Record<string, string>;
 }) {
   const rolesCache = new Map<string, MockRole>(
     (options.roles ?? []).map((role) => [role.id, role]),
@@ -222,11 +234,12 @@ function createGuild(options: {
             isAdmin && permission === PermissionFlagsBits.Administrator,
         },
         displayName:
-          memberId === MEMBER_ID
+          options.memberDisplayNames?.[memberId] ??
+          (memberId === MEMBER_ID
             ? "Alex"
             : memberId === OTHER_ID
               ? "Sam"
-              : "Owner",
+              : "Owner"),
         displayAvatarURL: () =>
           `https://cdn.discordapp.com/avatars/${memberId}/avatar.png`,
         user: {
@@ -1542,13 +1555,14 @@ test("/fg share defers first, then sends the Greed-style offer by editing the de
   assert.equal(defers[0], undefined);
   assert.equal(replies.length, 0);
   assert.equal(followUps.length, 0);
-  // The offer itself: plain message, target + role on line 1, the
-  // question naming the owner on line 2, Approve/Decline buttons.
+  // The offer itself: the content pings the target, and the embed
+  // holds the role mention (line 1) and the question naming the owner
+  // on line 2, with Approve/Decline buttons.
   assert.equal(editReplies.length, 1);
-  assert.equal(editReplies[0].embeds, undefined);
+  assert.equal(editReplies[0].content, `<@${OTHER_ID}>`);
   assert.equal(
-    editReplies[0].content,
-    `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
+    offerEmbedDescription(editReplies[0]),
+    `<@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
   );
   // The offer actually pings the target: their mention is in the
   // message content, and only that one user is allowed to ping — never
@@ -2100,14 +2114,14 @@ test("/fg share succeeds for an assigned member who is not whitelisted", async (
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  // An offer was sent (public plain message), not an error reply.
+  // An offer was sent (content ping + embed), not an error reply.
   assert.equal(defers.length, 1);
   assert.equal(replies.length, 0);
   assert.equal(editReplies.length, 1);
-  assert.equal(editReplies[0].embeds, undefined);
+  assert.equal(editReplies[0].content, `<@${targetId}>`);
   assert.equal(
-    editReplies[0].content,
-    `<@${targetId}> <@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
+    offerEmbedDescription(editReplies[0]),
+    `<@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
   );
 });
 
@@ -2141,9 +2155,10 @@ test("/fg share succeeds for an authed member who does not hold the role", async
   assert.equal(defers.length, 1);
   assert.equal(replies.length, 0);
   assert.equal(editReplies.length, 1);
+  assert.equal(editReplies[0].content, `<@${targetId}>`);
   assert.equal(
-    editReplies[0].content,
-    `<@${targetId}> <@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
+    offerEmbedDescription(editReplies[0]),
+    `<@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
   );
 });
 
@@ -2614,9 +2629,10 @@ test("/fg share by a non-whitelisted admin who owns an FG role works", async () 
   assert.equal(defers.length, 1);
   assert.equal(replies.length, 0);
   assert.equal(editReplies.length, 1);
+  assert.equal(editReplies[0].content, `<@${targetId}>`);
   assert.equal(
-    editReplies[0].content,
-    `<@${targetId}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
+    offerEmbedDescription(editReplies[0]),
+    `<@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
   );
 
   const approve = makeButton("fg-share:approve", targetId);
@@ -2654,7 +2670,7 @@ function twoFgRolesSettings(
   });
 }
 
-test("/fg share offer is a plain Greed-style message with Approve/Decline buttons", async () => {
+test("/fg share offer is a Bleed-style embed with Approve/Decline buttons", async () => {
   const config = createStore(
     makeSettings({
       fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
@@ -2683,12 +2699,13 @@ test("/fg share offer is a plain Greed-style message with Approve/Decline button
   assert.equal(defers.length, 1);
   assert.equal(replies.length, 0);
   assert.equal(editReplies.length, 1);
-  // Plain message, no embed: target + role on line 1, the question
-  // naming the owner on line 2.
-  assert.equal(editReplies[0].embeds, undefined);
+  // Content pings the target, nothing else; the embed holds the role
+  // mention (line 1) and the question naming the owner (line 2).
+  assert.equal(editReplies[0].content, `<@${targetId}>`);
+  const offerDescription = offerEmbedDescription(editReplies[0]);
   assert.equal(
-    editReplies[0].content,
-    `<@${targetId}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
+    offerDescription,
+    `<@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
   );
   // The offer actually pings the target: their mention is in the
   // message content, and only that one user is allowed to ping — never
@@ -2708,10 +2725,148 @@ test("/fg share offer is a plain Greed-style message with Approve/Decline button
       { customId: "fg-share:decline", label: "Decline", style: 4 },
     ],
   );
-  // Plain text only: no emoji anywhere in the offer.
+  // Plain text only: no emoji anywhere in the offer (content or embed).
   assert.doesNotMatch(
-    editReplies[0].content ?? "",
+    offerDescription ?? "",
     /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{25A0}-\u{25FF}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{FE0F}\u{200D}]/u,
+  );
+});
+
+test("/fg share offer names the owner's server display name, not their username", async () => {
+  // The owner (MEMBER_ID) has the server nickname "CoolNick" while
+  // their username is "Alex": the question must use the nickname —
+  // the username must not appear anywhere in the offer.
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const targetId = "444444444444444444";
+  const { guild } = createGuild({
+    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
+    memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
+    memberDisplayNames: { [MEMBER_ID]: "CoolNick" },
+  });
+  const { interaction, editReplies } = createInteraction({
+    action: "share",
+    memberId: targetId,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(editReplies.length, 1);
+  assert.equal(editReplies[0].content, `<@${targetId}>`);
+  assert.equal(
+    offerEmbedDescription(editReplies[0]),
+    `<@&${FG_ROLE_ID}>\nWould you like to accept CoolNick's FG role?`,
+  );
+  assert.doesNotMatch(offerEmbedDescription(editReplies[0]) ?? "", /Alex/);
+});
+
+test("/fg share falls back to the requester's display name when the owner can't be fetched", async () => {
+  // The owner IS the requester (MEMBER_ID, nicknamed "CoolNick"), but
+  // the owner fetch fails — the question must use the requester's
+  // display name, not the owner's username ("Alex") and not the ID.
+  // Only the string-arg owner fetch fails: fetchMemberFresh passes
+  // { user } and must still resolve the requester.
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const targetId = "444444444444444444";
+  const { guild } = createGuild({
+    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
+    memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID], [targetId]: [] },
+    memberDisplayNames: { [MEMBER_ID]: "CoolNick" },
+  });
+  const { interaction, editReplies } = createInteraction({
+    action: "share",
+    memberId: targetId,
+  });
+  const fetchImpl = guild.members.fetch as (
+    arg?: string | { user?: string },
+  ) => Promise<unknown>;
+  (guild.members as unknown as { fetch: unknown }).fetch = (async (
+    arg?: string | { user?: string },
+  ) => {
+    if (typeof arg === "string" && arg === MEMBER_ID) {
+      throw new Error("Unknown Member");
+    }
+    return fetchImpl(arg);
+  }) as typeof fetchImpl;
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(editReplies.length, 1);
+  assert.equal(
+    offerEmbedDescription(editReplies[0]),
+    `<@&${FG_ROLE_ID}>\nWould you like to accept CoolNick's FG role?`,
+  );
+});
+
+test("/fg share falls back to the owner's plain user ID when the owner can't be fetched and isn't the requester", async () => {
+  // OTHER_ID is authed to share MEMBER_ID's FG role, but the owner
+  // fetch fails — with no member object there is no display name or
+  // username to use, so the question names the plain user ID.
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
+      fgRoleSharers: { [FG_ROLE_ID]: [OTHER_ID] },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const targetId = "444444444444444444";
+  const { guild } = createGuild({
+    roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
+    memberRoleIds: { [OTHER_ID]: [], [targetId]: [] },
+  });
+  const { interaction, editReplies } = createInteraction({
+    action: "share",
+    userId: OTHER_ID,
+    memberId: targetId,
+  });
+  const fetchImpl = guild.members.fetch as (
+    arg?: string | { user?: string },
+  ) => Promise<unknown>;
+  (guild.members as unknown as { fetch: unknown }).fetch = (async (
+    arg?: string | { user?: string },
+  ) => {
+    if (typeof arg === "string" && arg === MEMBER_ID) {
+      throw new Error("Unknown Member");
+    }
+    return fetchImpl(arg);
+  }) as typeof fetchImpl;
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(editReplies.length, 1);
+  assert.equal(
+    offerEmbedDescription(editReplies[0]),
+    `<@&${FG_ROLE_ID}>\nWould you like to accept ${MEMBER_ID}'s FG role?`,
   );
 });
 
@@ -2746,6 +2901,8 @@ test("/fg share accept pings the target on the accepted message", async () => {
 
   assert.match(buttonTextOf(approve), /accepted/i);
   assert.equal(approve.updates[0].content, `<@${targetId}> accepted <@&${FG_ROLE_ID}>.`);
+  // The end state clears the offer embed.
+  assert.deepEqual(approve.updates[0].embeds, []);
   // Same rule as the offer itself: explicit users list ONLY, never
   // `parse` + `users` (Discord 50035).
   assert.deepEqual(approve.updates[0].allowedMentions, {
@@ -2788,6 +2945,9 @@ test("/fg share expiry edit lists only the target user (Discord 50035)", async (
   await collector.fireEnd("time");
   assert.equal(offerEdits.length, 1);
   assert.match(offerEdits[0].content ?? "", /expired without a response/);
+  // The end state clears the offer embed — otherwise the role +
+  // question would stay under the expired text.
+  assert.deepEqual(offerEdits[0].embeds, []);
   assert.deepEqual(offerEdits[0].allowedMentions, { users: [targetId] });
   assert.equal("parse" in (offerEdits[0].allowedMentions ?? {}), false);
 });
@@ -3187,14 +3347,15 @@ test("/fg share with no role argument offers the caller's own FG role", async ()
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  // An offer was sent (public plain message), for the caller's own role even
+  // An offer was sent (content ping + embed), for the caller's own role even
   // though another FG role exists.
   assert.equal(defers.length, 1);
   assert.equal(replies.length, 0);
   assert.equal(editReplies.length, 1);
-  assert.equal(editReplies[0].embeds, undefined);
-  assert.match(editReplies[0].content ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
-  assert.doesNotMatch(editReplies[0].content ?? "", new RegExp(`<@&${SECOND_FG_ROLE_ID}>`));
+  assert.equal(editReplies[0].content, `<@${targetId}>`);
+  const offerDescription = offerEmbedDescription(editReplies[0]);
+  assert.match(offerDescription ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
+  assert.doesNotMatch(offerDescription ?? "", new RegExp(`<@&${SECOND_FG_ROLE_ID}>`));
 });
 
 test("/fg share offers the one FG role an authed member can share", async () => {
@@ -3237,7 +3398,11 @@ test("/fg share offers the one FG role an authed member can share", async () => 
   assert.equal(defers.length, 1);
   assert.equal(replies.length, 0);
   assert.equal(editReplies.length, 1);
-  assert.match(editReplies[0].content ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
+  assert.equal(editReplies[0].content, `<@${targetId}>`);
+  assert.match(
+    offerEmbedDescription(editReplies[0]) ?? "",
+    new RegExp(`<@&${FG_ROLE_ID}>`),
+  );
 });
 
 test("/fg share errors when the caller can share more than one FG role", async () => {

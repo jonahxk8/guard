@@ -87,6 +87,8 @@ function makeRole(id: string, position: number): RoleDouble {
 
 interface MemberDouble {
   id: string;
+  /** Server display name (nickname when set, else the username). */
+  displayName: string;
   user: { id: string; username: string };
   permissions: PermissionsBitField;
   roles: {
@@ -103,6 +105,7 @@ function makeMember(
   heldRoles: Collection<string, RoleDouble>,
   permissions: PermissionsBitField,
   dms: Array<{ to: string; options: Record<string, unknown> }>,
+  displayName?: string,
 ): MemberDouble {
   const sorted = [...heldRoles.values()].sort((a, b) => b.position - a.position);
   const highest =
@@ -110,6 +113,9 @@ function makeMember(
     makeRole(GUILD_ID, 0); // @everyone fallback
   return {
     id,
+    // Server display name (nickname when set, else the username) —
+    // the share offer names the owner by this, never by username.
+    displayName: displayName ?? (id === OWNER_ID ? "Owner" : "Member"),
     user: { id, username: id === OWNER_ID ? "Owner" : "Member" },
     permissions,
     roles: {
@@ -187,6 +193,16 @@ function offerButtons(sentMessage: Record<string, unknown>): Array<{
   }));
 }
 
+/** The share offer embed's description (role mention + question). */
+function offerEmbedDescription(
+  sentMessage: Record<string, unknown>,
+): string | undefined {
+  const embeds = sentMessage.embeds as
+    | Array<{ toJSON: () => { description?: string } }>
+    | undefined;
+  return embeds?.[0]?.toJSON().description;
+}
+
 function createHarness(options: {
   content: string;
   authorId: string;
@@ -202,6 +218,11 @@ function createHarness(options: {
   failOfferSendAttempts?: number;
   /** The error the failing offer sends throw (default: a 50013-flavoured Error). */
   offerSendError?: () => unknown;
+  /**
+   * Override a member's server display name (nickname), so a test can
+   * tell displayName apart from username — by default they are the same.
+   */
+  memberDisplayNames?: Record<string, string>;
   settings: GuildSettings;
 }): Harness {
   const fgRoleIds = options.fgRoleIds ?? [FG_ROLE_ID];
@@ -228,15 +249,28 @@ function createHarness(options: {
     ownerRoles,
     new PermissionsBitField(PermissionsBitField.All).freeze(),
     dms,
+    options.memberDisplayNames?.[OWNER_ID],
   );
   const userRoles = new Collection<string, RoleDouble>();
-  const user = makeMember(USER_ID, userRoles, new PermissionsBitField(), dms);
+  const user = makeMember(
+    USER_ID,
+    userRoles,
+    new PermissionsBitField(),
+    dms,
+    options.memberDisplayNames?.[USER_ID],
+  );
   const targetRoles = new Collection<string, RoleDouble>();
   for (const roleId of options.targetRoleIds ?? []) {
     const role = rolesCache.get(roleId);
     if (role) targetRoles.set(roleId, role);
   }
-  const target = makeMember(OTHER_ID, targetRoles, new PermissionsBitField(), dms);
+  const target = makeMember(
+    OTHER_ID,
+    targetRoles,
+    new PermissionsBitField(),
+    dms,
+    options.memberDisplayNames?.[OTHER_ID],
+  );
 
   const botPermissions = new PermissionsBitField(
     options.botCanManageRoles === false ? [] : [PermissionFlagsBits.ManageRoles],
@@ -406,19 +440,52 @@ test("repro: owner shares their own FG role via ,fg share (real Collection + rea
     assert.equal(await handlePrefixMessage(harness.message as never, store), true);
     assertNoGenericError(harness);
     assert.equal(harness.sent.length, 1);
-    // Greed-style offer, plain message, no embed: line 1 pings the
-    // target and mentions the role; line 2 asks whether they want to
-    // accept the owner's FG role. No emoji anywhere.
-    assert.equal(harness.sent[0].embeds, undefined);
+    // Bleed-style offer: the content pings the target, then the
+    // embed follows in the same message — role mention (line 1) and
+    // the question naming the owner's server display name (line 2).
+    // No emoji anywhere.
+    assert.equal(harness.sent[0].content, `<@${OTHER_ID}>`);
     assert.equal(
-      harness.sent[0].content,
-      `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
+      offerEmbedDescription(harness.sent[0]),
+      `<@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
     );
     assert.deepEqual(offerButtons(harness.sent[0]), [
       { customId: "fg-share:approve", label: "Approve", style: ButtonStyle.Success },
       { customId: "fg-share:decline", label: "Decline", style: ButtonStyle.Danger },
     ]);
     assert.equal(harness.collectors.length, 1);
+  } finally {
+    harness.restoreConsole();
+  }
+});
+
+test("repro: offer names the owner's server display name (nickname), not their username", async () => {
+  // The owner (OWNER_ID) has the server nickname "BossNick" while
+  // their username is "Owner": the question must use the nickname —
+  // the username must not appear anywhere in the offer.
+  const { store } = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
+      fgRoles: { [FG_ROLE_ID]: fgAccess() },
+    }),
+  );
+  const harness = createHarness({
+    content: `,fg share <@${OTHER_ID}>`,
+    authorId: OWNER_ID,
+    memberDisplayNames: { [OWNER_ID]: "BossNick" },
+    settings: makeSettings(),
+  });
+  try {
+    assert.equal(await handlePrefixMessage(harness.message as never, store), true);
+    assertNoGenericError(harness);
+    assert.equal(harness.sent.length, 1);
+    assert.equal(harness.sent[0].content, `<@${OTHER_ID}>`);
+    const description = offerEmbedDescription(harness.sent[0]);
+    assert.equal(
+      description,
+      `<@&${FG_ROLE_ID}>\nWould you like to accept BossNick's FG role?`,
+    );
+    assert.doesNotMatch(description ?? "", /Owner/);
   } finally {
     harness.restoreConsole();
   }
@@ -448,7 +515,8 @@ test("repro: target taps Approve → role added, offer edits to accepted, owner 
       `<@${OTHER_ID}> accepted <@&${FG_ROLE_ID}>.`,
     );
     assert.deepEqual(approve.updates[0].components, []);
-    assert.equal(approve.updates[0].embeds, undefined);
+    // The end state clears the offer embed.
+    assert.deepEqual(approve.updates[0].embeds, []);
     assert.equal(harness.holdsRole(OTHER_ID, FG_ROLE_ID), true);
     // The owner shared their own role, so no owner DM about their own action.
     assert.equal(harness.dms.length, 0);
@@ -511,7 +579,8 @@ test("repro: offer expires after 5 minutes → plain expired message, buttons go
       `<@${OWNER_ID}>'s offer of <@&${FG_ROLE_ID}> to <@${OTHER_ID}> expired without a response.`,
     );
     assert.deepEqual(edits[0].components, []);
-    assert.equal(edits[0].embeds, undefined);
+    // The end state clears the offer embed.
+    assert.deepEqual(edits[0].embeds, []);
   } finally {
     harness.restoreConsole();
   }
@@ -600,9 +669,10 @@ test("repro: authed non-owner shares someone else's role → question names the 
     assert.equal(await handlePrefixMessage(harness.message as never, store), true);
     assertNoGenericError(harness);
     assert.equal(harness.sent.length, 1);
+    assert.equal(harness.sent[0].content, `<@${OTHER_ID}>`);
     assert.equal(
-      harness.sent[0].content,
-      `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
+      offerEmbedDescription(harness.sent[0]),
+      `<@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
     );
     const approve = makeButton("fg-share:approve", OTHER_ID);
     await harness.collectors[0].fireCollect(approve);
@@ -829,10 +899,10 @@ test("regression: offer send fails once with a retryable error → retried and t
     assertNoGenericError(harness);
     assert.equal(harness.offerAttempts, 2);
     assert.equal(harness.sent.length, 1);
-    assert.equal(harness.sent[0].embeds, undefined);
+    assert.equal(harness.sent[0].content, `<@${OTHER_ID}>`);
     assert.equal(
-      harness.sent[0].content,
-      `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
+      offerEmbedDescription(harness.sent[0]),
+      `<@&${FG_ROLE_ID}>\nWould you like to accept Owner's FG role?`,
     );
     assert.deepEqual(offerButtons(harness.sent[0]), [
       { customId: "fg-share:approve", label: "Approve", style: ButtonStyle.Success },

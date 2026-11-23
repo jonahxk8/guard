@@ -639,17 +639,18 @@ test(",fg rename and ,fg share route to the shared FG handler", async () => {
   assert.match(sentTextOf(rename.sent[0]), /now called/i);
 
   // ,fg share takes only @member: the bot offers the caller's own FG role.
-  // Greed-style offer, plain message: target + role on line 1, the
-  // question naming the owner on line 2, Approve/Decline buttons.
+  // Bleed-style offer: the content pings the target, then the embed
+  // follows — role mention (line 1) and the question naming the
+  // owner's server display name (line 2), Approve/Decline buttons.
   const share = createMessage({
     content: ",fg share <@333333333333333333>",
     roles: [{ id: FG_ROLE_ID }],
   });
   await handlePrefixMessage(share.message, config.store);
-  assert.equal(share.sent[0].embeds, undefined);
+  assert.equal(share.sent[0].content, `<@${OTHER_ID}>`);
   assert.equal(
-    share.sent[0].content,
-    `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
+    sentTextOf(share.sent[0]),
+    `<@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
   );
   assert.deepEqual(offerButtons(share.sent[0]), [
     { customId: "fg-share:approve", label: "Approve", style: 3 },
@@ -680,13 +681,14 @@ test(",fg share end-to-end: offer, Approve accept, role added, owner DM only for
   });
   assert.equal(await handlePrefixMessage(share.message, config.store), true);
 
-  // The offer went out: plain message, target + role on line 1, the
-  // question naming the owner on line 2, Approve/Decline buttons.
+  // The offer went out: content pings the target, the embed holds the
+  // role mention and the question naming the owner, Approve/Decline
+  // buttons.
   assert.equal(share.sent.length, 1);
-  assert.equal(share.sent[0].embeds, undefined);
+  assert.equal(share.sent[0].content, `<@${OTHER_ID}>`);
   assert.equal(
-    share.sent[0].content,
-    `<@${OTHER_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
+    sentTextOf(share.sent[0]),
+    `<@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
   );
   assert.deepEqual(offerButtons(share.sent[0]), [
     { customId: "fg-share:approve", label: "Approve", style: 3 },
@@ -703,7 +705,8 @@ test(",fg share end-to-end: offer, Approve accept, role added, owner DM only for
     `<@${OTHER_ID}> accepted <@&${FG_ROLE_ID}>.`,
   );
   assert.deepEqual(approve.updates[0].components, []);
-  assert.equal(approve.updates[0].embeds, undefined);
+  // The end state clears the offer embed.
+  assert.deepEqual(approve.updates[0].embeds, []);
   // No generic error reply was sent at any point.
   assert.equal(
     share.sent.filter((message) => /couldn't complete that command/i.test(sentTextOf(message)))
@@ -743,9 +746,10 @@ test(",fg share by an authed non-owner DMs the FG owner on accept", async () => 
   // The offer question names the FG role's owner (Alex), not the
   // sharer (Sam) — as in Greed's screenshot, where isabell shares
   // ss0bs's role and the question names ss0bs.
+  assert.equal(share.sent[0].content, `<@${TARGET_ID}>`);
   assert.equal(
-    share.sent[0].content,
-    `<@${TARGET_ID}> <@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
+    sentTextOf(share.sent[0]),
+    `<@&${FG_ROLE_ID}>\nWould you like to accept Alex's FG role?`,
   );
 
   const approve = makeButton("fg-share:approve", TARGET_ID);

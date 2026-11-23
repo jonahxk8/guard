@@ -46,10 +46,15 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  * removed — it confused people — and so was /fg assign, which did the
  * same thing as /fg create): the server owner, Administrators, or
  * whitelisted staff create FG roles for people with /fg create. An FG
- * role is shared with /fg share — the bot works out which FG role from
+ * role is given to the person it was made for right away; if giving it
+ * fails, the just-created role is deleted again so no orphan FG role
+ * is left recorded that nobody actually has. It is shared with /fg share — the bot works out which FG role from
  * the caller (their own role, or the one role they are authorised to
- * share) — and the target taps Yes to accept. The FG role's owner can
- * authorise other people to share their role with /fg auth add — auth
+ * share) — and the target taps Yes to accept. When someone other than
+ * the owner shares the role and the target accepts, the owner gets a
+ * one-line DM about it. A holder can give a shared role back with
+ * /fg drop, and the owner (or an authorised sharer) can see who holds
+ * the role with /fg holders. The FG role's owner can authorise other people to share their role with /fg auth add — auth
  * is permission to share only, they do not get the role itself. Only
  * the server owner, Administrators, whitelisted staff, the FG role
  * owner, and people authed for that role may share it.
@@ -274,6 +279,17 @@ export const fgCommand = new SlashCommandBuilder()
   )
   .addSubcommand((command) =>
     command
+      .setName("add")
+      .setDescription("Add an existing role as an FG role")
+      .addRoleOption((option) =>
+        option.setName("role").setDescription("Existing role to make an FG role").setRequired(true),
+      )
+      .addUserOption((option) =>
+        option.setName("member").setDescription("Member the FG role is for (default: you)"),
+      ),
+  )
+  .addSubcommand((command) =>
+    command
       .setName("rename")
       .setDescription("Rename your own FG role")
       .addStringOption((option) =>
@@ -298,6 +314,16 @@ export const fgCommand = new SlashCommandBuilder()
   )
   .addSubcommand((command) =>
     command.setName("remove").setDescription("Delete your own FG role"),
+  )
+  .addSubcommand((command) =>
+    command
+      .setName("drop")
+      .setDescription("Give back an FG role someone shared with you"),
+  )
+  .addSubcommand((command) =>
+    command
+      .setName("holders")
+      .setDescription("List who holds your FG role"),
   )
   .addSubcommand((command) =>
     command.setName("list").setDescription("List all FG roles"),
@@ -325,9 +351,6 @@ export const fgCommand = new SlashCommandBuilder()
           .setDescription("Let a member share an FG role (they don't get the role)")
           .addUserOption((option) =>
             option.setName("member").setDescription("Member to authorise").setRequired(true),
-          )
-          .addRoleOption((option) =>
-            option.setName("role").setDescription("FG role to share").setRequired(true),
           ),
       )
       .addSubcommand((command) =>
@@ -336,9 +359,6 @@ export const fgCommand = new SlashCommandBuilder()
           .setDescription("Stop a member sharing an FG role")
           .addUserOption((option) =>
             option.setName("member").setDescription("Member to remove").setRequired(true),
-          )
-          .addRoleOption((option) =>
-            option.setName("role").setDescription("FG role").setRequired(true),
           ),
       )
       .addSubcommand((command) =>
@@ -346,7 +366,7 @@ export const fgCommand = new SlashCommandBuilder()
           .setName("list")
           .setDescription("List who may share an FG role")
           .addRoleOption((option) =>
-            option.setName("role").setDescription("FG role").setRequired(true),
+            option.setName("role").setDescription("FG role (default: your FG role)"),
           ),
       ),
   );
@@ -561,6 +581,26 @@ async function createFgRole(
     await replyText(
       interaction,
       "The bot couldn't create that FG role. Check its permissions and role order and try again.",
+    );
+    return;
+  }
+
+  // Give the new role to the person it was made for, right away.
+  // If that fails (e.g. the bot's role sits below the new role, or it
+  // lost Manage Roles), delete the just-created role instead of
+  // leaving an orphan FG role recorded that nobody actually has.
+  try {
+    await target.roles.add(
+      role,
+      `FG role created by ${interaction.user.id} for ${targetId}`,
+    );
+  } catch {
+    await role
+      .delete("FG role could not be given to its owner")
+      .catch(() => undefined);
+    await replyText(
+      interaction,
+      `The bot couldn't give the FG role to ${memberDisplayName(target)} — check the bot's role is above the FG base role and that it has Manage Roles.`,
     );
     return;
   }
@@ -801,6 +841,122 @@ async function handleCreateCommand(
   );
 }
 
+/**
+ * /fg add — register an EXISTING role as an FG role, for yourself or a
+ * named member. No base role is needed: the role keeps its position,
+ * the base only places newly created roles. The role is given to the
+ * owner first, and only registered once the add has succeeded — if the
+ * add fails, nothing is registered.
+ */
+async function handleAddCommand(
+  interaction: ChatInputCommandInteraction,
+  store: ConfigStore,
+): Promise<void> {
+  if (!(await requireFgCreator(interaction, store))) return;
+  const guild = interaction.guild!;
+  const settings = store.get(guild.id);
+  const selectedRole = interaction.options.getRole("role", true);
+  const role = guild.roles.cache.get(selectedRole.id);
+  if (!role) {
+    await replyText(interaction, "That role is no longer available in this server.");
+    return;
+  }
+  if (settings.fgRoles[role.id]) {
+    await replyText(interaction, `${roleDisplayName(role)} is already an FG role.`);
+    return;
+  }
+  if (role.id === guild.id || role.managed) {
+    await replyText(interaction, "That role can't be an FG role.");
+    return;
+  }
+  if (role.id === settings.fgBaseRoleId) {
+    await replyText(interaction, "The FG base role can't be an FG role itself.");
+    return;
+  }
+  const targetUser = interaction.options.getUser("member");
+  const targetId = targetUser?.id ?? interaction.user.id;
+  const forSelf = targetId === interaction.user.id;
+  const target = await guild.members.fetch(targetId).catch(() => null);
+  if (!target) {
+    await replyText(interaction, "That person must be a member of this server first.");
+    return;
+  }
+  if (memberHoldsAnyFgRole(target, settings)) {
+    await replyText(
+      interaction,
+      forSelf
+        ? "You already have an FG role — use /fg rename or /fg remove first."
+        : "They already have an FG role — use /fg remove first.",
+    );
+    return;
+  }
+  const botMember =
+    guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+  if (!botMember?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+    await replyText(interaction, "The bot needs Manage Roles to give FG roles.");
+    return;
+  }
+  if (botMember.roles.highest.comparePositionTo(role) <= 0) {
+    await replyText(
+      interaction,
+      "The bot's role must be above that role to give it out.",
+    );
+    return;
+  }
+  // Give the role to the owner first; only register it once the add
+  // has succeeded. If they already hold it, just register it.
+  const alreadyHas = target.roles.cache.has(role.id);
+  if (!alreadyHas) {
+    try {
+      await target.roles.add(
+        role,
+        `FG role added by ${interaction.user.id} for ${targetId}`,
+      );
+    } catch {
+      await replyText(
+        interaction,
+        `The bot couldn't give ${roleDisplayName(role)} to ${memberDisplayName(target)} — check the bot's role is above it and that it has Manage Roles.`,
+      );
+      return;
+    }
+  }
+  const nextSettings = store.get(guild.id);
+  nextSettings.fgRoles[role.id] = {
+    assignUserIds: [],
+    assignRoleIds: [],
+    shareUserIds: [],
+    shareRoleIds: [],
+  };
+  nextSettings.fgRoleOwners[role.id] = targetId;
+  if (!nextSettings.protectedRoleIds.includes(role.id)) {
+    nextSettings.protectedRoleIds.push(role.id);
+  }
+  try {
+    await store.set(guild.id, nextSettings);
+  } catch {
+    // Registration failed: take the role back so nobody holds an FG
+    // role the bot doesn't know about. If they already held it before,
+    // leave it alone — it was theirs already.
+    if (!alreadyHas) {
+      await target.roles
+        .remove(role, "FG role registration could not be saved")
+        .catch(() => undefined);
+    }
+    await replyText(
+      interaction,
+      "The bot couldn't save that FG role. Try again.",
+    );
+    return;
+  }
+  await replyText(
+    interaction,
+    forSelf
+      ? `${roleDisplayName(role)} is your FG role now. It's protected, so only whitelisted people can give it to anyone else.`
+      : `${roleDisplayName(role)} is now ${memberDisplayName(target)}'s FG role. It's protected, so only whitelisted people can give it to anyone else.`,
+    false,
+  );
+}
+
 async function handleRenameCommand(
   interaction: ChatInputCommandInteraction,
   store: ConfigStore,
@@ -1038,35 +1194,34 @@ async function handleListCommand(
     return;
   }
   const entries = Object.entries(settings.fgRoleOwners).slice(0, 25);
-  // Field name is the role itself (@mention, no ping — replies set
-  // allowedMentions parse: []); value is the owner's plain display
-  // name as text, never an @ mention. An owner who cannot be fetched
-  // shows as their plain user ID, also never a mention.
-  const fields = await Promise.all(
+  // One line per FG role in the DESCRIPTION: the role as an @mention,
+  // then the owner's plain display name as text, never an @ mention.
+  // (Discord does not render mentions in embed field NAMES — they show
+  // as raw "<@&id>" text — which is why the list used to show numbers.)
+  // An owner who cannot be fetched shows as their plain user ID, also
+  // never a mention. The list never pings anyone.
+  const lines = await Promise.all(
     entries.map(async ([roleId, ownerId]) => {
       const role = guild.roles.cache.get(roleId);
       const owner = await guild.members.fetch(ownerId).catch(() => null);
       const ownerName =
         owner?.displayName ?? owner?.user?.username ?? ownerId;
-      return {
-        name: role ? roleMention(role) : `Deleted role \`${roleId}\``,
-        value: `Owner: ${ownerName}`,
-      };
+      const roleText = role
+        ? roleMention(role)
+        : `Deleted role \`${roleId}\``;
+      return `${roleText} — Owner: ${ownerName}`;
     }),
   );
   const extra = Object.keys(settings.fgRoleOwners).length - entries.length;
+  const description =
+    lines.length === 0
+      ? "No FG roles yet."
+      : lines.join("\n") +
+        (extra > 0
+          ? `\nShowing ${lines.length} of ${Object.keys(settings.fgRoleOwners).length} FG roles.`
+          : "");
   await interaction.reply({
-    embeds: [
-      wildFieldEmbed(
-        "FG roles",
-        fields,
-        fields.length === 0
-          ? "No FG roles yet."
-          : extra > 0
-            ? `Showing ${fields.length} of ${Object.keys(settings.fgRoleOwners).length} FG roles.`
-            : undefined,
-      ),
-    ],
+    embeds: [wildEmbed("FG roles", description)],
     ephemeral: true,
     allowedMentions: { parse: [] },
   });
@@ -1131,29 +1286,165 @@ async function handleCleanupCommand(
 }
 
 /**
- * Resolve an FG role from the interaction's role option, or null when
- * the role is not an FG role (or no longer exists). Replies with an
- * error in the null case.
+ * /fg drop — give back an FG role someone shared with you. No
+ * arguments: the bot drops the FG role the caller currently holds.
+ * Owners cannot drop their own role — /fg remove is the owner path.
+ * No config change: the role still exists, owned by someone else;
+ * the caller simply no longer holds it, which frees their one-FG-role
+ * slot. The guard cannot interfere: it only watches role GRANTS
+ * (audit entries with "$add" changes), never removals.
  */
-async function resolveFgRole(
+async function handleDropCommand(
   interaction: ChatInputCommandInteraction,
-  settings: GuildSettings,
-): Promise<Role | null> {
+  store: ConfigStore,
+): Promise<void> {
   const guild = interaction.guild!;
-  const selectedRole = interaction.options.getRole("role", true);
-  const role = guild.roles.cache.get(selectedRole.id);
-  if (!role || !settings.fgRoles[role.id]) {
+  const settings = store.get(guild.id);
+  const member = await fetchMemberFresh(guild, interaction.user.id);
+  if (!member) {
+    await replyText(interaction, "You need to be a member of this server first.");
+    return;
+  }
+  // The first FG role the caller holds (a member who already holds
+  // more than one keeps them; dropping one at a time is enough).
+  const heldRoleId = Object.keys(settings.fgRoles).find((roleId) =>
+    member.roles.cache.has(roleId),
+  );
+  if (!heldRoleId) {
+    await replyText(interaction, "You don't have an FG role to drop.");
+    return;
+  }
+  if (settings.fgRoleOwners[heldRoleId] === interaction.user.id) {
     await replyText(
       interaction,
-      "That isn't an FG role. Make one with /fg create first.",
+      "That's your own FG role — use /fg remove to delete it.",
     );
-    return null;
+    return;
   }
-  return role;
+  const role = guild.roles.cache.get(heldRoleId);
+  try {
+    await member.roles.remove(
+      role ?? heldRoleId,
+      `FG role dropped by ${interaction.user.id}`,
+    );
+  } catch {
+    await replyText(
+      interaction,
+      "The bot couldn't drop that FG role. Ask server staff to check its role order and permissions.",
+    );
+    return;
+  }
+  await replyText(
+    interaction,
+    `Dropped ${role ? roleMention(role) : "your FG role"}.`,
+    false,
+  );
 }
 
 /**
- * /fg auth add/remove/list @member @role — the FG role's owner, the
+ * /fg holders — who currently holds the caller's FG role, owner
+ * first (marked), then the other holders, plain display names, one
+ * per line. The role is worked out from the caller, exactly like
+ * /fg share. Holders are read with a plain member fetch (REST, no
+ * privileged intent needed) so the list is the real holders, not
+ * just whoever happens to be in the bot's member cache. Capped at
+ * 25 names with a "+N more" line; never pings anyone.
+ */
+async function handleHoldersCommand(
+  interaction: ChatInputCommandInteraction,
+  store: ConfigStore,
+): Promise<void> {
+  const guild = interaction.guild!;
+  const settings = store.get(guild.id);
+  const member = await fetchMemberFresh(guild, interaction.user.id);
+  if (!member) {
+    await replyText(interaction, "You need to be a member of this server first.");
+    return;
+  }
+  const resolved = resolveShareRole(guild, member, settings);
+  if ("error" in resolved) {
+    await replyText(interaction, resolved.error);
+    return;
+  }
+  const role = resolved.role;
+  const ownerId = settings.fgRoleOwners[role.id];
+  const allMembers = await guild.members.fetch().catch(() => null);
+  const holders: GuildMember[] = [];
+  if (allMembers) {
+    for (const holder of allMembers.values()) {
+      if (holder.roles.cache.has(role.id)) holders.push(holder);
+    }
+  }
+  const ownerFirst = [...holders].sort((a, b) => {
+    if (a.id === ownerId) return -1;
+    if (b.id === ownerId) return 1;
+    return 0;
+  });
+  const shown = ownerFirst.slice(0, 25);
+  const extra = ownerFirst.length - shown.length;
+  const lines = shown.map((holder) =>
+    holder.id === ownerId
+      ? `${memberDisplayName(holder)} — Owner`
+      : memberDisplayName(holder),
+  );
+  let description: string;
+  if (lines.length === 0) {
+    description = `Nobody holds ${roleDisplayName(role)} right now.`;
+  } else if (lines.length === 1 && ownerFirst[0]?.id === ownerId) {
+    description = `Only ${memberDisplayName(ownerFirst[0])} holds ${roleDisplayName(role)}.`;
+  } else {
+    description = lines.join("\n") + (extra > 0 ? `\n+${extra} more` : "");
+  }
+  await interaction.reply({
+    embeds: [wildEmbed(`Holders of ${roleDisplayName(role)}`, description)],
+    ephemeral: true,
+    allowedMentions: { parse: [] },
+  });
+}
+
+/**
+ * Work out which FG role an auth command is about, from the caller
+ * alone — /fg auth add and /fg auth remove take only @member now, no
+ * role argument (same auto-detection as /fg share: the caller's own FG
+ * role, or the one role they are authorised to share, or an error
+ * naming the roles when they can share several). /fg auth list takes
+ * an optional @role: when one is given it is used as-is, otherwise it
+ * auto-detects the same way. Returns the role, or null after replying
+ * with an error.
+ */
+async function resolveAuthRole(
+  interaction: ChatInputCommandInteraction,
+  requester: GuildMember,
+  settings: GuildSettings,
+  action: string,
+): Promise<Role | null> {
+  const guild = interaction.guild!;
+  if (action === "list") {
+    const selectedRole = interaction.options.getRole("role", false);
+    if (selectedRole) {
+      const role = guild.roles.cache.get(selectedRole.id);
+      if (!role || !settings.fgRoles[role.id]) {
+        await replyText(
+          interaction,
+          "That isn't an FG role. Make one with /fg create first.",
+        );
+        return null;
+      }
+      return role;
+    }
+  }
+  const resolved = resolveShareRole(guild, requester, settings);
+  if ("error" in resolved) {
+    await replyText(interaction, resolved.error);
+    return null;
+  }
+  return resolved.role;
+}
+
+/**
+ * /fg auth add/remove @member — the FG role is worked out from the
+ * caller (see resolveAuthRole); /fg auth list [@role] — the role is
+ * optional and auto-detected when omitted. The FG role's owner, the
  * server owner, or a whitelisted member. Auth is permission to share
  * only: the member does NOT get the role itself.
  */
@@ -1164,8 +1455,6 @@ async function handleAuthCommand(
 ): Promise<void> {
   const guild = interaction.guild!;
   const settings = store.get(guild.id);
-  const role = await resolveFgRole(interaction, settings);
-  if (!role) return;
   // Fresh fetch: a cached member could still show an Administrator bit
   // or whitelisted role that was already removed.
   const member = await fetchMemberFresh(guild, interaction.user.id);
@@ -1173,6 +1462,8 @@ async function handleAuthCommand(
     await replyText(interaction, "You need to be a member of this server first.");
     return;
   }
+  const role = await resolveAuthRole(interaction, member, settings, action);
+  if (!role) return;
   if (
     !isBotAdmin(member, guild.ownerId) &&
     !canAuthFgRole(member, role.id, settings)
@@ -1190,11 +1481,13 @@ async function handleAuthCommand(
     const lines: string[] = [];
     if (ownerId) {
       const owner = await guild.members.fetch(ownerId).catch(() => null);
-      lines.push(`Owner: ${owner ? memberDisplayName(owner) : `<@${ownerId}>`}`);
+      // Plain user ID when the owner can't be fetched — never a
+      // mention of someone who isn't here, same rule as /fg list.
+      lines.push(`Owner: ${owner ? memberDisplayName(owner) : ownerId}`);
     }
     for (const userId of sharerIds.slice(0, 24)) {
       const sharer = await guild.members.fetch(userId).catch(() => null);
-      lines.push(sharer ? memberDisplayName(sharer) : `<@${userId}>`);
+      lines.push(sharer ? memberDisplayName(sharer) : userId);
     }
     await interaction.reply({
       embeds: [
@@ -1354,6 +1647,7 @@ async function finishShareOffer(
   const settings = store.get(guild.id);
   if (!role || !settings.fgRoles[roleId]) {
     await button.update({
+      content: `<@${targetId}>`,
       embeds: [
         buildShareEmbed(
           "fg share ended",
@@ -1361,13 +1655,14 @@ async function finishShareOffer(
         ),
       ],
       components: [],
-      allowedMentions: { parse: [] },
+      allowedMentions: { parse: ["users"], users: [targetId] },
     });
     return true;
   }
 
   if (button.customId === "fg-share:no") {
     await button.update({
+      content: `<@${targetId}>`,
       embeds: [
         buildShareEmbed(
           "fg share declined",
@@ -1375,7 +1670,7 @@ async function finishShareOffer(
         ),
       ],
       components: [],
-      allowedMentions: { parse: [] },
+      allowedMentions: { parse: ["users"], users: [targetId] },
     });
     return true;
   }
@@ -1386,6 +1681,7 @@ async function finishShareOffer(
     (!isBotAdmin(requester, guild.ownerId) && !isFgSharer(requester, roleId, settings))
   ) {
     await button.update({
+      content: `<@${targetId}>`,
       embeds: [
         buildShareEmbed(
           "fg share ended",
@@ -1393,7 +1689,7 @@ async function finishShareOffer(
         ),
       ],
       components: [],
-      allowedMentions: { parse: [] },
+      allowedMentions: { parse: ["users"], users: [targetId] },
     });
     return true;
   }
@@ -1406,6 +1702,7 @@ async function finishShareOffer(
     botMember.roles.highest.comparePositionTo(role) <= 0
   ) {
     await button.update({
+      content: `<@${targetId}>`,
       embeds: [
         buildShareEmbed(
           "fg share could not be applied",
@@ -1413,7 +1710,7 @@ async function finishShareOffer(
         ),
       ],
       components: [],
-      allowedMentions: { parse: [] },
+      allowedMentions: { parse: ["users"], users: [targetId] },
     });
     return true;
   }
@@ -1422,6 +1719,7 @@ async function finishShareOffer(
   // may have gained an FG role since the offer was sent.
   if (memberHoldsAnyFgRole(target, store.get(guild.id))) {
     await button.update({
+      content: `<@${targetId}>`,
       embeds: [
         buildShareEmbed(
           "fg share already assigned",
@@ -1429,14 +1727,35 @@ async function finishShareOffer(
         ),
       ],
       components: [],
-      allowedMentions: { parse: [] },
+      allowedMentions: { parse: ["users"], users: [targetId] },
     });
     return true;
   }
 
   try {
     await target.roles.add(role, `FG role accepted by ${targetId}`);
+    // The FG role's owner hears about it when someone ELSE shares
+    // their role and the target accepts — one line, no log entry.
+    // The owner sharing their own role gets no DM about their own
+    // action. A failed DM (closed DMs) never breaks the share.
+    const ownerId = settings.fgRoleOwners[roleId];
+    if (ownerId && ownerId !== requesterId) {
+      const owner = await guild.members.fetch(ownerId).catch(() => null);
+      if (owner) {
+        await owner
+          .send({
+            embeds: [
+              wildMessageEmbed(
+                `${memberDisplayName(requester)} shared your FG role ${roleDisplayName(role)} to ${memberDisplayName(target)}.`,
+              ),
+            ],
+            allowedMentions: { parse: [] },
+          })
+          .catch(() => undefined);
+      }
+    }
     await button.update({
+      content: `<@${targetId}>`,
       embeds: [
         buildShareEmbed(
           "fg share accepted",
@@ -1444,10 +1763,11 @@ async function finishShareOffer(
         ),
       ],
       components: [],
-      allowedMentions: { parse: [] },
+      allowedMentions: { parse: ["users"], users: [targetId] },
     });
   } catch {
     await button.update({
+      content: `<@${targetId}>`,
       embeds: [
         buildShareEmbed(
           "fg share could not be applied",
@@ -1455,7 +1775,7 @@ async function finishShareOffer(
         ),
       ],
       components: [],
-      allowedMentions: { parse: [] },
+      allowedMentions: { parse: ["users"], users: [targetId] },
     });
   }
   return true;
@@ -1513,6 +1833,10 @@ async function handleShareCommand(
   }
 
   await interaction.reply({
+    // The target is pinged in the message content, not just the embed:
+    // a mention in the embed alone was not notifying them. Only the
+    // target user is pinged — never the role, never @everyone.
+    content: `<@${target.id}>`,
     embeds: [
       buildShareEmbed(
         "fg share",
@@ -1520,7 +1844,7 @@ async function handleShareCommand(
       ),
     ],
     components: [buildDecisionButtons()],
-    allowedMentions: { parse: [], users: [target.id] },
+    allowedMentions: { parse: ["users"], users: [target.id] },
   });
   const offer = await interaction.fetchReply();
   const collector = offer.createMessageComponentCollector({
@@ -1575,6 +1899,7 @@ async function handleShareCommand(
     if (reason !== "time") return;
     await offer
       .edit({
+        content: `<@${target.id}>`,
         embeds: [
           buildShareEmbed(
             "fg share expired",
@@ -1582,7 +1907,7 @@ async function handleShareCommand(
           ),
         ],
         components: [buildDecisionButtons("fg-share", true)],
-        allowedMentions: { parse: [] },
+        allowedMentions: { parse: ["users"], users: [target.id] },
       })
       .catch(() => undefined);
   });
@@ -1614,6 +1939,9 @@ export async function handleFgCommand(
     case "create":
       await handleCreateCommand(interaction, store);
       return;
+    case "add":
+      await handleAddCommand(interaction, store);
+      return;
     case "rename":
       await handleRenameCommand(interaction, store);
       return;
@@ -1622,6 +1950,12 @@ export async function handleFgCommand(
       return;
     case "remove":
       await handleRemoveCommand(interaction, store);
+      return;
+    case "drop":
+      await handleDropCommand(interaction, store);
+      return;
+    case "holders":
+      await handleHoldersCommand(interaction, store);
       return;
     case "list":
       await handleListCommand(interaction, store);

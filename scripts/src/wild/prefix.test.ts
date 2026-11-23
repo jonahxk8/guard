@@ -138,6 +138,9 @@ function createMessage(options: {
           add: async (role: { id: string }) => {
             held.add(role.id);
           },
+          remove: async (role: { id: string }) => {
+            held.delete(role.id);
+          },
         },
       });
     }
@@ -171,8 +174,11 @@ function createMessage(options: {
           premiumTier: 0,
           members: {
             me: botMember,
-            fetch: async (arg: string | { user?: string }) =>
-              getMember(typeof arg === "string" ? arg : (arg.user ?? "")),
+            // No argument fetches every member (used by /fg holders).
+            fetch: async (arg?: string | { user?: string }) => {
+              if (arg === undefined) return new Map(members);
+              return getMember(typeof arg === "string" ? arg : (arg.user ?? ""));
+            },
             fetchMe: async () => botMember,
           },
           roles: {
@@ -336,11 +342,27 @@ test("parsePrefixMessage parses mentions, raw ids, and fg color args", () => {
   const createOldSyntax = parsePrefixMessage(",fg create My Role #ff0000");
   // No color argument anymore: a trailing hex is just part of the name.
   assert.equal(createOldSyntax && "args" in createOldSyntax && createOldSyntax.args.strings.name, "My Role #ff0000");
-  const authAdd = parsePrefixMessage(",fg auth add <@333333333333333333> <@&666666666666666666>");
+  const authAdd = parsePrefixMessage(",fg auth add <@333333333333333333>");
   assert.equal(authAdd && "args" in authAdd && authAdd.args.subcommandGroup, "auth");
   assert.equal(authAdd && "args" in authAdd && authAdd.args.subcommand, "add");
+  assert.equal(authAdd && "args" in authAdd && authAdd.args.users.member, "333333333333333333");
+  // A role argument is no longer taken: the bot works out which FG
+  // role from the caller, like ,fg share.
+  const authAddWithRole = parsePrefixMessage(",fg auth add <@333333333333333333> <@&666666666666666666>");
+  assert.equal(
+    authAddWithRole && "error" in authAddWithRole && authAddWithRole.error,
+    "Use ,help fg to see FG commands.",
+  );
   const authList = parsePrefixMessage(",fg auth list <@&666666666666666666>");
   assert.equal(authList && "args" in authList && authList.args.subcommand, "list");
+  assert.equal(authList && "args" in authList && authList.args.roles.role, "666666666666666666");
+  const authListNoRole = parsePrefixMessage(",fg auth list");
+  assert.equal(authListNoRole && "args" in authListNoRole && authListNoRole.args.subcommand, "list");
+  const shareWithRole = parsePrefixMessage(",fg share <@333333333333333333> <@&666666666666666666>");
+  assert.equal(
+    shareWithRole && "error" in shareWithRole && shareWithRole.error,
+    "Use ,help fg to see FG commands.",
+  );
   const award = parsePrefixMessage(",fg award view");
   assert.equal(award && "error" in award && award.error, "Use ,help fg to see FG commands.");
   const help = parsePrefixMessage(",help fg create");
@@ -515,6 +537,123 @@ test(",fg assign no longer exists", async () => {
   assert.equal(parsed.error, "Use ,help fg to see FG commands.");
 });
 
+test(",fg drop gives back a shared FG role", async () => {
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: "333333333333333333" },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const { message, sent } = createMessage({
+    content: ",fg drop",
+    roles: [{ id: FG_ROLE_ID }],
+    memberRoleIds: { [USER_ID]: [FG_ROLE_ID] },
+  });
+  assert.equal(await handlePrefixMessage(message, config.store), true);
+  assert.match(sentTextOf(sent[0]), /Dropped <@&/);
+});
+
+test(",fg holders lists who holds the caller's FG role", async () => {
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: USER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const { message, sent } = createMessage({
+    content: ",fg holders",
+    roles: [{ id: FG_ROLE_ID }],
+    memberRoleIds: { [USER_ID]: [FG_ROLE_ID] },
+  });
+  assert.equal(await handlePrefixMessage(message, config.store), true);
+  const embed = sent[0].embeds?.[0]?.toJSON() as {
+    title?: string;
+    description?: string;
+  };
+  assert.match(embed.title ?? "", /Holders of/);
+  // Only the owner holds it here, so the one-line form is used.
+  assert.match(embed.description ?? "", /Only Alex holds Role\./);
+});
+
+test(",fg create gives the new FG role to the named member", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [USER_ID],
+      fgBaseRoleId: ROLE_ID,
+    }),
+  );
+  const { message, sent } = createMessage({
+    content: ",fg create Sam FG <@333333333333333333>",
+    roles: [{ id: ROLE_ID }],
+  });
+
+  const restoreFetch = stubAvatarFetch(solidPng(255, 0, 0));
+  try {
+    assert.equal(await handlePrefixMessage(message, config.store), true);
+  } finally {
+    restoreFetch();
+  }
+
+  assert.match(sentTextOf(sent[0]), /Created FG role Sam FG for Sam/i);
+  assert.equal(
+    config.getSettings().fgRoleOwners["100000000000000001"],
+    OTHER_ID,
+  );
+  const target = await (
+    message.guild as unknown as {
+      members: {
+        fetch: (id: string) => Promise<{
+          roles: { cache: { has: (id: string) => boolean } };
+        }>;
+      };
+    }
+  ).members.fetch(OTHER_ID);
+  assert.equal(target.roles.cache.has("100000000000000001"), true);
+});
+
+test(",fg add registers an existing role through the shared handler", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [USER_ID],
+      fgBaseRoleId: ROLE_ID,
+    }),
+  );
+  const { message, sent } = createMessage({
+    content: ",fg add <@&666666666666666666> <@333333333333333333>",
+    roles: [{ id: ROLE_ID }, { id: FG_ROLE_ID }],
+  });
+
+  assert.equal(await handlePrefixMessage(message, config.store), true);
+
+  assert.match(sentTextOf(sent[0]), /is now Sam's FG role/i);
+  assert.equal(config.getSettings().fgRoleOwners[FG_ROLE_ID], OTHER_ID);
+  assert.ok(config.getSettings().protectedRoleIds.includes(FG_ROLE_ID));
+  const target = await (
+    message.guild as unknown as {
+      members: {
+        fetch: (id: string) => Promise<{
+          roles: { cache: { has: (id: string) => boolean } };
+        }>;
+      };
+    }
+  ).members.fetch(OTHER_ID);
+  assert.equal(target.roles.cache.has(FG_ROLE_ID), true);
+});
+
 test(",fg auth add and ,fg auth list route to the shared FG handler", async () => {
   const config = createStore(
     makeSettings({
@@ -530,7 +669,7 @@ test(",fg auth add and ,fg auth list route to the shared FG handler", async () =
     }),
   );
   const add = createMessage({
-    content: ",fg auth add <@333333333333333333> <@&666666666666666666>",
+    content: ",fg auth add <@333333333333333333>",
     roles: [{ id: FG_ROLE_ID }],
   });
   await handlePrefixMessage(add.message, config.store);
@@ -540,7 +679,7 @@ test(",fg auth add and ,fg auth list route to the shared FG handler", async () =
   assert.match(sentTextOf(add.sent[0]), /can now share/i);
 
   const list = createMessage({
-    content: ",fg auth list <@&666666666666666666>",
+    content: ",fg auth list",
     roles: [{ id: FG_ROLE_ID }],
   });
   await handlePrefixMessage(list.message, config.store);

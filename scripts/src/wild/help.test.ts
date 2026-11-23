@@ -175,7 +175,7 @@ test("main help page lists the 3 categories as fields, with category buttons", (
     ["Guard", "FG", "Blacklist"],
   );
   assert.match(result.page.fields[0].value, /Protect roles/);
-  assert.match(result.page.fields[1].value, /12 commands/);
+  assert.match(result.page.fields[1].value, /15 commands/);
   assert.match(result.page.description ?? "", /\/help <command>/);
   assert.deepEqual(
     result.page.buttons.map((button) => button.label),
@@ -191,7 +191,7 @@ test("/help fg page 1 has 7 commands and a Next button", () => {
   const result = resolveHelpTopic("fg");
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
-  assert.equal(result.page.title, "Help - FG (1/2)");
+  assert.equal(result.page.title, "Help - FG (1/3)");
   assert.equal(result.page.fields.length, 7);
   assert.equal(result.page.fields[0].name, "`/fg base @role`");
   assert.equal(result.page.fields[0].value, "Set the FG base role");
@@ -200,7 +200,8 @@ test("/help fg page 1 has 7 commands and a Next button", () => {
     result.page.fields[2].name,
     "`/fg create <name> [@member]`",
   );
-  assert.equal(result.page.fields[6].name, "`/fg list`");
+  assert.equal(result.page.fields[3].name, "`/fg add @role [@member]`");
+  assert.equal(result.page.fields[6].name, "`/fg remove`");
   assert.deepEqual(
     result.page.buttons.map((button) => button.label),
     ["Next", "Back"],
@@ -209,17 +210,32 @@ test("/help fg page 1 has 7 commands and a Next button", () => {
   assert.doesNotMatch(fieldTextFromPage(result.page), /,fg /);
 });
 
-test("/help fg page 2 has cleanup, share, and auth, and a Prev button", () => {
+test("/help fg page 2 has drop, holders, list, cleanup, share, and auth, and Prev/Next buttons", () => {
   const result = resolveHelpTarget("category:fg:2");
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
-  assert.equal(result.page.title, "Help - FG (2/2)");
-  assert.equal(result.page.fields.length, 5);
-  assert.equal(result.page.fields[0].name, "`/fg cleanup`");
-  assert.equal(result.page.fields[1].name, "`/fg share @member`");
-  assert.equal(result.page.fields[2].name, "`/fg auth add @member @role`");
-  assert.equal(result.page.fields[3].name, "`/fg auth remove @member @role`");
-  assert.equal(result.page.fields[4].name, "`/fg auth list @role`");
+  assert.equal(result.page.title, "Help - FG (2/3)");
+  assert.equal(result.page.fields.length, 7);
+  assert.equal(result.page.fields[0].name, "`/fg drop`");
+  assert.equal(result.page.fields[1].name, "`/fg holders`");
+  assert.equal(result.page.fields[2].name, "`/fg list`");
+  assert.equal(result.page.fields[3].name, "`/fg cleanup`");
+  assert.equal(result.page.fields[4].name, "`/fg share @member`");
+  assert.equal(result.page.fields[5].name, "`/fg auth add @member`");
+  assert.equal(result.page.fields[6].name, "`/fg auth remove @member`");
+  assert.deepEqual(
+    result.page.buttons.map((button) => button.label),
+    ["Prev", "Next", "Back"],
+  );
+});
+
+test("/help fg page 3 has auth list only, and a Prev button", () => {
+  const result = resolveHelpTarget("category:fg:3");
+  assert.equal(result.kind, "embed");
+  if (result.kind !== "embed") return;
+  assert.equal(result.page.title, "Help - FG (3/3)");
+  assert.equal(result.page.fields.length, 1);
+  assert.equal(result.page.fields[0].name, "`/fg auth list [@role]`");
   assert.deepEqual(
     result.page.buttons.map((button) => button.label),
     ["Prev", "Back"],
@@ -329,7 +345,7 @@ test("normal user FG page shows the note and no commands", () => {
 });
 
 test("normal user asking for a command they can't use gets an error, never its syntax", () => {
-  for (const topic of ["fg base", "fg list", "fg cleanup", "fg color", "fg create", "fg rename", "fg share", "fg auth add", "protect", "blacklist add", "status"]) {
+  for (const topic of ["fg base", "fg add", "fg list", "fg cleanup", "fg color", "fg create", "fg rename", "fg share", "fg auth add", "protect", "blacklist add", "status"]) {
     const result = resolveHelpTopic(topic, NORMAL);
     assert.equal(result.kind, "error", topic);
     if (result.kind !== "error") continue;
@@ -350,26 +366,31 @@ test("personas see exactly the FG commands they can use", () => {
     const first = resolveHelpTarget("category:fg:1", ctx);
     if (first.kind !== "embed") return fields;
     fields.push(...first.page.fields.map((field) => field.name));
-    // Only fetch page 2 when the filtered list actually spans 2 pages.
-    if (first.page.title.includes("(1/2)")) {
-      const second = resolveHelpTarget("category:fg:2", ctx);
-      if (second.kind === "embed") {
-        fields.push(...second.page.fields.map((field) => field.name));
+    // Only fetch later pages when the filtered list actually spans
+    // more than one page (FG can span 3 now).
+    const pageCount = Number(first.page.title.match(/\((\d+)\/(\d+)\)/)?.[2] ?? "1");
+    for (let page = 2; page <= pageCount; page += 1) {
+      const next = resolveHelpTarget(`category:fg:${page}`, ctx);
+      if (next.kind === "embed") {
+        fields.push(...next.page.fields.map((field) => field.name));
       }
     }
     return fields;
   };
-  // Server owner: everything except rename/icon/remove (needs to own a role).
+  // Server owner: everything except rename/icon/remove/drop (needs to
+  // hold a role). Holders is visible: owners can share.
   assert.deepEqual(seen(OWNER), [
     "`/fg base @role`",
     "`/fg color <color> [second_color]`",
     "`/fg create <name> [@member]`",
+    "`/fg add @role [@member]`",
+    "`/fg holders`",
     "`/fg list`",
     "`/fg cleanup`",
     "`/fg share @member`",
-    "`/fg auth add @member @role`",
-    "`/fg auth remove @member @role`",
-    "`/fg auth list @role`",
+    "`/fg auth add @member`",
+    "`/fg auth remove @member`",
+    "`/fg auth list [@role]`",
   ]);
   // Administrator (not whitelisted, owns no FG role): like the owner for
   // FG — creation, sharing, and auth included — except rename/icon/remove
@@ -378,22 +399,26 @@ test("personas see exactly the FG commands they can use", () => {
     "`/fg base @role`",
     "`/fg color <color> [second_color]`",
     "`/fg create <name> [@member]`",
+    "`/fg add @role [@member]`",
+    "`/fg holders`",
     "`/fg list`",
     "`/fg cleanup`",
     "`/fg share @member`",
-    "`/fg auth add @member @role`",
-    "`/fg auth remove @member @role`",
-    "`/fg auth list @role`",
+    "`/fg auth add @member`",
+    "`/fg auth remove @member`",
+    "`/fg auth list [@role]`",
   ]);
   // Whitelisted staff: creation, listing, sharing, and auth.
   assert.deepEqual(seen(WHITELISTED), [
     "`/fg color <color> [second_color]`",
     "`/fg create <name> [@member]`",
+    "`/fg add @role [@member]`",
+    "`/fg holders`",
     "`/fg list`",
     "`/fg share @member`",
-    "`/fg auth add @member @role`",
-    "`/fg auth remove @member @role`",
-    "`/fg auth list @role`",
+    "`/fg auth add @member`",
+    "`/fg auth remove @member`",
+    "`/fg auth list [@role]`",
   ]);
   // FG owner: their own role, sharing, and auth — nothing admin-only.
   assert.deepEqual(seen(FG_OWNER), [
@@ -401,14 +426,22 @@ test("personas see exactly the FG commands they can use", () => {
     "`/fg rename <name>`",
     "`/fg icon <url>`",
     "`/fg remove`",
+    "`/fg drop`",
+    "`/fg holders`",
     "`/fg share @member`",
-    "`/fg auth add @member @role`",
-    "`/fg auth remove @member @role`",
-    "`/fg auth list @role`",
+    "`/fg auth add @member`",
+    "`/fg auth remove @member`",
+    "`/fg auth list [@role]`",
   ]);
-  // Assigned holder and authed sharer (no role of their own): share only.
-  assert.deepEqual(seen(HOLDER), ["`/fg share @member`"]);
-  assert.deepEqual(seen(SHARER), ["`/fg share @member`"]);
+  // Assigned holder and authed sharer (no role of their own): the
+  // holder can also drop the role they hold; both can view holders,
+  // since holders is visible to anyone who can share.
+  assert.deepEqual(seen(HOLDER), [
+    "`/fg drop`",
+    "`/fg holders`",
+    "`/fg share @member`",
+  ]);
+  assert.deepEqual(seen(SHARER), ["`/fg holders`", "`/fg share @member`"]);
   // Plain member: nothing.
   assert.deepEqual(seen(NORMAL), []);
 });
@@ -432,12 +465,12 @@ test("personas see the right categories on the main page", () => {
   const fgOwnerMain = resolveHelpTopic(null, FG_OWNER);
   assert.equal(fgOwnerMain.kind, "embed");
   if (fgOwnerMain.kind === "embed") {
-    assert.match(fgOwnerMain.page.fields[0]?.value ?? "", /8 commands/);
+    assert.match(fgOwnerMain.page.fields[0]?.value ?? "", /10 commands/);
   }
   const holderMain = resolveHelpTopic(null, HOLDER);
   assert.equal(holderMain.kind, "embed");
   if (holderMain.kind === "embed") {
-    assert.match(holderMain.page.fields[0]?.value ?? "", /1 command$/);
+    assert.match(holderMain.page.fields[0]?.value ?? "", /3 commands/);
   }
 });
 
@@ -478,6 +511,21 @@ test("normal prefix user sees FG only, with prefix syntax", () => {
   if (fg.kind === "embed") {
     assert.equal(fg.page.fields.length, 0);
     assert.equal(fg.page.description, NO_FG_ROLE_NOTE);
+  }
+});
+
+test("single-word help topics resolve for fg add, fg list, fg drop, and fg holders", () => {
+  // /help add and /help list used to fall through to "No help for ..."
+  // because FG_SINGLE_WORDS had no entries for them.
+  for (const topic of ["add", "list", "drop", "holders"]) {
+    const result = resolveHelpTopic(topic);
+    assert.equal(result.kind, "embed", topic);
+    if (result.kind !== "embed") continue;
+    assert.match(result.page.title, new RegExp(`fg ${topic}`, "i"));
+  }
+  for (const topic of ["fg add", "fg list", "fg drop", "fg holders"]) {
+    const result = resolveHelpTopic(topic);
+    assert.equal(result.kind, "embed", topic);
   }
 });
 
@@ -604,10 +652,10 @@ test("help buttons: the owner navigates to FG page 2, a stranger is rejected", a
     "111111111111111111",
   );
   const page = await handleHelpButton(owner.button);
-  assert.equal(page?.title, "Help - FG (2/2)");
+  assert.equal(page?.title, "Help - FG (2/3)");
   assert.equal(owner.calls[0]?.kind, "update");
   const update = owner.calls[0]?.data as { embeds?: EmbedBuilder[] };
-  assert.equal(update.embeds?.[0].toJSON().title, "Help - FG (2/2)");
+  assert.equal(update.embeds?.[0].toJSON().title, "Help - FG (2/3)");
 
   const stranger = createButton(
     "wild-help:111111111111111111:category:fg:2",
@@ -648,7 +696,7 @@ test("help buttons: Back from a command page returns to its category page", asyn
     "111111111111111111",
   );
   const page = await handleHelpButton(button);
-  assert.equal(page?.title, "Help - FG (2/2)");
+  assert.equal(page?.title, "Help - FG (2/3)");
   assert.equal(calls[0]?.kind, "update");
 });
 

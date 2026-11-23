@@ -256,6 +256,18 @@ function parseFgPrefix(
       args.strings.color = parsed.colorText;
       return { command: "fg", args };
     }
+    case "add": {
+      // ,fg add @role [@member] — the role is required; the member
+      // defaults to the caller.
+      const roleId = parseRoleToken(tail[0]);
+      if (!roleId) return usage("Usage: ,fg add @role [@member]");
+      const memberId = tail[1] ? parseUserToken(tail[1]) : null;
+      if (tail[1] && !memberId) return usage("Usage: ,fg add @role [@member]");
+      args.subcommand = "add";
+      args.roles.role = roleId;
+      if (memberId) args.users.member = memberId;
+      return { command: "fg", args };
+    }
     case "create": {
       // ,fg create <name> [@member] — name may contain spaces; a
       // trailing @mention or raw user id is the member the role is
@@ -288,6 +300,8 @@ function parseFgPrefix(
       return { command: "fg", args };
     }
     case "remove":
+    case "drop":
+    case "holders":
     case "list":
     case "cleanup":
       args.subcommand = action;
@@ -299,6 +313,9 @@ function parseFgPrefix(
       if (!memberId) {
         return usage("Usage: ,fg share @member");
       }
+      if (tail[1] !== undefined) {
+        return usage("Use ,help fg to see FG commands.");
+      }
       args.subcommand = "share";
       args.users.member = memberId;
       return { command: "fg", args };
@@ -306,23 +323,33 @@ function parseFgPrefix(
     case "auth": {
       const authAction = tail[0];
       if (authAction === "list") {
+        // Role is optional: omitted means the bot works out which FG
+        // role from the caller, like ,fg share.
+        if (tail[2] !== undefined) {
+          return usage("Use ,help fg to see FG commands.");
+        }
         const roleId = parseRoleToken(tail[1]);
-        if (!roleId) return usage("Usage: ,fg auth list @role");
+        if (tail[1] !== undefined && !roleId) {
+          return usage("Usage: ,fg auth list [@role]");
+        }
         args.subcommandGroup = "auth";
         args.subcommand = "list";
-        args.roles.role = roleId;
+        if (roleId) args.roles.role = roleId;
         return { command: "fg", args };
       }
       if (authAction === "add" || authAction === "remove") {
+        // ,fg auth add/remove @member — the bot works out which FG
+        // role from the caller; a role argument is no longer taken.
         const memberId = parseUserToken(tail[1]);
-        const roleId = parseRoleToken(tail[2]);
-        if (!memberId || !roleId) {
-          return usage(`Usage: ,fg auth ${authAction} @member @role`);
+        if (!memberId) {
+          return usage(`Usage: ,fg auth ${authAction} @member`);
+        }
+        if (tail[2] !== undefined) {
+          return usage("Use ,help fg to see FG commands.");
         }
         args.subcommandGroup = "auth";
         args.subcommand = authAction;
         args.users.member = memberId;
-        args.roles.role = roleId;
         return { command: "fg", args };
       }
       return usage("Use ,help fg to see FG commands.");

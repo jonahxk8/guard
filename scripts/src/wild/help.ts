@@ -42,8 +42,8 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  *   "no FG role yet" note; Guard and Blacklist appear only when the
  *   user can use at least one of their commands), with buttons to jump
  *   to each one.
- * - Category: one field per visible command. FG has 12 subcommands for
- *   a fully privileged user, so it splits into 2 pages of 7 and 5; for
+ * - Category: one field per visible command. FG has 15 subcommands for
+ *   a fully privileged user, so it splits into 3 pages of 7, 7, and 1; for
  *   other users the pages are re-computed after filtering. Guard and
  *   Blacklist fit on one page. Buttons: [Prev] [Next] where there is
  *   another page, plus [Back].
@@ -268,6 +268,7 @@ export type HelpGate =
   | "ownerOrWhitelisted"
   | "fgOwner"
   | "fgOwnerOrPrivileged"
+  | "holdsFgRole"
   | "canShare"
   | "canAuth";
 
@@ -293,6 +294,11 @@ export function canSeeEntry(
       // their own role) and for privileged members, who can create a
       // role first and then recolor it.
       return caps.ownsFgRole || caps.privileged;
+    case "holdsFgRole":
+      // Dropping is for anyone holding an FG role (owner or shared
+      // holder). Owners see it too — the handler itself points them
+      // at /fg remove instead.
+      return caps.holdsFgRole;
     case "canShare":
       return caps.canShareAny;
     case "canAuth":
@@ -387,6 +393,15 @@ const FG_ENTRIES: HelpEntry[] = [
     gate: "ownerOrWhitelisted",
   },
   {
+    key: "fg add",
+    slash: "/fg add @role [@member]",
+    prefix: ",fg add @role [@member]",
+    purpose: "Add an existing role as an FG role",
+    example: "/fg add @My Role @Alex",
+    examplePrefix: ",fg add @My Role @Alex",
+    gate: "ownerOrWhitelisted",
+  },
+  {
     key: "fg rename",
     slash: "/fg rename <name>",
     prefix: ",fg rename <name>",
@@ -412,6 +427,24 @@ const FG_ENTRIES: HelpEntry[] = [
     example: "/fg remove",
     examplePrefix: ",fg remove",
     gate: "fgOwner",
+  },
+  {
+    key: "fg drop",
+    slash: "/fg drop",
+    prefix: ",fg drop",
+    purpose: "Give back an FG role someone shared with you",
+    example: "/fg drop",
+    examplePrefix: ",fg drop",
+    gate: "holdsFgRole",
+  },
+  {
+    key: "fg holders",
+    slash: "/fg holders",
+    prefix: ",fg holders",
+    purpose: "List who holds your FG role",
+    example: "/fg holders",
+    examplePrefix: ",fg holders",
+    gate: "canShare",
   },
   {
     key: "fg list",
@@ -442,29 +475,29 @@ const FG_ENTRIES: HelpEntry[] = [
   },
   {
     key: "fg auth add",
-    slash: "/fg auth add @member @role",
-    prefix: ",fg auth add @member @role",
+    slash: "/fg auth add @member",
+    prefix: ",fg auth add @member",
     purpose: "Let a member share an FG role",
-    example: "/fg auth add @Alex @My Role",
-    examplePrefix: ",fg auth add @Alex @My Role",
+    example: "/fg auth add @Alex",
+    examplePrefix: ",fg auth add @Alex",
     gate: "canAuth",
   },
   {
     key: "fg auth remove",
-    slash: "/fg auth remove @member @role",
-    prefix: ",fg auth remove @member @role",
+    slash: "/fg auth remove @member",
+    prefix: ",fg auth remove @member",
     purpose: "Stop a member sharing an FG role",
-    example: "/fg auth remove @Alex @My Role",
-    examplePrefix: ",fg auth remove @Alex @My Role",
+    example: "/fg auth remove @Alex",
+    examplePrefix: ",fg auth remove @Alex",
     gate: "canAuth",
   },
   {
     key: "fg auth list",
-    slash: "/fg auth list @role",
-    prefix: ",fg auth list @role",
+    slash: "/fg auth list [@role]",
+    prefix: ",fg auth list [@role]",
     purpose: "List who can share an FG role",
-    example: "/fg auth list @My Role",
-    examplePrefix: ",fg auth list @My Role",
+    example: "/fg auth list",
+    examplePrefix: ",fg auth list",
     gate: "canAuth",
   },
 ];
@@ -529,9 +562,13 @@ const FG_SINGLE_WORDS: Record<string, string> = {
   base: "fg base",
   color: "fg color",
   create: "fg create",
+  add: "fg add",
   rename: "fg rename",
   icon: "fg icon",
   remove: "fg remove",
+  drop: "fg drop",
+  holders: "fg holders",
+  list: "fg list",
   cleanup: "fg cleanup",
   share: "fg share",
 };

@@ -33,12 +33,14 @@ const STALE_NAMES = [
   "assign",
 ];
 
+type CommandJsonOption = {
+  name?: unknown;
+  options?: CommandJsonOption[];
+};
+
 type CommandJson = {
   name?: unknown;
-  options?: Array<{
-    name?: unknown;
-    options?: Array<{ name?: unknown }>;
-  }>;
+  options?: CommandJsonOption[];
 };
 
 function commandJson(command: { toJSON: () => unknown }): CommandJson {
@@ -68,6 +70,22 @@ function optionNames(
 ): string[] {
   const json = commandJson(command);
   const found = (json.options ?? []).find(
+    (option) => option.name === subcommand,
+  );
+  if (!found) return [];
+  return (found.options ?? []).map((option) => String(option.name));
+}
+
+function groupOptionNames(
+  command: { toJSON: () => unknown },
+  group: string,
+  subcommand: string,
+): string[] {
+  const json = commandJson(command);
+  const foundGroup = (json.options ?? []).find(
+    (option) => option.name === group,
+  );
+  const found = (foundGroup?.options ?? []).find(
     (option) => option.name === subcommand,
   );
   if (!found) return [];
@@ -104,11 +122,14 @@ test("slash registration is exactly the current command set", () => {
 
 test("slash registration has no stale subcommands", () => {
   assert.deepEqual(subcommandNames(fgCommand).sort(), [
+    "add",
     "auth",
     "base",
     "cleanup",
     "color",
     "create",
+    "drop",
+    "holders",
     "icon",
     "list",
     "remove",
@@ -157,8 +178,19 @@ test("slash registration has the expected options", () => {
   // /fg create is name + optional member only: the color comes from
   // the member's profile picture, so there are no color options.
   assert.deepEqual(optionNames(fgCommand, "create"), ["name", "member"]);
+  // /fg add takes an existing role + optional member.
+  assert.deepEqual(optionNames(fgCommand, "add"), ["role", "member"]);
   // /fg share takes only @member: the bot works out which FG role
   // from the caller. /fg assign is gone entirely.
   assert.deepEqual(optionNames(fgCommand, "share"), ["member"]);
   assert.ok(!subcommandNames(fgCommand).includes("assign"));
+  // /fg drop and /fg holders take no arguments.
+  assert.deepEqual(optionNames(fgCommand, "drop"), []);
+  assert.deepEqual(optionNames(fgCommand, "holders"), []);
+  // /fg auth add/remove take only @member: the bot works out which FG
+  // role from the caller, like /fg share. /fg auth list takes an
+  // optional @role and auto-detects when it is omitted.
+  assert.deepEqual(groupOptionNames(fgCommand, "auth", "add"), ["member"]);
+  assert.deepEqual(groupOptionNames(fgCommand, "auth", "remove"), ["member"]);
+  assert.deepEqual(groupOptionNames(fgCommand, "auth", "list"), ["role"]);
 });

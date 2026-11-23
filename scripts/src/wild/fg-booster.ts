@@ -14,9 +14,12 @@ import {
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
 import { wildFieldEmbed } from "./embeds.js";
-import { canShareRole, isWhitelisted } from "./authorization.js";
+import {
+  canAuthFgRole,
+  isFgSharer,
+  isWhitelisted,
+} from "./authorization.js";
 import { memberDisplayName, roleDisplayName, roleMention } from "./names.js";
-import { isDangerousRole } from "./role-guard.js";
 import { WILD_ERROR_REPLY } from "./reply.js";
 
 /**
@@ -24,13 +27,20 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  *
  * Bleed's booster roles are unique, personal, cosmetic roles that a member
  * customises themselves (name, colour, icon) and that sit under one base
- * role. Wild copies that model, with three Wild adaptations (labelled as
- * such in the docs, NOT Bleed behaviour):
+ * role. Wild copies that model, with Wild adaptations (labelled as such
+ * in the docs, NOT Bleed behaviour):
  *  - Eligibility is being whitelisted, not boosting the server.
  *  - One FG role per member (Wild rule).
- *  - The award role is granted when a member creates their FG role, not
- *    when they boost — Wild has no boost event to hook.
  *  - /fg share is Wild-only. Bleed documents no share command.
+ *
+ * Sharing, Wild-only assign + auth model (the award role system was
+ * removed — it confused people): the server owner or whitelisted staff
+ * assign an FG role to a member with /fg assign, which also makes that
+ * member authorised to share it. The FG role's owner can authorise
+ * other people to share their role with /fg auth add — auth is
+ * permission to share only, they do not get the role itself. Only the
+ * server owner, whitelisted staff, the FG role owner, and people
+ * assigned or authed for that role may share it.
  *
  * All slash replies are ephemeral plain text, except /fg list and the
  * public share offer (colourless embeds, no footer/timestamp). Errors are
@@ -177,23 +187,50 @@ export const fgCommand = new SlashCommandBuilder()
         option.setName("role").setDescription("FG role to share").setRequired(true),
       ),
   )
+  .addSubcommand((command) =>
+    command
+      .setName("assign")
+      .setDescription("Give an FG role to a member and let them share it")
+      .addUserOption((option) =>
+        option.setName("member").setDescription("Member to assign the role to").setRequired(true),
+      )
+      .addRoleOption((option) =>
+        option.setName("role").setDescription("FG role to assign").setRequired(true),
+      ),
+  )
   .addSubcommandGroup((group) =>
     group
-      .setName("award")
-      .setDescription("Shared role given when someone makes an FG role")
+      .setName("auth")
+      .setDescription("Who may share an FG role")
       .addSubcommand((command) =>
         command
-          .setName("set")
-          .setDescription("Set the award role")
+          .setName("add")
+          .setDescription("Let a member share an FG role (they don't get the role)")
+          .addUserOption((option) =>
+            option.setName("member").setDescription("Member to authorise").setRequired(true),
+          )
           .addRoleOption((option) =>
-            option.setName("role").setDescription("Role to award").setRequired(true),
+            option.setName("role").setDescription("FG role to share").setRequired(true),
           ),
       )
       .addSubcommand((command) =>
-        command.setName("view").setDescription("View the award role"),
+        command
+          .setName("remove")
+          .setDescription("Stop a member sharing an FG role")
+          .addUserOption((option) =>
+            option.setName("member").setDescription("Member to remove").setRequired(true),
+          )
+          .addRoleOption((option) =>
+            option.setName("role").setDescription("FG role").setRequired(true),
+          ),
       )
       .addSubcommand((command) =>
-        command.setName("remove").setDescription("Clear the award role"),
+        command
+          .setName("list")
+          .setDescription("List who may share an FG role")
+          .addRoleOption((option) =>
+            option.setName("role").setDescription("FG role").setRequired(true),
+          ),
       ),
   );
 
@@ -418,15 +455,6 @@ async function createFgRole(
     return;
   }
 
-  // Wild adaptation: the award role is granted when the FG role is made,
-  // not when the member boosts (Wild has no boost event to hook).
-  if (nextSettings.fgAwardRoleId) {
-    const awardRole = guild.roles.cache.get(nextSettings.fgAwardRoleId);
-    if (awardRole && !target.roles.cache.has(awardRole.id)) {
-      await target.roles.add(awardRole, "FG award role").catch(() => undefined);
-    }
-  }
-
   const gradientNote = secondColor
     ? " Discord roles only show one colour, so your role uses the first colour."
     : "";
@@ -596,6 +624,7 @@ async function handleRemoveCommand(
   const nextSettings = store.get(guild.id);
   delete nextSettings.fgRoles[roleId];
   delete nextSettings.fgRoleOwners[roleId];
+  delete nextSettings.fgRoleSharers[roleId];
   nextSettings.protectedRoleIds = nextSettings.protectedRoleIds.filter(
     (id) => id !== roleId,
   );
@@ -666,6 +695,7 @@ async function handleCleanupCommand(
     if (!role) {
       delete nextSettings.fgRoles[roleId];
       delete nextSettings.fgRoleOwners[roleId];
+      delete nextSettings.fgRoleSharers[roleId];
       nextSettings.protectedRoleIds = nextSettings.protectedRoleIds.filter(
         (id) => id !== roleId,
       );
@@ -677,6 +707,7 @@ async function handleCleanupCommand(
       await role.delete("FG role owner left the server").catch(() => undefined);
       delete nextSettings.fgRoles[roleId];
       delete nextSettings.fgRoleOwners[roleId];
+      delete nextSettings.fgRoleSharers[roleId];
       nextSettings.protectedRoleIds = nextSettings.protectedRoleIds.filter(
         (id) => id !== roleId,
       );
@@ -688,6 +719,7 @@ async function handleCleanupCommand(
     if (settings.fgRoleOwners[roleId]) continue;
     if (!guild.roles.cache.get(roleId)) {
       delete nextSettings.fgRoles[roleId];
+      delete nextSettings.fgRoleSharers[roleId];
       nextSettings.protectedRoleIds = nextSettings.protectedRoleIds.filter(
         (id) => id !== roleId,
       );
@@ -706,49 +738,203 @@ async function handleCleanupCommand(
   );
 }
 
-async function handleAwardCommand(
+/**
+ * Resolve an FG role from the interaction's role option, or null when
+ * the role is not an FG role (or no longer exists). Replies with an
+ * error in the null case.
+ */
+async function resolveFgRole(
   interaction: ChatInputCommandInteraction,
-  store: ConfigStore,
-  action: string,
-): Promise<void> {
-  if (!(await requireManageServer(interaction))) return;
+  settings: GuildSettings,
+): Promise<Role | null> {
   const guild = interaction.guild!;
-  const settings = store.get(guild.id);
-
-  if (action === "view") {
-    const awardRoleId = settings.fgAwardRoleId;
-    const awardRole = awardRoleId ? guild.roles.cache.get(awardRoleId) : undefined;
-    await replyText(
-      interaction,
-      awardRole
-        ? `The FG award role is ${roleDisplayName(awardRole)}. It's given when someone makes an FG role.`
-        : "No FG award role is set.",
-      false,
-    );
-    return;
-  }
-
-  if (action === "remove") {
-    await saveSettings(
-      interaction,
-      store,
-      { ...settings, fgAwardRoleId: null },
-      "The FG award role is cleared.",
-    );
-    return;
-  }
-
   const selectedRole = interaction.options.getRole("role", true);
   const role = guild.roles.cache.get(selectedRole.id);
-  if (!role || role.id === guild.id || role.managed || isDangerousRole(role)) {
-    await replyText(interaction, "That role can't be the FG award role.");
+  if (!role || !settings.fgRoles[role.id]) {
+    await replyText(
+      interaction,
+      "That isn't an FG role. Make one with /fg color first.",
+    );
+    return null;
+  }
+  return role;
+}
+
+/**
+ * /fg assign @member @role — server owner or whitelisted staff only.
+ * Gives the FG role to the member AND makes them authorised to share
+ * it. If they already hold the role, just authorises them to share it.
+ */
+async function handleAssignCommand(
+  interaction: ChatInputCommandInteraction,
+  store: ConfigStore,
+): Promise<void> {
+  if (!(await requireFgCreator(interaction, store))) return;
+  const guild = interaction.guild!;
+  const settings = store.get(guild.id);
+  const role = await resolveFgRole(interaction, settings);
+  if (!role) return;
+  const targetUser = interaction.options.getUser("member", true);
+  const target = await guild.members.fetch(targetUser.id).catch(() => null);
+  if (!target) {
+    await replyText(interaction, "That person must be a member of this server first.");
     return;
+  }
+
+  const nextSettings = store.get(guild.id);
+  const sharers = nextSettings.fgRoleSharers[role.id] ?? [];
+  const alreadyHasRole = target.roles.cache.has(role.id);
+  const alreadyAuthorised = sharers.includes(target.id);
+
+  if (!alreadyHasRole) {
+    const botMember =
+      guild.members.me ?? (await guild.members.fetchMe().catch(() => null));
+    if (
+      !botMember?.permissions.has(PermissionFlagsBits.ManageRoles) ||
+      botMember.roles.highest.comparePositionTo(role) <= 0
+    ) {
+      await replyText(
+        interaction,
+        "The bot can't manage that FG role. Move its role above it first.",
+      );
+      return;
+    }
+    try {
+      await target.roles.add(role, `FG role assigned by ${interaction.user.id}`);
+    } catch {
+      await replyText(
+        interaction,
+        "The bot couldn't give them that FG role. Check its permissions and try again.",
+      );
+      return;
+    }
+  }
+
+  if (!alreadyAuthorised) {
+    nextSettings.fgRoleSharers[role.id] = [...sharers, target.id];
   }
   await saveSettings(
     interaction,
     store,
-    { ...settings, fgAwardRoleId: role.id },
-    `${roleDisplayName(role)} will be given to members when they make an FG role.`,
+    nextSettings,
+    alreadyHasRole
+      ? alreadyAuthorised
+        ? `${memberDisplayName(target)} is already authorised to share ${roleDisplayName(role)}.`
+        : `${memberDisplayName(target)} can now share ${roleDisplayName(role)}.`
+      : `${memberDisplayName(target)} now has ${roleDisplayName(role)} and can share it.`,
+  );
+}
+
+/**
+ * /fg auth add/remove/list @member @role — the FG role's owner, the
+ * server owner, or a whitelisted member. Auth is permission to share
+ * only: the member does NOT get the role itself.
+ */
+async function handleAuthCommand(
+  interaction: ChatInputCommandInteraction,
+  store: ConfigStore,
+  action: string,
+): Promise<void> {
+  const guild = interaction.guild!;
+  const settings = store.get(guild.id);
+  const role = await resolveFgRole(interaction, settings);
+  if (!role) return;
+  const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+  if (!member) {
+    await replyText(interaction, "You need to be a member of this server first.");
+    return;
+  }
+  if (
+    interaction.user.id !== guild.ownerId &&
+    !canAuthFgRole(member, role.id, settings)
+  ) {
+    await replyText(
+      interaction,
+      "Only the FG role owner, the server owner, or whitelisted members can do that.",
+    );
+    return;
+  }
+
+  if (action === "list") {
+    const ownerId = settings.fgRoleOwners[role.id];
+    const sharerIds = settings.fgRoleSharers[role.id] ?? [];
+    const lines: string[] = [];
+    if (ownerId) {
+      const owner = await guild.members.fetch(ownerId).catch(() => null);
+      lines.push(`Owner: ${owner ? memberDisplayName(owner) : `<@${ownerId}>`}`);
+    }
+    for (const userId of sharerIds.slice(0, 24)) {
+      const sharer = await guild.members.fetch(userId).catch(() => null);
+      lines.push(sharer ? memberDisplayName(sharer) : `<@${userId}>`);
+    }
+    await interaction.reply({
+      embeds: [
+        wildFieldEmbed(
+          `Who can share ${roleDisplayName(role)}`,
+          [{ name: "Authorised sharers", value: lines.join("\n") || "Nobody yet." }],
+        ),
+      ],
+      ephemeral: true,
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  const targetUser = interaction.options.getUser("member", true);
+  const target = await guild.members.fetch(targetUser.id).catch(() => null);
+  if (!target) {
+    await replyText(interaction, "That person must be a member of this server first.");
+    return;
+  }
+  const nextSettings = store.get(guild.id);
+  const sharers = nextSettings.fgRoleSharers[role.id] ?? [];
+
+  if (action === "add") {
+    if (settings.fgRoleOwners[role.id] === target.id) {
+      await replyText(
+        interaction,
+        `${memberDisplayName(target)} already owns ${roleDisplayName(role)}, so they can already share it.`,
+      );
+      return;
+    }
+    if (sharers.includes(target.id)) {
+      await replyText(
+        interaction,
+        `${memberDisplayName(target)} is already authorised to share ${roleDisplayName(role)}.`,
+      );
+      return;
+    }
+    nextSettings.fgRoleSharers[role.id] = [...sharers, target.id];
+    await saveSettings(
+      interaction,
+      store,
+      nextSettings,
+      `${memberDisplayName(target)} can now share ${roleDisplayName(role)}. They don't get the role itself.`,
+    );
+    return;
+  }
+
+  // action === "remove"
+  if (settings.fgRoleOwners[role.id] === target.id) {
+    await replyText(
+      interaction,
+      "You can't remove the FG role owner from sharing their own role.",
+    );
+    return;
+  }
+  if (!sharers.includes(target.id)) {
+    await replyText(
+      interaction,
+      `${memberDisplayName(target)} isn't authorised to share ${roleDisplayName(role)}.`,
+    );
+    return;
+  }
+  nextSettings.fgRoleSharers[role.id] = sharers.filter((id) => id !== target.id);
+  await saveSettings(
+    interaction,
+    store,
+    nextSettings,
+    `${memberDisplayName(target)} can no longer share ${roleDisplayName(role)}. They keep the role itself if they have it.`,
   );
 }
 
@@ -840,7 +1026,7 @@ async function finishShareOffer(
   const requester = await guild.members.fetch(requesterId).catch(() => null);
   if (
     !requester ||
-    (requesterId !== guild.ownerId && !canShareRole(requester, roleId, settings))
+    (requesterId !== guild.ownerId && !isFgSharer(requester, roleId, settings))
   ) {
     await button.update({
       embeds: [
@@ -961,15 +1147,19 @@ async function handleShareCommand(
     await replyText(interaction, "Both people need to be members of this server.");
     return;
   }
-  if (!requester.roles.cache.has(role.id)) {
-    await replyText(interaction, "You need to hold that FG role to share it.");
-    return;
-  }
+  // Assign + auth model: the caller may share when they are the server
+  // owner, whitelisted, the FG role's owner, or listed as an authorised
+  // sharer for that role (assigned by staff or authed by the owner).
+  // Holding the role alone is not enough, and an authed member who
+  // does not hold the role can still share it.
   if (
     interaction.user.id !== guild.ownerId &&
-    !canShareRole(requester, role.id, settings)
+    !isFgSharer(requester, role.id, settings)
   ) {
-    await replyText(interaction, "You aren't whitelisted to share that FG role.");
+    await replyText(
+      interaction,
+      "You aren't authorised to share that FG role. Only the server owner, whitelisted members, the FG role owner, and people assigned or authed for it can share it.",
+    );
     return;
   }
   if (target.roles.cache.has(role.id)) {
@@ -1076,8 +1266,8 @@ export async function handleFgCommand(
 
   const group = interaction.options.getSubcommandGroup(false);
   const action = interaction.options.getSubcommand();
-  if (group === "award") {
-    await handleAwardCommand(interaction, store, action);
+  if (group === "auth") {
+    await handleAuthCommand(interaction, store, action);
     return;
   }
   switch (action) {
@@ -1104,6 +1294,9 @@ export async function handleFgCommand(
       return;
     case "cleanup":
       await handleCleanupCommand(interaction, store);
+      return;
+    case "assign":
+      await handleAssignCommand(interaction, store);
       return;
     case "share":
       await handleShareCommand(interaction, store);

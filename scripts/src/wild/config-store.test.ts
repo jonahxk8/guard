@@ -108,7 +108,7 @@ test("treats saved settings without enforcement state as active", async () => {
   }
 });
 
-test("persists FG base, award, and owner settings", async () => {
+test("persists FG base, sharers, and owner settings", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "wild-config-fg-test-"));
   const configPath = path.join(directory, "wild-config.json");
   const previousConfigPath = process.env.WILD_CONFIG_PATH;
@@ -120,16 +120,18 @@ test("persists FG base, award, and owner settings", async () => {
     await store.set(GUILD_ID, {
       ...store.get(GUILD_ID),
       fgBaseRoleId: "222222222222222222",
-      fgAwardRoleId: "333333333333333333",
       fgRoleOwners: { "444444444444444444": "555555555555555555" },
+      fgRoleSharers: { "444444444444444444": ["666666666666666666"] },
     });
 
     const reloaded = new ConfigStore();
     await reloaded.load();
     assert.equal(reloaded.get(GUILD_ID).fgBaseRoleId, "222222222222222222");
-    assert.equal(reloaded.get(GUILD_ID).fgAwardRoleId, "333333333333333333");
     assert.deepEqual(reloaded.get(GUILD_ID).fgRoleOwners, {
       "444444444444444444": "555555555555555555",
+    });
+    assert.deepEqual(reloaded.get(GUILD_ID).fgRoleSharers, {
+      "444444444444444444": ["666666666666666666"],
     });
 
     // Old configs without the FG fields load as null / empty.
@@ -143,8 +145,29 @@ test("persists FG base, award, and owner settings", async () => {
     );
     await legacy.load();
     assert.equal(legacy.get(GUILD_ID).fgBaseRoleId, null);
-    assert.equal(legacy.get(GUILD_ID).fgAwardRoleId, null);
     assert.deepEqual(legacy.get(GUILD_ID).fgRoleOwners, {});
+    assert.deepEqual(legacy.get(GUILD_ID).fgRoleSharers, {});
+
+    // Old configs that still store fgAwardRoleId load without error,
+    // and the award role is never granted or written back.
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        guilds: {
+          [GUILD_ID]: {
+            protectedRoleIds: [],
+            allowedUserIds: [],
+            logChannelId: null,
+            fgAwardRoleId: "333333333333333333",
+          },
+        },
+      }),
+    );
+    const withAward = new ConfigStore();
+    await withAward.load();
+    assert.equal("fgAwardRoleId" in withAward.get(GUILD_ID), false);
+    assert.deepEqual(withAward.get(GUILD_ID).fgRoleSharers, {});
   } finally {
     if (previousConfigPath === undefined) {
       delete process.env.WILD_CONFIG_PATH;

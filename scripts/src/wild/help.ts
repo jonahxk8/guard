@@ -21,31 +21,36 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  * on buttons ("Prev", "Next", "Back", never arrow symbols). No colour
  * set on any embed, so the pages blend into the chat background.
  *
- * Who sees what (gating): privileged means the server owner, a member
- * with the Discord Administrator permission, a whitelisted user, or a
- * member holding a whitelisted role. Privileged users see the full menu
- * (Guard, FG, Blacklist). A normal user sees FG only — no Guard or
- * Blacklist buttons, fields, or syntax — and FG pages hide the
- * admin-only subcommands (base, list, cleanup, award) entirely. Asking
- * for an admin-only command as a normal user gets a short error, never
- * the command's syntax.
+ * Personalised help: there are no "Who:" lines anywhere. Instead, every
+ * listing shows only the commands THAT user can actually use right now,
+ * evaluated live from the member, their roles, fgRoleOwners,
+ * fgRoleSharers, the whitelist, Administrator, Manage Server, and the
+ * server owner. A normal member sees FG only; an FG owner also sees
+ * rename/icon/remove/share/auth; whitelisted staff see Guard, Blacklist,
+ * assign, and more. A plain member with no FG role sees the FG category
+ * with a short note and no commands they can't touch. Capability is
+ * re-checked on every button press.
  *
  * Sleek layout: help shows only the syntax for the form it was invoked
  * with — /help shows slash forms, ,help shows prefix forms. One field
  * per command: name is the syntax in backticks, value is a short purpose
- * (a few words) plus a short "Who: ..." tag. No em dashes, no extra
- * intro paragraphs.
+ * (a few words). No em dashes, no extra intro paragraphs.
  *
  * Pages:
- * - Main: the visible categories as fields, with buttons to jump to
- *   each one.
- * - Category: one field per visible command. FG has 12 subcommands for
- *   privileged users, so it splits into 2 pages of 6; for a normal user
- *   only 6 FG commands are visible, so it fits on one page. Guard and
+ * - Main: the visible categories as fields (FG is always shown, even
+ *   when the user can use none of its commands — then it carries the
+ *   "no FG role yet" note; Guard and Blacklist appear only when the
+ *   user can use at least one of their commands), with buttons to jump
+ *   to each one.
+ * - Category: one field per visible command. FG has 13 subcommands for
+ *   a fully privileged user, so it splits into 2 pages of 7 and 6; for
+ *   other users the pages are re-computed after filtering. Guard and
  *   Blacklist fit on one page. Buttons: [Prev] [Next] where there is
  *   another page, plus [Back].
  * - Single command: title is the command; fields are Syntax, What it
- *   does, Who can use it, Example. Button: [Back] to its category page.
+ *   does, Example. Button: [Back] to its category page. Asking for a
+ *   command the user can't use gets "You can't use that command.",
+ *   never the syntax.
  *
  * The same handler serves /help and ,help. Help is ephemeral on slash;
  * on prefix it is a public message (Discord has no ephemeral prefix
@@ -57,24 +62,180 @@ import { WILD_ERROR_REPLY } from "./reply.js";
 
 const HELP_BUTTON_PREFIX = "wild-help:";
 const HELP_BUTTON_TIMEOUT_MS = 5 * 60 * 1000;
-const FG_PAGE_SIZE = 6;
+const FG_PAGE_SIZE = 7;
 
-export const ADMIN_ONLY_HELP_ERROR =
-  "That command is for admins and whitelisted members.";
-export const ADMIN_ONLY_CATEGORY_ERROR =
-  "That help is for admins and whitelisted members.";
+export const CANNOT_USE_COMMAND_ERROR = "You can't use that command.";
 
 export type HelpMode = "slash" | "prefix";
 
-export interface HelpContext {
+/**
+ * What one user can actually do, evaluated live from their member
+ * object, their roles, fgRoleOwners, fgRoleSharers, the whitelist,
+ * Administrator, Manage Server, and the server owner. Every help
+ * listing is filtered through these flags — there are no "Who:" lines
+ * anymore, because a command you can't use never appears at all.
+ */
+export interface HelpCapabilities {
+  /** Server owner. */
+  owner: boolean;
+  /** Has the Discord Administrator permission. */
+  admin: boolean;
+  /** Whitelisted user, or holding a whitelisted role. */
+  whitelisted: boolean;
+  /** Has Manage Server (owners and Administrators count). */
+  manageServer: boolean;
+  /** Currently owns an FG role. */
+  ownsFgRole: boolean;
+  /** Currently holds an FG role (owner or assigned). */
+  holdsFgRole: boolean;
+  /** Listed in fgRoleSharers for at least one FG role. */
+  listedSharer: boolean;
+  /** May share at least one FG role (owner/whitelisted/FG owner/listed). */
+  canShareAny: boolean;
+  /** May auth others for at least one FG role (owner/whitelisted/FG owner). */
+  canAuthAny: boolean;
+  /** Owner, Administrator, or whitelisted. */
   privileged: boolean;
+}
+
+/** Fill in capability defaults and derive the combined flags. */
+export function deriveCaps(
+  partial: Partial<HelpCapabilities> = {},
+): HelpCapabilities {
+  const owner = partial.owner ?? false;
+  const admin = partial.admin ?? false;
+  const whitelisted = partial.whitelisted ?? false;
+  const ownsFgRole = partial.ownsFgRole ?? false;
+  const listedSharer = partial.listedSharer ?? false;
+  const privileged = owner || admin || whitelisted;
+  return {
+    owner,
+    admin,
+    whitelisted,
+    manageServer: partial.manageServer ?? (owner || admin),
+    ownsFgRole,
+    holdsFgRole: partial.holdsFgRole ?? ownsFgRole,
+    listedSharer,
+    canShareAny:
+      partial.canShareAny ?? (owner || whitelisted || ownsFgRole || listedSharer),
+    canAuthAny: partial.canAuthAny ?? (owner || whitelisted || ownsFgRole),
+    privileged,
+  };
+}
+
+/** Every capability on: the "can do everything" persona (tests, DMs). */
+export const ALL_CAPS: HelpCapabilities = deriveCaps({
+  owner: true,
+  admin: true,
+  whitelisted: true,
+  manageServer: true,
+  ownsFgRole: true,
+  holdsFgRole: true,
+  listedSharer: true,
+});
+
+export interface HelpContext {
+  caps: HelpCapabilities;
   mode: HelpMode;
 }
 
 export const DEFAULT_HELP_CONTEXT: HelpContext = {
-  privileged: true,
+  caps: ALL_CAPS,
   mode: "slash",
 };
+
+type PermissionsLike = { has: (permission: bigint) => boolean } | null | undefined;
+
+function permissionHas(
+  permissions: PermissionsLike,
+  permission: bigint,
+): boolean {
+  if (!permissions || typeof permissions.has !== "function") return false;
+  try {
+    return permissions.has(permission);
+  } catch {
+    return false;
+  }
+}
+
+function memberHasRole(member: unknown, roleId: string): boolean {
+  const cache = (member as { roles?: { cache?: unknown } } | null)?.roles?.cache as
+    | { has?: unknown; some?: unknown }
+    | undefined;
+  if (!cache) return false;
+  if (typeof cache.has === "function") {
+    try {
+      return (cache.has as (id: string) => boolean)(roleId);
+    } catch {
+      return false;
+    }
+  }
+  if (typeof cache.some === "function") {
+    try {
+      return (cache.some as (predicate: (role: { id: string }) => boolean) => boolean)(
+        (role) => role.id === roleId,
+      );
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Compute one user's capabilities live from their member object and
+ * the server's settings. When there is no member to check (DMs, test
+ * doubles), treat the user as able to do everything — there is no
+ * server to gate against.
+ */
+export function computeHelpCapabilities(
+  member: unknown,
+  permissions: PermissionsLike,
+  guildOwnerId: string | null | undefined,
+  settings: GuildSettings | null | undefined,
+): HelpCapabilities {
+  if (!member || typeof member !== "object") return ALL_CAPS;
+  const userId =
+    typeof (member as { id?: unknown }).id === "string"
+      ? ((member as { id: string }).id as string)
+      : null;
+  if (!userId) return ALL_CAPS;
+  const owner = Boolean(guildOwnerId) && userId === guildOwnerId;
+  const admin =
+    owner || permissionHas(permissions, PermissionFlagsBits.Administrator);
+  let whitelisted = false;
+  if (settings) {
+    try {
+      whitelisted = isWhitelisted(member as GuildMember, settings);
+    } catch {
+      whitelisted = false;
+    }
+  }
+  const manageServer =
+    owner || admin || permissionHas(permissions, PermissionFlagsBits.ManageGuild);
+  const ownsFgRole = settings
+    ? Object.values(settings.fgRoleOwners ?? {}).includes(userId)
+    : false;
+  const holdsFgRole = settings
+    ? Object.keys(settings.fgRoleOwners ?? {}).some((roleId) =>
+        memberHasRole(member, roleId),
+      )
+    : false;
+  const listedSharer = settings
+    ? Object.values(settings.fgRoleSharers ?? {}).some((userIds) =>
+        userIds.includes(userId),
+      )
+    : false;
+  return deriveCaps({
+    owner,
+    admin,
+    whitelisted,
+    manageServer,
+    ownsFgRole,
+    holdsFgRole,
+    listedSharer,
+  });
+}
 
 /**
  * Privileged for help: the server owner, a member with the Discord
@@ -88,42 +249,45 @@ export function isHelpPrivileged(
   guildOwnerId: string | null | undefined,
   settings: GuildSettings | null | undefined,
 ): boolean {
-  if (!member || typeof member !== "object") return true;
-  const candidate = member as {
-    id?: unknown;
-    permissions?: { has?: unknown };
-  };
-  if (
-    typeof candidate.id === "string" &&
-    guildOwnerId &&
-    candidate.id === guildOwnerId
-  ) {
-    return true;
+  return computeHelpCapabilities(
+    member,
+    (member as { permissions?: PermissionsLike } | null | undefined)
+      ?.permissions ?? null,
+    guildOwnerId,
+    settings,
+  ).privileged;
+}
+
+/** Which capability a command needs. One gate per command entry. */
+export type HelpGate =
+  | "privileged"
+  | "manageServer"
+  | "manageOrWhitelisted"
+  | "ownerOrWhitelisted"
+  | "fgOwner"
+  | "canShare"
+  | "canAuth";
+
+export function canSeeEntry(
+  gate: HelpGate,
+  caps: HelpCapabilities,
+): boolean {
+  switch (gate) {
+    case "privileged":
+      return caps.privileged;
+    case "manageServer":
+      return caps.manageServer;
+    case "manageOrWhitelisted":
+      return caps.manageServer || caps.whitelisted;
+    case "ownerOrWhitelisted":
+      return caps.owner || caps.whitelisted;
+    case "fgOwner":
+      return caps.ownsFgRole;
+    case "canShare":
+      return caps.canShareAny;
+    case "canAuth":
+      return caps.canAuthAny;
   }
-  const has = candidate.permissions?.has;
-  if (typeof has === "function") {
-    try {
-      if (
-        (has as (permission: bigint) => boolean).call(
-          candidate.permissions,
-          PermissionFlagsBits.Administrator,
-        )
-      ) {
-        return true;
-      }
-    } catch {
-      // A member shape without usable permissions is not privileged
-      // by permission — fall through to the whitelist check.
-    }
-  }
-  if (settings) {
-    try {
-      if (isWhitelisted(member as GuildMember, settings)) return true;
-    } catch {
-      // A member shape the whitelist cannot read is not privileged.
-    }
-  }
-  return false;
 }
 
 interface HelpEntry {
@@ -132,11 +296,10 @@ interface HelpEntry {
   slash: string;
   prefix: string;
   purpose: string;
-  who: string;
   example: string;
   examplePrefix: string;
-  /** True when only privileged users may see or use this command. */
-  privilegedOnly?: boolean;
+  /** Which capability gates this command. */
+  gate: HelpGate;
 }
 
 interface HelpCategory {
@@ -152,40 +315,36 @@ const GUARD_ENTRIES: HelpEntry[] = [
     slash: "/protect @role",
     prefix: ",guard @role",
     purpose: "Protect a role",
-    who: "Manage Server",
     example: "/protect @Pic",
     examplePrefix: ",guard @Pic",
-    privilegedOnly: true,
+    gate: "privileged",
   },
   {
     key: "whitelist",
     slash: "/whitelist @user or @role",
     prefix: ",whitelist @user or @role",
     purpose: "Whitelist a member or role",
-    who: "Manage Server",
     example: "/whitelist @Alex",
     examplePrefix: ",whitelist @Alex",
-    privilegedOnly: true,
+    gate: "privileged",
   },
   {
     key: "status",
     slash: "/status",
     prefix: ",status",
     purpose: "View protection settings",
-    who: "Manage Server",
     example: "/status",
     examplePrefix: ",status",
-    privilegedOnly: true,
+    gate: "privileged",
   },
   {
     key: "setup",
     slash: "/setup #channel",
     prefix: ",logchannel #channel or ,logchannel off",
     purpose: "Set the alert channel",
-    who: "Manage Server",
     example: "/setup #mod-log",
     examplePrefix: ",logchannel #mod-log",
-    privilegedOnly: true,
+    gate: "privileged",
   },
 ];
 
@@ -195,114 +354,117 @@ const FG_ENTRIES: HelpEntry[] = [
     slash: "/fg base @role",
     prefix: ",fg base @role",
     purpose: "Set the FG base role",
-    who: "Manage Server",
     example: "/fg base @FG",
     examplePrefix: ",fg base @FG",
-    privilegedOnly: true,
+    gate: "manageServer",
   },
   {
     key: "fg color",
     slash: "/fg color <color> <name>",
     prefix: ",fg color <color> <name> [second_color]",
     purpose: "Make your own FG role",
-    who: "Owner / whitelisted",
     example: "/fg color #ff0000 My Role",
     examplePrefix: ",fg color #ff0000 My Role",
+    gate: "ownerOrWhitelisted",
   },
   {
     key: "fg create",
     slash: "/fg create <name> <color> [second_color] [@member]",
     prefix: ",fg create <name> <color> [second_color] [@member]",
     purpose: "Create an FG role",
-    who: "Owner / whitelisted",
     example: "/fg create My Role #ff0000 @Alex",
     examplePrefix: ",fg create My Role #ff0000 @Alex",
+    gate: "ownerOrWhitelisted",
   },
   {
     key: "fg rename",
     slash: "/fg rename <name>",
     prefix: ",fg rename <name>",
     purpose: "Rename your FG role",
-    who: "FG role holder",
     example: "/fg rename New Name",
     examplePrefix: ",fg rename New Name",
+    gate: "fgOwner",
   },
   {
     key: "fg icon",
     slash: "/fg icon <url>",
     prefix: ",fg icon <url>",
     purpose: "Set your FG role icon",
-    who: "FG role holder",
     example: "/fg icon https://example.com/icon.png",
     examplePrefix: ",fg icon https://example.com/icon.png",
+    gate: "fgOwner",
   },
   {
     key: "fg remove",
     slash: "/fg remove",
     prefix: ",fg remove",
     purpose: "Delete your FG role",
-    who: "FG role holder",
     example: "/fg remove",
     examplePrefix: ",fg remove",
+    gate: "fgOwner",
   },
   {
     key: "fg list",
     slash: "/fg list",
     prefix: ",fg list",
     purpose: "List FG roles and owners",
-    who: "Manage Server / whitelisted",
     example: "/fg list",
     examplePrefix: ",fg list",
-    privilegedOnly: true,
+    gate: "manageOrWhitelisted",
   },
   {
     key: "fg cleanup",
     slash: "/fg cleanup",
     prefix: ",fg cleanup",
     purpose: "Remove FG roles of leavers",
-    who: "Manage Server",
     example: "/fg cleanup",
     examplePrefix: ",fg cleanup",
-    privilegedOnly: true,
+    gate: "manageServer",
   },
   {
     key: "fg share",
     slash: "/fg share @member @role",
     prefix: ",fg share @member @role",
     purpose: "Offer your FG role",
-    who: "FG holder / whitelisted",
     example: "/fg share @Alex @My Role",
     examplePrefix: ",fg share @Alex @My Role",
+    gate: "canShare",
   },
   {
-    key: "fg award set",
-    slash: "/fg award set @role",
-    prefix: ",fg award set @role",
-    purpose: "Set the FG award role",
-    who: "Manage Server",
-    example: "/fg award set @Booster",
-    examplePrefix: ",fg award set @Booster",
-    privilegedOnly: true,
+    key: "fg assign",
+    slash: "/fg assign @member @role",
+    prefix: ",fg assign @member @role",
+    purpose: "Give an FG role and let them share it",
+    example: "/fg assign @Alex @My Role",
+    examplePrefix: ",fg assign @Alex @My Role",
+    gate: "ownerOrWhitelisted",
   },
   {
-    key: "fg award view",
-    slash: "/fg award view",
-    prefix: ",fg award view",
-    purpose: "View the award role",
-    who: "Manage Server",
-    example: "/fg award view",
-    examplePrefix: ",fg award view",
-    privilegedOnly: true,
+    key: "fg auth add",
+    slash: "/fg auth add @member @role",
+    prefix: ",fg auth add @member @role",
+    purpose: "Let a member share an FG role",
+    example: "/fg auth add @Alex @My Role",
+    examplePrefix: ",fg auth add @Alex @My Role",
+    gate: "canAuth",
   },
   {
-    key: "fg award remove",
-    slash: "/fg award remove",
-    prefix: ",fg award remove",
-    purpose: "Clear the award role",
-    who: "Manage Server",
-    example: "/fg award remove",
-    examplePrefix: ",fg award remove",
-    privilegedOnly: true,
+    key: "fg auth remove",
+    slash: "/fg auth remove @member @role",
+    prefix: ",fg auth remove @member @role",
+    purpose: "Stop a member sharing an FG role",
+    example: "/fg auth remove @Alex @My Role",
+    examplePrefix: ",fg auth remove @Alex @My Role",
+    gate: "canAuth",
+  },
+  {
+    key: "fg auth list",
+    slash: "/fg auth list @role",
+    prefix: ",fg auth list @role",
+    purpose: "List who can share an FG role",
+    example: "/fg auth list @My Role",
+    examplePrefix: ",fg auth list @My Role",
+    gate: "canAuth",
   },
 ];
 
@@ -312,30 +474,27 @@ const BLACKLIST_ENTRIES: HelpEntry[] = [
     slash: "/blacklist add @user @role",
     prefix: ",blacklist add @user @role",
     purpose: "Block a member from a role",
-    who: "Manage Server",
     example: "/blacklist add @Alex @Pic",
     examplePrefix: ",blacklist add @Alex @Pic",
-    privilegedOnly: true,
+    gate: "privileged",
   },
   {
     key: "blacklist remove",
     slash: "/blacklist remove @user @role",
     prefix: ",blacklist remove @user @role",
     purpose: "Unblock a member",
-    who: "Manage Server",
     example: "/blacklist remove @Alex @Pic",
     examplePrefix: ",blacklist remove @Alex @Pic",
-    privilegedOnly: true,
+    gate: "privileged",
   },
   {
     key: "blacklist list",
     slash: "/blacklist list",
     prefix: ",blacklist list",
     purpose: "List blacklisted members",
-    who: "Manage Server / whitelisted",
     example: "/blacklist list",
     examplePrefix: ",blacklist list",
-    privilegedOnly: true,
+    gate: "privileged",
   },
 ];
 
@@ -374,6 +533,7 @@ const FG_SINGLE_WORDS: Record<string, string> = {
   remove: "fg remove",
   cleanup: "fg cleanup",
   share: "fg share",
+  assign: "fg assign",
 };
 
 export const helpCommand = new SlashCommandBuilder()
@@ -409,18 +569,22 @@ export type HelpResult =
   | { kind: "embed"; page: HelpPage }
   | { kind: "error"; message: string };
 
+/** The note a plain member with no FG role sees instead of commands. */
+export const NO_FG_ROLE_NOTE =
+  "You don't have an FG role yet — ask an admin or whitelisted member to assign you one.";
+
 function visibleEntries(category: HelpCategory, ctx: HelpContext): HelpEntry[] {
-  return ctx.privileged
-    ? category.entries
-    : category.entries.filter((entry) => !entry.privilegedOnly);
+  return category.entries.filter((entry) => canSeeEntry(entry.gate, ctx.caps));
 }
 
 function visibleCategories(ctx: HelpContext): HelpCategory[] {
-  // Guard and Blacklist are entirely privileged-only, so a normal user
-  // sees FG alone.
-  return ctx.privileged
-    ? HELP_CATEGORIES
-    : HELP_CATEGORIES.filter((category) => category.key === "fg");
+  // FG is always shown (with the no-FG-role note when the user can use
+  // none of its commands). Guard and Blacklist appear only when the
+  // user can use at least one of their commands.
+  return HELP_CATEGORIES.filter(
+    (category) =>
+      category.key === "fg" || visibleEntries(category, ctx).length > 0,
+  );
 }
 
 function entrySyntax(entry: HelpEntry, mode: HelpMode): string {
@@ -434,7 +598,7 @@ function entryExample(entry: HelpEntry, mode: HelpMode): string {
 function entryField(entry: HelpEntry, mode: HelpMode): WildField {
   return {
     name: `\`${entrySyntax(entry, mode)}\``,
-    value: `${entry.purpose}\nWho: ${entry.who}`,
+    value: entry.purpose,
   };
 }
 
@@ -443,13 +607,17 @@ function mainHelpPage(ctx: HelpContext): HelpPage {
   const helpWord = ctx.mode === "prefix" ? ",help" : "/help";
   return {
     title: "Wild help",
-    description: ctx.privileged
-      ? `Pick a category, or ${helpWord} <command>.`
-      : "Guard and Blacklist help is for admins and whitelisted members.",
-    fields: categories.map((category) => ({
-      name: category.title,
-      value: `${category.summary}\n${visibleEntries(category, ctx).length} commands`,
-    })),
+    description: `Pick a category, or ${helpWord} <command>.`,
+    fields: categories.map((category) => {
+      const count = visibleEntries(category, ctx).length;
+      if (category.key === "fg" && count === 0) {
+        return { name: category.title, value: NO_FG_ROLE_NOTE };
+      }
+      return {
+        name: category.title,
+        value: `${category.summary}\n${count} command${count === 1 ? "" : "s"}`,
+      };
+    }),
     buttons: categories.map((category) => ({
       id: `category:${category.key}:1`,
       label: category.title,
@@ -482,7 +650,10 @@ function categoryHelpPage(
   buttons.push({ id: "main", label: "Back" });
   return {
     title,
-    description: category.summary,
+    description:
+      entries.length === 0 && category.key === "fg"
+        ? NO_FG_ROLE_NOTE
+        : category.summary,
     fields: pageEntries.map((entry) => entryField(entry, ctx.mode)),
     buttons,
     kind: "category",
@@ -509,7 +680,6 @@ function entryHelpPage(entry: HelpEntry, ctx: HelpContext): HelpPage {
         value: `\`${entrySyntax(entry, ctx.mode)}\``,
       },
       { name: "What it does", value: entry.purpose },
-      { name: "Who can use it", value: entry.who },
       { name: "Example", value: `\`${entryExample(entry, ctx.mode)}\`` },
     ],
     buttons: [{ id: `category:${category.key}:${page}`, label: "Back" }],
@@ -520,7 +690,7 @@ function entryHelpPage(entry: HelpEntry, ctx: HelpContext): HelpPage {
   };
 }
 
-/** Encode an entry key ("fg award set") for a button customId. */
+/** Encode an entry key ("fg auth add") for a button customId. */
 function encodeEntryKey(key: string): string {
   return key.replace(/ /g, "_");
 }
@@ -544,8 +714,11 @@ export function resolveHelpTarget(
       (entry) => entry.key === categoryMatch[1],
     );
     if (category) {
-      if (!ctx.privileged && category.key !== "fg") {
-        return { kind: "error", message: ADMIN_ONLY_CATEGORY_ERROR };
+      if (
+        category.key !== "fg" &&
+        visibleEntries(category, ctx).length === 0
+      ) {
+        return { kind: "error", message: CANNOT_USE_COMMAND_ERROR };
       }
       return {
         kind: "embed",
@@ -559,8 +732,8 @@ export function resolveHelpTarget(
       (item) => item.key === decodeEntryKey(commandMatch[1]),
     );
     if (entry) {
-      if (!ctx.privileged && entry.privilegedOnly) {
-        return { kind: "error", message: ADMIN_ONLY_HELP_ERROR };
+      if (!canSeeEntry(entry.gate, ctx.caps)) {
+        return { kind: "error", message: CANNOT_USE_COMMAND_ERROR };
       }
       return { kind: "embed", page: entryHelpPage(entry, ctx) };
     }
@@ -586,8 +759,11 @@ export function resolveHelpTopic(
       (entry) => entry.key === categoryMatch[1],
     );
     if (category) {
-      if (!ctx.privileged && category.key !== "fg") {
-        return { kind: "error", message: ADMIN_ONLY_CATEGORY_ERROR };
+      if (
+        category.key !== "fg" &&
+        visibleEntries(category, ctx).length === 0
+      ) {
+        return { kind: "error", message: CANNOT_USE_COMMAND_ERROR };
       }
       return {
         kind: "embed",
@@ -597,8 +773,8 @@ export function resolveHelpTopic(
   }
   const direct = ALL_ENTRIES.find((entry) => entry.key === cleaned);
   if (direct) {
-    if (!ctx.privileged && direct.privilegedOnly) {
-      return { kind: "error", message: ADMIN_ONLY_HELP_ERROR };
+    if (!canSeeEntry(direct.gate, ctx.caps)) {
+      return { kind: "error", message: CANNOT_USE_COMMAND_ERROR };
     }
     return { kind: "embed", page: entryHelpPage(direct, ctx) };
   }
@@ -611,16 +787,16 @@ export function resolveHelpTopic(
     ? ALL_ENTRIES.find((entry) => entry.key === alias[cleaned])
     : undefined;
   if (aliased) {
-    if (!ctx.privileged && aliased.privilegedOnly) {
-      return { kind: "error", message: ADMIN_ONLY_HELP_ERROR };
+    if (!canSeeEntry(aliased.gate, ctx.caps)) {
+      return { kind: "error", message: CANNOT_USE_COMMAND_ERROR };
     }
     return { kind: "embed", page: entryHelpPage(aliased, ctx) };
   }
   const fgSingle = FG_SINGLE_WORDS[cleaned];
   if (fgSingle) {
     const entry = ALL_ENTRIES.find((item) => item.key === fgSingle)!;
-    if (!ctx.privileged && entry.privilegedOnly) {
-      return { kind: "error", message: ADMIN_ONLY_HELP_ERROR };
+    if (!canSeeEntry(entry.gate, ctx.caps)) {
+      return { kind: "error", message: CANNOT_USE_COMMAND_ERROR };
     }
     return { kind: "embed", page: entryHelpPage(entry, ctx) };
   }
@@ -673,16 +849,16 @@ export function parseHelpButton(
 }
 
 export interface HelpButtonOptions {
-  privileged?: boolean;
+  caps?: HelpCapabilities;
   mode?: HelpMode;
 }
 
 /**
  * Handle a help navigation button press. Returns the page navigated to,
- * or null when the press was rejected (wrong user, or a page the user is
- * no longer privileged to see) or the target is gone. The caller (the
- * help collector) uses the returned page to refresh the disabled-buttons
- * state when the menu times out.
+ * or null when the press was rejected (wrong user, or a page the user can
+ * no longer use) or the target is gone. The caller (the help collector)
+ * uses the returned page to refresh the disabled-buttons state when the
+ * menu times out.
  */
 export async function handleHelpButton(
   button: ButtonInteraction,
@@ -703,7 +879,7 @@ export async function handleHelpButton(
     return null;
   }
   const ctx: HelpContext = {
-    privileged: options.privileged ?? true,
+    caps: options.caps ?? ALL_CAPS,
     mode: options.mode ?? "slash",
   };
   const result = resolveHelpTarget(parsed.target, ctx);
@@ -748,12 +924,13 @@ export async function handleHelpCommand(
 ): Promise<void> {
   const topic = interaction.options.getString("topic");
   const settings = helpSettingsFor(interaction, store);
-  const privileged = isHelpPrivileged(
+  const caps = computeHelpCapabilities(
     interaction.member,
+    interaction.memberPermissions ?? null,
     interaction.guild?.ownerId ?? null,
     settings,
   );
-  const ctx: HelpContext = { privileged, mode };
+  const ctx: HelpContext = { caps, mode };
   const result = resolveHelpTopic(topic, ctx);
   if (result.kind === "error") {
     await interaction.reply({
@@ -799,17 +976,18 @@ export async function handleHelpCommand(
       await button.deferUpdate().catch(() => undefined);
       return;
     }
-    // Re-check privilege on every press: a member who lost their
-    // whitelist (or admin) since opening the menu must not be able to
-    // reach Guard/Blacklist pages through its buttons.
+    // Re-check capability on every press: a member who lost their FG
+    // role or whitelist since opening the menu must not be able to
+    // reach pages through its buttons.
     const freshSettings = helpSettingsFor(interaction, store);
-    const freshPrivileged = isHelpPrivileged(
+    const freshCaps = computeHelpCapabilities(
       button.member,
+      button.memberPermissions ?? null,
       interaction.guild?.ownerId ?? null,
       freshSettings,
     );
     const nextPage = await handleHelpButton(button, {
-      privileged: freshPrivileged,
+      caps: freshCaps,
       mode,
     });
     if (nextPage) currentPage = nextPage;

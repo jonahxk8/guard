@@ -10,10 +10,16 @@ export interface GuildSettings {
   fgRoles: Record<string, FgRoleAccess>;
   /** Role all FG roles sit under (Bleed-style base role). Null = not set. */
   fgBaseRoleId: string | null;
-  /** Shared role auto-granted when a member creates their FG role. Null = none. */
-  fgAwardRoleId: string | null;
   /** FG role id -> owner user id. One FG role per member (Wild rule). */
   fgRoleOwners: Record<string, string>;
+  /**
+   * FG role id -> user ids authorised to share that role. The FG role
+   * owner, the server owner, and whitelisted staff are always authorised
+   * and are not listed here. A member gets listed by /fg assign (which
+   * also gives them the role) or by /fg auth add (permission to share
+   * only — they do not get the role itself).
+   */
+  fgRoleSharers: Record<string, string[]>;
   /**
    * Blacklist: user id -> protected role ids that user may never be given.
    * A blacklisted grant is removed instantly, whoever gave it (except the
@@ -44,8 +50,8 @@ const emptySettings = (): GuildSettings => ({
   fgStaffRoleIds: [],
   fgRoles: {},
   fgBaseRoleId: null,
-  fgAwardRoleId: null,
   fgRoleOwners: {},
+  fgRoleSharers: {},
   blacklist: {},
   logChannelId: null,
   enforcementEnabled: true,
@@ -96,6 +102,21 @@ function parseOptionalSnowflakeArray(
     throw new Error(`Wild settings field ${fieldName} for server ${guildId} is invalid.`);
   }
   return [...value];
+}
+
+function parseFgRoleSharers(value: unknown, guildId: string): Record<string, string[]> {
+  if (value === undefined) return {};
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`FG role sharers for server ${guildId} are invalid.`);
+  }
+  const map: Record<string, string[]> = {};
+  for (const [roleId, userIds] of Object.entries(value)) {
+    if (!isSnowflake(roleId) || !isSnowflakeArray(userIds)) {
+      throw new Error(`FG role sharers for server ${guildId} are invalid.`);
+    }
+    map[roleId] = [...new Set(userIds)];
+  }
+  return map;
 }
 
 function parseBlacklist(value: unknown, guildId: string): Record<string, string[]> {
@@ -211,12 +232,11 @@ function parseSettings(value: unknown, guildId: string): GuildSettings {
       "fgBaseRoleId",
       guildId,
     ),
-    fgAwardRoleId: parseOptionalSnowflake(
-      candidate.fgAwardRoleId,
-      "fgAwardRoleId",
-      guildId,
-    ),
+    // fgAwardRoleId was removed (the award system is gone). Old configs
+    // may still have it stored — it is ignored here, never read back,
+    // and never written again, so those configs still load fine.
     fgRoleOwners: parseFgRoleOwners(candidate.fgRoleOwners, guildId),
+    fgRoleSharers: parseFgRoleSharers(candidate.fgRoleSharers, guildId),
     blacklist: parseBlacklist(candidate.blacklist, guildId),
     logChannelId: candidate.logChannelId,
     enforcementEnabled: candidate.enforcementEnabled ?? true,
@@ -248,6 +268,11 @@ export function blacklistEntries(settings: GuildSettings): Array<{
   return Object.entries(settings.blacklist ?? {}).flatMap(([userId, roleIds]) =>
     roleIds.map((roleId) => ({ userId, roleId })),
   );
+}
+
+/** User ids explicitly authorised to share one FG role (owner not included). */
+export function fgSharersFor(settings: GuildSettings, roleId: string): string[] {
+  return [...(settings.fgRoleSharers?.[roleId] ?? [])];
 }
 
 export class ConfigStore {
@@ -317,8 +342,13 @@ export class ConfigStore {
             ]),
           ),
           fgBaseRoleId: current.fgBaseRoleId ?? null,
-          fgAwardRoleId: current.fgAwardRoleId ?? null,
           fgRoleOwners: { ...current.fgRoleOwners },
+          fgRoleSharers: Object.fromEntries(
+            Object.entries(current.fgRoleSharers ?? {}).map(([roleId, userIds]) => [
+              roleId,
+              [...userIds],
+            ]),
+          ),
           blacklist: Object.fromEntries(
             Object.entries(current.blacklist ?? {}).map(([userId, roleIds]) => [
               userId,
@@ -351,8 +381,13 @@ export class ConfigStore {
         ]),
       ),
       fgBaseRoleId: next.fgBaseRoleId ?? null,
-      fgAwardRoleId: next.fgAwardRoleId ?? null,
       fgRoleOwners: { ...(next.fgRoleOwners ?? {}) },
+      fgRoleSharers: Object.fromEntries(
+        Object.entries(next.fgRoleSharers ?? {}).map(([roleId, userIds]) => [
+          roleId,
+          [...userIds],
+        ]),
+      ),
       blacklist: Object.fromEntries(
         Object.entries(next.blacklist ?? {}).map(([userId, roleIds]) => [
           userId,

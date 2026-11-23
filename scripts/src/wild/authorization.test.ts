@@ -3,7 +3,9 @@ import test from "node:test";
 import { GuildMember } from "discord.js";
 import {
   canAssignFgRole,
+  canAuthFgRole,
   canShareFgRole,
+  isFgSharer,
   isFgStaff,
 } from "./authorization.js";
 import { FgRoleAccess, GuildSettings } from "./config-store.js";
@@ -35,7 +37,7 @@ function makeSettings(access: FgRoleAccess): GuildSettings {
     fgStaffRoleIds: [],
     fgRoles: { [FG_ROLE_ID]: access },
     fgBaseRoleId: null,
-    fgAwardRoleId: null,
+    fgRoleSharers: {},
     fgRoleOwners: {},
     blacklist: {},
     logChannelId: null,
@@ -73,4 +75,50 @@ test("FG sharing requires holding and being whitelisted for that FG role", () =>
     ...access,
     shareUserIds: [],
   }), false);
+});
+
+test("isFgSharer: FG owner, whitelisted, and listed sharers pass; holding alone fails", () => {
+  const ownerId = "777777777777777777";
+  const listedId = "888888888888888888";
+  const settings = makeSettings({
+    assignUserIds: [],
+    assignRoleIds: [],
+    shareUserIds: [],
+    shareRoleIds: [],
+  });
+  settings.fgRoleOwners = { [FG_ROLE_ID]: ownerId };
+  settings.fgRoleSharers = { [FG_ROLE_ID]: [listedId] };
+  settings.allowedUserIds = [MEMBER_ID];
+
+  // FG owner is always authorised, even without holding the role.
+  assert.equal(isFgSharer(makeMember(ownerId), FG_ROLE_ID, settings), true);
+  // Whitelisted staff are always authorised.
+  assert.equal(isFgSharer(makeMember(MEMBER_ID), FG_ROLE_ID, settings), true);
+  // A listed sharer is authorised, with or without the role.
+  assert.equal(isFgSharer(makeMember(listedId), FG_ROLE_ID, settings), true);
+  // Holding the role alone is NOT enough.
+  assert.equal(
+    isFgSharer(makeMember("999999999999999999", [FG_ROLE_ID]), FG_ROLE_ID, settings),
+    false,
+  );
+  assert.equal(isFgSharer(makeMember("999999999999999999"), FG_ROLE_ID, settings), false);
+});
+
+test("canAuthFgRole: FG owner and whitelisted pass; holder and random member fail", () => {
+  const ownerId = "777777777777777777";
+  const holderId = "888888888888888888";
+  const settings = makeSettings({
+    assignUserIds: [],
+    assignRoleIds: [],
+    shareUserIds: [],
+    shareRoleIds: [],
+  });
+  settings.fgRoleOwners = { [FG_ROLE_ID]: ownerId };
+  settings.allowedUserIds = [MEMBER_ID];
+
+  assert.equal(canAuthFgRole(makeMember(ownerId), FG_ROLE_ID, settings), true);
+  assert.equal(canAuthFgRole(makeMember(MEMBER_ID), FG_ROLE_ID, settings), true);
+  // Holding the role (assigned, not owner) is not enough to auth others.
+  assert.equal(canAuthFgRole(makeMember(holderId, [FG_ROLE_ID]), FG_ROLE_ID, settings), false);
+  assert.equal(canAuthFgRole(makeMember("999999999999999999"), FG_ROLE_ID, settings), false);
 });

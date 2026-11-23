@@ -21,7 +21,7 @@ function makeSettings(partial: Partial<GuildSettings> = {}): GuildSettings {
     fgStaffRoleIds: [],
     fgRoles: {},
     fgBaseRoleId: null,
-    fgAwardRoleId: null,
+    fgRoleSharers: {},
     fgRoleOwners: {},
     blacklist: {},
     logChannelId: null,
@@ -240,6 +240,17 @@ test("parsePrefixMessage parses mentions, raw ids, and fg colour args", () => {
   assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.color, "red");
   assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.second_color, "#0000ff");
   assert.equal(createGradient && "args" in createGradient && createGradient.args.strings.name, "My Role");
+  const assign = parsePrefixMessage(",fg assign <@333333333333333333> <@&666666666666666666>");
+  assert.equal(assign && "args" in assign && assign.args.subcommand, "assign");
+  assert.equal(assign && "args" in assign && assign.args.users.member, "333333333333333333");
+  assert.equal(assign && "args" in assign && assign.args.roles.role, "666666666666666666");
+  const authAdd = parsePrefixMessage(",fg auth add <@333333333333333333> <@&666666666666666666>");
+  assert.equal(authAdd && "args" in authAdd && authAdd.args.subcommandGroup, "auth");
+  assert.equal(authAdd && "args" in authAdd && authAdd.args.subcommand, "add");
+  const authList = parsePrefixMessage(",fg auth list <@&666666666666666666>");
+  assert.equal(authList && "args" in authList && authList.args.subcommand, "list");
+  const award = parsePrefixMessage(",fg award view");
+  assert.equal(award && "error" in award && award.error, "Use ,help fg to see FG commands.");
   const help = parsePrefixMessage(",help fg create");
   assert.equal(help && "args" in help && help.args.strings.topic, "fg create");
   assert.equal(parsePrefixMessage(",boosterrole base"), null);
@@ -319,9 +330,20 @@ test(",fg color creates an FG role through the shared handler", async () => {
   assert.match(sent[0].content ?? "", /is your FG role now/i);
 });
 
-test(",fg rename and ,fg award view route to the shared FG handler", async () => {
+test(",fg rename and ,fg assign route to the shared FG handler", async () => {
   const config = createStore(
-    makeSettings({ fgRoleOwners: { [FG_ROLE_ID]: USER_ID } }),
+    makeSettings({
+      allowedUserIds: [USER_ID],
+      fgRoleOwners: { [FG_ROLE_ID]: USER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
   );
   const rename = createMessage({
     content: ",fg rename New Name",
@@ -330,9 +352,51 @@ test(",fg rename and ,fg award view route to the shared FG handler", async () =>
   await handlePrefixMessage(rename.message, config.store);
   assert.match(rename.sent[0].content ?? "", /now called/i);
 
-  const award = createMessage({ content: ",fg award view" });
-  await handlePrefixMessage(award.message, config.store);
-  assert.match(award.sent[0].content ?? "", /No FG award role is set/i);
+  const assign = createMessage({
+    content: ",fg assign <@333333333333333333> <@&666666666666666666>",
+    roles: [{ id: FG_ROLE_ID }],
+  });
+  await handlePrefixMessage(assign.message, config.store);
+  assert.deepEqual(config.getSettings().fgRoleSharers, {
+    [FG_ROLE_ID]: [OTHER_ID],
+  });
+  assert.match(assign.sent[0].content ?? "", /can share it/i);
+});
+
+test(",fg auth add and ,fg auth list route to the shared FG handler", async () => {
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: USER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const add = createMessage({
+    content: ",fg auth add <@333333333333333333> <@&666666666666666666>",
+    roles: [{ id: FG_ROLE_ID }],
+  });
+  await handlePrefixMessage(add.message, config.store);
+  assert.deepEqual(config.getSettings().fgRoleSharers, {
+    [FG_ROLE_ID]: [OTHER_ID],
+  });
+  assert.match(add.sent[0].content ?? "", /can now share/i);
+
+  const list = createMessage({
+    content: ",fg auth list <@&666666666666666666>",
+    roles: [{ id: FG_ROLE_ID }],
+  });
+  await handlePrefixMessage(list.message, config.store);
+  const embed = list.sent[0].embeds?.[0].toJSON();
+  const fields = (embed?.fields ?? []) as { name: string; value: string }[];
+  assert.equal(embed?.title, "Who can share Role");
+  assert.match(fields[0]?.value ?? "", /Owner: Alex/);
+  assert.match(fields[0]?.value ?? "", /Sam/);
 });
 
 test(",blacklist add/remove/list parse and route to the same handlers", async () => {
@@ -459,7 +523,7 @@ test(",fg create by a non-whitelisted member is rejected", async () => {
   );
 });
 
-test(",help for a normal user shows FG only, with prefix syntax", async () => {
+test(",help for a Manage Server member shows FG only, with prefix syntax", async () => {
   const config = createStore();
 
   const main = createMessage({ content: ",help" });
@@ -478,7 +542,8 @@ test(",help for a normal user shows FG only, with prefix syntax", async () => {
   const mainText = mainFields
     .map((field) => `${field.name}\n${field.value}`)
     .join("\n");
-  assert.match(mainText, /6 commands/);
+  // Manage Server alone sees base, list, and cleanup — nothing else.
+  assert.match(mainText, /3 commands/);
   assert.doesNotMatch(mainText, /\|/);
   assert.doesNotMatch(mainText, /Guard|Blacklist/);
 
@@ -493,31 +558,24 @@ test(",help for a normal user shows FG only, with prefix syntax", async () => {
   const fgText = fgFields
     .map((field) => `${field.name}\n${field.value}`)
     .join("\n");
-  assert.match(fgText, /,fg create/);
+  assert.deepEqual(
+    fgFields.map((field) => field.name),
+    ["`,fg base @role`", "`,fg list`", "`,fg cleanup`"],
+  );
   assert.doesNotMatch(fgText, /\/fg create/);
   assert.doesNotMatch(fgText, /\/blacklist/);
 
+  // fg create is owner-or-whitelisted only, so this member gets the
+  // short error, never the syntax.
   const create = createMessage({ content: ",help fg create" });
   await handlePrefixMessage(create.message, config.store);
-  const createEmbed = create.sent[0].embeds?.[0].toJSON();
-  const createFields = (createEmbed?.fields ?? []) as {
-    name: string;
-    value: string;
-  }[];
-  const createText = createFields
-    .map((field) => `${field.name}\n${field.value}`)
-    .join("\n");
-  assert.match(createText, /,fg create <name> <color>/);
-  assert.doesNotMatch(createText, /\/fg create/);
-  assert.match(createText, /Owner \/ whitelisted/);
+  assert.equal(create.sent[0].embeds, undefined);
+  assert.equal(create.sent[0].content, "You can't use that command.");
 
+  // fg base is Manage Server, so this member CAN see it.
   const guarded = createMessage({ content: ",help fg base" });
   await handlePrefixMessage(guarded.message, config.store);
-  assert.equal(guarded.sent[0].embeds, undefined);
-  assert.match(
-    guarded.sent[0].content ?? "",
-    /That command is for admins and whitelisted members/,
-  );
+  assert.equal(guarded.sent[0].embeds?.[0].toJSON().title, "fg base");
 
   const unknown = createMessage({ content: ",help nonsense" });
   await handlePrefixMessage(unknown.message, config.store);

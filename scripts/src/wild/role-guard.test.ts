@@ -66,7 +66,7 @@ function createSetup(
     fgStaffRoleIds: [],
     fgRoles: {},
     fgBaseRoleId: null,
-    fgAwardRoleId: null,
+    fgRoleSharers: {},
     fgRoleOwners: {},
     blacklist: options.blacklist ?? {},
     logChannelId: options.logChannelId === undefined ? "666666666666666666" : options.logChannelId,

@@ -331,18 +331,36 @@ function parseFgPrefix(
       args.roles.role = roleId;
       return { command: "fg", args };
     }
-    case "award": {
-      const awardAction = tail[0];
-      if (awardAction === "view" || awardAction === "remove") {
-        args.subcommandGroup = "award";
-        args.subcommand = awardAction;
+    case "assign": {
+      const memberId = parseUserToken(tail[0]);
+      const roleId = parseRoleToken(tail[1]);
+      if (!memberId || !roleId) {
+        return usage("Usage: ,fg assign @member @role");
+      }
+      args.subcommand = "assign";
+      args.users.member = memberId;
+      args.roles.role = roleId;
+      return { command: "fg", args };
+    }
+    case "auth": {
+      const authAction = tail[0];
+      if (authAction === "list") {
+        const roleId = parseRoleToken(tail[1]);
+        if (!roleId) return usage("Usage: ,fg auth list @role");
+        args.subcommandGroup = "auth";
+        args.subcommand = "list";
+        args.roles.role = roleId;
         return { command: "fg", args };
       }
-      if (awardAction === "set") {
-        const roleId = parseRoleToken(tail[1]);
-        if (!roleId) return usage("Usage: ,fg award set @role");
-        args.subcommandGroup = "award";
-        args.subcommand = "set";
+      if (authAction === "add" || authAction === "remove") {
+        const memberId = parseUserToken(tail[1]);
+        const roleId = parseRoleToken(tail[2]);
+        if (!memberId || !roleId) {
+          return usage(`Usage: ,fg auth ${authAction} @member @role`);
+        }
+        args.subcommandGroup = "auth";
+        args.subcommand = authAction;
+        args.users.member = memberId;
         args.roles.role = roleId;
         return { command: "fg", args };
       }

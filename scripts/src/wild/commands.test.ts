@@ -29,7 +29,7 @@ function makeSettings(partial: Partial<GuildSettings> = {}): GuildSettings {
     fgStaffRoleIds: [],
     fgRoles: {},
     fgBaseRoleId: null,
-    fgAwardRoleId: null,
+    fgRoleSharers: {},
     fgRoleOwners: {},
     blacklist: {},
     logChannelId: null,

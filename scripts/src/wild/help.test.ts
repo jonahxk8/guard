@@ -6,8 +6,12 @@ import {
   EmbedBuilder,
 } from "discord.js";
 import {
+  ALL_CAPS,
+  CANNOT_USE_COMMAND_ERROR,
   HELP_CATEGORIES,
+  NO_FG_ROLE_NOTE,
   buildHelpComponents,
+  deriveCaps,
   handleHelpButton,
   handleHelpCommand,
   isHelpPrivileged,
@@ -19,10 +23,38 @@ import {
 } from "./help.js";
 import type { ConfigStore, GuildSettings } from "./config-store.js";
 
-const PRIVILEGED: HelpContext = { privileged: true, mode: "slash" };
-const NORMAL: HelpContext = { privileged: false, mode: "slash" };
-const PREFIX: HelpContext = { privileged: true, mode: "prefix" };
-const NORMAL_PREFIX: HelpContext = { privileged: false, mode: "prefix" };
+// Personas: FULL sees everything; OWNER is the server owner; ADMIN has
+// Administrator; WHITELISTED is whitelisted staff; FG_OWNER owns an FG
+// role; HOLDER was assigned an FG role (and can share it); SHARER was
+// authed to share a role they do not hold; NORMAL is a plain member.
+const FULL: HelpContext = { caps: ALL_CAPS, mode: "slash" };
+const FULL_PREFIX: HelpContext = { caps: ALL_CAPS, mode: "prefix" };
+const NORMAL: HelpContext = { caps: deriveCaps({}), mode: "slash" };
+const NORMAL_PREFIX: HelpContext = { caps: deriveCaps({}), mode: "prefix" };
+const OWNER: HelpContext = {
+  caps: deriveCaps({ owner: true, admin: true, manageServer: true }),
+  mode: "slash",
+};
+const ADMIN: HelpContext = {
+  caps: deriveCaps({ admin: true, manageServer: true }),
+  mode: "slash",
+};
+const WHITELISTED: HelpContext = {
+  caps: deriveCaps({ whitelisted: true }),
+  mode: "slash",
+};
+const FG_OWNER: HelpContext = {
+  caps: deriveCaps({ ownsFgRole: true, holdsFgRole: true }),
+  mode: "slash",
+};
+const HOLDER: HelpContext = {
+  caps: deriveCaps({ holdsFgRole: true, listedSharer: true }),
+  mode: "slash",
+};
+const SHARER: HelpContext = {
+  caps: deriveCaps({ listedSharer: true }),
+  mode: "slash",
+};
 
 interface Reply {
   content?: string;
@@ -72,7 +104,7 @@ function makeSettings(partial: Partial<GuildSettings> = {}): GuildSettings {
     fgStaffRoleIds: [],
     fgRoles: {},
     fgBaseRoleId: null,
-    fgAwardRoleId: null,
+    fgRoleSharers: {},
     fgRoleOwners: {},
     blacklist: {},
     logChannelId: null,
@@ -143,7 +175,7 @@ test("main help page lists the 3 categories as fields, with category buttons", (
     ["Guard", "FG", "Blacklist"],
   );
   assert.match(result.page.fields[0].value, /Protect roles/);
-  assert.match(result.page.fields[1].value, /12 commands/);
+  assert.match(result.page.fields[1].value, /13 commands/);
   assert.match(result.page.description ?? "", /\/help <command>/);
   assert.deepEqual(
     result.page.buttons.map((button) => button.label),
@@ -155,20 +187,20 @@ test("main help page lists the 3 categories as fields, with category buttons", (
   );
 });
 
-test("/help fg page 1 has 6 commands and a Next button", () => {
+test("/help fg page 1 has 7 commands and a Next button", () => {
   const result = resolveHelpTopic("fg");
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
   assert.equal(result.page.title, "Wild help - FG (1/2)");
-  assert.equal(result.page.fields.length, 6);
+  assert.equal(result.page.fields.length, 7);
   assert.equal(result.page.fields[0].name, "`/fg base @role`");
-  assert.match(result.page.fields[0].value, /Set the FG base role/);
-  assert.match(result.page.fields[0].value, /Who: Manage Server/);
+  assert.equal(result.page.fields[0].value, "Set the FG base role");
   assert.equal(result.page.fields[1].name, "`/fg color <color> <name>`");
   assert.equal(
     result.page.fields[2].name,
     "`/fg create <name> <color> [second_color] [@member]`",
   );
+  assert.equal(result.page.fields[6].name, "`/fg list`");
   assert.deepEqual(
     result.page.buttons.map((button) => button.label),
     ["Next", "Back"],
@@ -177,15 +209,18 @@ test("/help fg page 1 has 6 commands and a Next button", () => {
   assert.doesNotMatch(fieldTextFromPage(result.page), /,fg /);
 });
 
-test("/help fg page 2 has the award commands and a Prev button", () => {
+test("/help fg page 2 has cleanup, share, assign, and auth, and a Prev button", () => {
   const result = resolveHelpTarget("category:fg:2");
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
   assert.equal(result.page.title, "Wild help - FG (2/2)");
   assert.equal(result.page.fields.length, 6);
-  assert.equal(result.page.fields[0].name, "`/fg list`");
-  assert.equal(result.page.fields[3].name, "`/fg award set @role`");
-  assert.equal(result.page.fields[5].name, "`/fg award remove`");
+  assert.equal(result.page.fields[0].name, "`/fg cleanup`");
+  assert.equal(result.page.fields[1].name, "`/fg share @member @role`");
+  assert.equal(result.page.fields[2].name, "`/fg assign @member @role`");
+  assert.equal(result.page.fields[3].name, "`/fg auth add @member @role`");
+  assert.equal(result.page.fields[4].name, "`/fg auth remove @member @role`");
+  assert.equal(result.page.fields[5].name, "`/fg auth list @role`");
   assert.deepEqual(
     result.page.buttons.map((button) => button.label),
     ["Prev", "Back"],
@@ -231,12 +266,12 @@ test("/help fg create shows syntax, purpose, gate, and example in fields", async
   const fields = embed?.fields ?? [];
   assert.deepEqual(
     fields.map((field) => field.name),
-    ["Syntax", "What it does", "Who can use it", "Example"],
+    ["Syntax", "What it does", "Example"],
   );
   assert.match(fields[0].value, /\/fg create <name> <color>/);
   assert.doesNotMatch(fields[0].value, /,fg create/);
-  assert.match(fields[2].value, /Owner \/ whitelisted/);
-  assert.match(fields[3].value, /\/fg create My Role #ff0000 @Alex/);
+  assert.match(fields[2].value, /\/fg create My Role #ff0000 @Alex/);
+  assert.doesNotMatch(embedText(replies[0]), /Who:/);
 });
 
 test("/help blacklist add shows one command with its syntax and gate", async () => {
@@ -247,7 +282,7 @@ test("/help blacklist add shows one command with its syntax and gate", async () 
   const text = embedText(replies[0]);
   assert.match(text, /\/blacklist add @user @role/);
   assert.doesNotMatch(text, /,blacklist add/);
-  assert.match(text, /Manage Server/);
+  assert.doesNotMatch(text, /Who:/);
   assert.doesNotMatch(text, /\/blacklist remove/);
 });
 
@@ -262,7 +297,7 @@ test("/help with an unknown topic errors with a pointer to /help", async () => {
   assert.doesNotMatch(replies[0].content ?? "", /\|/);
 });
 
-test("normal user main help shows FG only, no Guard or Blacklist", () => {
+test("normal user main help shows FG only, with the no-FG-role note", () => {
   const result = resolveHelpTopic(null, NORMAL);
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
@@ -270,86 +305,155 @@ test("normal user main help shows FG only, no Guard or Blacklist", () => {
     result.page.fields.map((field) => field.name),
     ["FG"],
   );
-  assert.match(result.page.fields[0].value, /6 commands/);
-  assert.match(result.page.description ?? "", /admins and whitelisted members/);
+  assert.equal(result.page.fields[0].value, NO_FG_ROLE_NOTE);
+  assert.match(result.page.description ?? "", /\/help <command>/);
   assert.deepEqual(
     result.page.buttons.map((button) => button.label),
     ["FG"],
   );
   assert.doesNotMatch(fieldTextFromPage(result.page), /Guard|Blacklist/);
+  assert.doesNotMatch(fieldTextFromPage(result.page), /Who:/);
 });
 
-test("normal user FG page hides base, list, cleanup, and award", () => {
+test("normal user FG page shows the note and no commands", () => {
   const result = resolveHelpTopic("fg", NORMAL);
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
   assert.equal(result.page.title, "Wild help - FG");
-  assert.equal(result.page.fields.length, 6);
-  assert.deepEqual(
-    result.page.fields.map((field) => field.name),
-    [
-      "`/fg color <color> <name>`",
-      "`/fg create <name> <color> [second_color] [@member]`",
-      "`/fg rename <name>`",
-      "`/fg icon <url>`",
-      "`/fg remove`",
-      "`/fg share @member @role`",
-    ],
-  );
+  assert.equal(result.page.fields.length, 0);
+  assert.equal(result.page.description, NO_FG_ROLE_NOTE);
   assert.deepEqual(
     result.page.buttons.map((button) => button.label),
     ["Back"],
   );
-  assert.doesNotMatch(fieldTextFromPage(result.page), /base|award|cleanup/);
-  assert.doesNotMatch(fieldTextFromPage(result.page), /\/fg list/);
+  assert.doesNotMatch(fieldTextFromPage(result.page), /base|auth|cleanup|share/);
 });
 
-test("normal user asking for an admin-only command gets an error, never its syntax", () => {
-  for (const topic of ["fg base", "fg list", "fg cleanup", "fg award set", "protect", "blacklist add", "status"]) {
+test("normal user asking for a command they can't use gets an error, never its syntax", () => {
+  for (const topic of ["fg base", "fg list", "fg cleanup", "fg color", "fg create", "fg rename", "fg share", "fg assign", "fg auth add", "protect", "blacklist add", "status"]) {
     const result = resolveHelpTopic(topic, NORMAL);
     assert.equal(result.kind, "error", topic);
     if (result.kind !== "error") continue;
-    assert.equal(
-      result.message,
-      "That command is for admins and whitelisted members.",
-    );
+    assert.equal(result.message, CANNOT_USE_COMMAND_ERROR);
   }
   const category = resolveHelpTopic("guard", NORMAL);
   assert.equal(category.kind, "error");
   if (category.kind === "error") {
-    assert.equal(
-      category.message,
-      "That help is for admins and whitelisted members.",
-    );
+    assert.equal(category.message, CANNOT_USE_COMMAND_ERROR);
   }
   const blacklist = resolveHelpTopic("blacklist", NORMAL);
   assert.equal(blacklist.kind, "error");
 });
 
-test("normal user can still see FG commands they may use", () => {
-  for (const topic of ["fg color", "fg create", "fg rename", "fg share"]) {
-    const result = resolveHelpTopic(topic, NORMAL);
-    assert.equal(result.kind, "embed", topic);
+test("personas see exactly the FG commands they can use", () => {
+  const seen = (ctx: HelpContext): string[] => {
+    const fields: string[] = [];
+    const first = resolveHelpTarget("category:fg:1", ctx);
+    if (first.kind !== "embed") return fields;
+    fields.push(...first.page.fields.map((field) => field.name));
+    // Only fetch page 2 when the filtered list actually spans 2 pages.
+    if (first.page.title.includes("(1/2)")) {
+      const second = resolveHelpTarget("category:fg:2", ctx);
+      if (second.kind === "embed") {
+        fields.push(...second.page.fields.map((field) => field.name));
+      }
+    }
+    return fields;
+  };
+  // Server owner: everything except rename/icon/remove (needs to own a role).
+  assert.deepEqual(seen(OWNER), [
+    "`/fg base @role`",
+    "`/fg color <color> <name>`",
+    "`/fg create <name> <color> [second_color] [@member]`",
+    "`/fg list`",
+    "`/fg cleanup`",
+    "`/fg share @member @role`",
+    "`/fg assign @member @role`",
+    "`/fg auth add @member @role`",
+    "`/fg auth remove @member @role`",
+    "`/fg auth list @role`",
+  ]);
+  // Administrator (not whitelisted, owns no FG role): Guard/Blacklist work,
+  // but FG creation, sharing, and auth are not theirs.
+  assert.deepEqual(seen(ADMIN), [
+    "`/fg base @role`",
+    "`/fg list`",
+    "`/fg cleanup`",
+  ]);
+  // Whitelisted staff: creation, listing, sharing, assign, and auth.
+  assert.deepEqual(seen(WHITELISTED), [
+    "`/fg color <color> <name>`",
+    "`/fg create <name> <color> [second_color] [@member]`",
+    "`/fg list`",
+    "`/fg share @member @role`",
+    "`/fg assign @member @role`",
+    "`/fg auth add @member @role`",
+    "`/fg auth remove @member @role`",
+    "`/fg auth list @role`",
+  ]);
+  // FG owner: their own role, sharing, and auth — nothing admin-only.
+  assert.deepEqual(seen(FG_OWNER), [
+    "`/fg rename <name>`",
+    "`/fg icon <url>`",
+    "`/fg remove`",
+    "`/fg share @member @role`",
+    "`/fg auth add @member @role`",
+    "`/fg auth remove @member @role`",
+    "`/fg auth list @role`",
+  ]);
+  // Assigned holder and authed sharer (no role of their own): share only.
+  assert.deepEqual(seen(HOLDER), ["`/fg share @member @role`"]);
+  assert.deepEqual(seen(SHARER), ["`/fg share @member @role`"]);
+  // Plain member: nothing.
+  assert.deepEqual(seen(NORMAL), []);
+});
+
+test("personas see the right categories on the main page", () => {
+  const categories = (ctx: HelpContext): string[] => {
+    const result = resolveHelpTopic(null, ctx);
+    return result.kind === "embed"
+      ? result.page.fields.map((field) => field.name)
+      : [];
+  };
+  assert.deepEqual(categories(FULL), ["Guard", "FG", "Blacklist"]);
+  assert.deepEqual(categories(OWNER), ["Guard", "FG", "Blacklist"]);
+  assert.deepEqual(categories(WHITELISTED), ["Guard", "FG", "Blacklist"]);
+  assert.deepEqual(categories(ADMIN), ["Guard", "FG", "Blacklist"]);
+  assert.deepEqual(categories(FG_OWNER), ["FG"]);
+  assert.deepEqual(categories(HOLDER), ["FG"]);
+  assert.deepEqual(categories(SHARER), ["FG"]);
+  assert.deepEqual(categories(NORMAL), ["FG"]);
+  // Command counts are per-user, not totals.
+  const fgOwnerMain = resolveHelpTopic(null, FG_OWNER);
+  assert.equal(fgOwnerMain.kind, "embed");
+  if (fgOwnerMain.kind === "embed") {
+    assert.match(fgOwnerMain.page.fields[0]?.value ?? "", /7 commands/);
+  }
+  const holderMain = resolveHelpTopic(null, HOLDER);
+  assert.equal(holderMain.kind, "embed");
+  if (holderMain.kind === "embed") {
+    assert.match(holderMain.page.fields[0]?.value ?? "", /1 command$/);
   }
 });
 
 test("prefix-invoked help shows prefix syntax only", () => {
-  const result = resolveHelpTopic("fg", PREFIX);
+  const result = resolveHelpTopic("fg", FULL_PREFIX);
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
   assert.equal(result.page.fields[0].name, "`,fg base @role`");
   assert.doesNotMatch(fieldTextFromPage(result.page), /\/fg /);
   assert.match(result.page.description ?? "", /Personal FG roles/);
 
-  const single = resolveHelpTopic("fg create", PREFIX);
+  const single = resolveHelpTopic("fg create", FULL_PREFIX);
   assert.equal(single.kind, "embed");
   if (single.kind !== "embed") return;
   const fields = single.page.fields;
   assert.match(fields[0].value, /,fg create <name> <color>/);
   assert.doesNotMatch(fields[0].value, /\/fg create/);
-  assert.match(fields[3].value, /,fg create My Role #ff0000 @Alex/);
+  assert.match(fields[2].value, /,fg create My Role #ff0000 @Alex/);
+  assert.doesNotMatch(fieldTextFromPage(single.page), /Who:/);
 
-  const main = resolveHelpTopic(null, PREFIX);
+  const main = resolveHelpTopic(null, FULL_PREFIX);
   assert.equal(main.kind, "embed");
   if (main.kind === "embed") {
     assert.match(main.page.description ?? "", /,help <command>/);
@@ -367,7 +471,8 @@ test("normal prefix user sees FG only, with prefix syntax", () => {
   const fg = resolveHelpTopic("fg", NORMAL_PREFIX);
   assert.equal(fg.kind, "embed");
   if (fg.kind === "embed") {
-    assert.equal(fg.page.fields[0].name, "`,fg color <color> <name> [second_color]`");
+    assert.equal(fg.page.fields.length, 0);
+    assert.equal(fg.page.description, NO_FG_ROLE_NOTE);
   }
 });
 
@@ -445,10 +550,7 @@ test("handleHelpCommand gates by member: normal sees FG only, whitelisted sees a
   });
   await handleHelpCommand(normalTopic.interaction, normalTopic.store);
   assert.equal(normalTopic.replies[0].embeds, undefined);
-  assert.equal(
-    normalTopic.replies[0].content,
-    "That command is for admins and whitelisted members.",
-  );
+  assert.equal(normalTopic.replies[0].content, CANNOT_USE_COMMAND_ERROR);
 });
 
 test("help buttons: parse round-trips the owner and target", () => {
@@ -519,12 +621,12 @@ test("help buttons: a normal user pressing a Guard button is rejected", async ()
     "wild-help:111111111111111111:category:guard:1",
     "111111111111111111",
   );
-  const page = await handleHelpButton(button, { privileged: false });
+  const page = await handleHelpButton(button, { caps: deriveCaps({}), mode: "slash" });
   assert.equal(page, null);
   assert.equal(calls[0]?.kind, "reply");
   const reply = calls[0]?.data as { content?: string; ephemeral?: boolean };
   assert.equal(reply.ephemeral, true);
-  assert.equal(reply.content, "That help is for admins and whitelisted members.");
+  assert.equal(reply.content, CANNOT_USE_COMMAND_ERROR);
 });
 
 test("help buttons: Back from a command page returns to its category page", async () => {

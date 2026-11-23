@@ -16,8 +16,8 @@ export interface WildField {
  * - Plain title, no footer, no timestamp, no emojis.
  * - Description is one short intro line only, when present at all.
  * - One field per item: field name is the command syntax (in the form
- *   help was invoked with), field value is at most two short lines —
- *   purpose, then "Who: ...".
+ *   help was invoked with), field value is one short purpose line —
+ *   there are no "Who:" lines; help is filtered per user instead.
  * - Any page indicator goes in the TITLE ("Wild help - FG (1/2)"),
  *   never in a footer.
  */

@@ -43,6 +43,40 @@ export function canShareRole(
   return member.roles.cache.has(roleId) && isWhitelisted(member, settings);
 }
 
+/**
+ * Can this member share an FG role under the assign + auth model?
+ * Authorised when they own the FG role, are whitelisted (user or role),
+ * or are listed in that role's fgRoleSharers (assigned by staff, or
+ * authed by the FG owner). Holding the role alone is NOT enough, and
+ * the server owner is handled by callers (owner bypasses the guard).
+ * Auth is permission to share only — an authed member need not hold
+ * the role at all.
+ */
+export function isFgSharer(
+  member: GuildMember,
+  roleId: string,
+  settings: GuildSettings,
+): boolean {
+  if (settings.fgRoleOwners[roleId] === member.id) return true;
+  if (isWhitelisted(member, settings)) return true;
+  return (settings.fgRoleSharers[roleId] ?? []).includes(member.id);
+}
+
+/**
+ * Can this member authorise others to share an FG role? The FG role's
+ * owner, a whitelisted member, or the server owner (handled by callers).
+ */
+export function canAuthFgRole(
+  member: GuildMember,
+  roleId: string,
+  settings: GuildSettings,
+): boolean {
+  return (
+    settings.fgRoleOwners[roleId] === member.id ||
+    isWhitelisted(member, settings)
+  );
+}
+
 export function canAssignFgRole(
   member: GuildMember,
   roleId: string,

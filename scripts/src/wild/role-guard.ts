@@ -158,39 +158,79 @@ async function sendLog(
 /**
  * Parse the human who asked another bot to assign a role, from the
  * audit entry's reason. Bleed passes a reason like "added role by
- * weak3" when it adds a role via the API, and Discord stores it on
- * the audit entry. The token is usually a username; a 17–19 digit
- * token is a user ID. Tolerates surrounding text and case; a trailing
- * "#1234" discriminator or trailing punctuation is stripped. Returns
- * null when the reason has no "added role by <token>" in it.
+ * weak3" when it adds a role via the API, and Greed passes one like
+ * "Role update by 1umk (763299524789141525)" — username, plus the
+ * user ID in parentheses. Discord stores the reason on the audit
+ * entry. The ID, when present, is authoritative: usernames can change
+ * or be reused, IDs cannot. Tolerates surrounding text and case; a
+ * trailing "#1234" discriminator or trailing punctuation is stripped
+ * from the username. Returns null when the reason names no requester.
  */
+export interface AuditReasonRequester {
+  /** User ID when the reason carries one (Greed's parenthesised ID, or a bare ID). */
+  id: string | null;
+  /** Username when the reason carries one. */
+  username: string | null;
+  /** The exact matched portion of the reason, for the log entry. */
+  matched: string;
+}
+
+function cleanReasonUsername(token: string): string {
+  return token.replace(/#\d{4}$/, "").replace(/[.,;:!?]+$/, "");
+}
+
 export function parseAuditReasonRequester(
   reason: string | null | undefined,
-): string | null {
+): AuditReasonRequester | null {
   if (!reason) return null;
-  const match = /added role by\s+([^\s,;]+)/i.exec(reason);
-  if (!match) return null;
-  const token = match[1]
-    .replace(/#\d{4}$/, "")
-    .replace(/[.,;:!?]+$/, "");
-  return token.length > 0 ? token : null;
+  // Greed first: "Role update by <name> (<id>)" — the ID in
+  // parentheses is authoritative, the name is the fallback.
+  const greed = /role update by\s+([^\s,;()]+)(?:\s*\(\s*(\d{17,19})\s*\))?/i.exec(
+    reason,
+  );
+  if (greed) {
+    const username = cleanReasonUsername(greed[1]);
+    if (!username && !greed[2]) return null;
+    return {
+      id: greed[2] ?? null,
+      username: username.length > 0 ? username : null,
+      matched: greed[0],
+    };
+  }
+  // Bleed: "added role by <token>" — a bare 17–19 digit token is a
+  // user ID, anything else is a username.
+  const bleed = /added role by\s+([^\s,;]+)/i.exec(reason);
+  if (!bleed) return null;
+  const token = bleed[1];
+  if (/^\d{17,19}$/.test(token)) {
+    return { id: token, username: null, matched: bleed[0] };
+  }
+  const username = cleanReasonUsername(token);
+  if (!username) return null;
+  return { id: null, username, matched: bleed[0] };
 }
 
 /**
- * Resolve a requester token from an audit reason to a guild member.
- * A 17–19 digit token is a user ID (fresh fetch). Anything else is a
- * username: exact match (case-insensitive) against the member cache,
- * then a REST member search. Exactly one exact match is required —
- * zero or several matches means the token does not resolve.
+ * Resolve a parsed audit-reason requester to a guild member. A user
+ * ID in the reason wins: it is fetched directly, even when the
+ * username in the same reason would resolve to someone else. Only
+ * when the ID does not resolve does the username get tried: exact
+ * match (case-insensitive) against the member cache, then a REST
+ * member search. Exactly one exact username match is required —
+ * zero or several matches means the username does not resolve.
  */
 async function resolveReasonRequester(
   guild: Guild,
-  token: string,
+  parsed: AuditReasonRequester,
 ): Promise<GuildMember | null> {
-  if (/^\d{17,19}$/.test(token)) {
-    return fetchMemberFresh(guild, token);
+  if (parsed.id) {
+    const byId = await fetchMemberFresh(guild, parsed.id);
+    if (byId) return byId;
+    // The ID did not resolve — fall back to the username in the same
+    // reason, if there is one.
   }
-  const lower = token.toLowerCase();
+  if (!parsed.username) return null;
+  const lower = parsed.username.toLowerCase();
   const cache = (
     guild.members as unknown as {
       cache?: {
@@ -205,7 +245,7 @@ async function resolveReasonRequester(
   );
   if (cached) return cached;
   const results = await guild.members
-    .fetch({ query: token, limit: 10 })
+    .fetch({ query: parsed.username, limit: 10 })
     .catch(() => null);
   if (!results) return null;
   const exact = [...results.values()].filter(
@@ -498,12 +538,14 @@ export async function guardAuditLogEntry(
     );
 
   // When the executor is NOT authorised by id, work out whether it is
-  // another bot (Bleed, or any bot — not Wild itself). The audit log
-  // names the bot, never the human who asked it to assign the role —
-  // but Bleed passes a reason ("added role by weak3") naming that
-  // human. Only a fetch can tell a bot executor from a human one (the
-  // member cache is stale by design — no GuildMembers intent), so this
-  // costs one force-fetch for non-id-authorised executors.
+  // another bot (Bleed, Greed, or any bot — not Wild itself). The audit
+  // log names the bot, never the human who asked it to assign the
+  // role — but the bot passes a reason naming that human: Bleed writes
+  // "added role by weak3", Greed writes "Role update by 1umk
+  // (763299524789141525)". Only a fetch can tell a bot executor from
+  // a human one (the member cache is stale by design — no GuildMembers
+  // intent), so this costs one force-fetch for non-id-authorised
+  // executors.
   let executorIsOtherBot = false;
   let reasonActorId: string | null = null;
   let reasonAttributionNote: string | null = null;
@@ -511,12 +553,12 @@ export async function guardAuditLogEntry(
     const executorMember = await fetchMemberFresh(guild, actorId);
     executorIsOtherBot = Boolean(executorMember?.user?.bot);
     if (executorIsOtherBot) {
-      const token = parseAuditReasonRequester(entry.reason);
-      if (token) {
-        const requester = await resolveReasonRequester(guild, token);
+      const parsed = parseAuditReasonRequester(entry.reason);
+      if (parsed) {
+        const requester = await resolveReasonRequester(guild, parsed);
         if (requester) {
           reasonActorId = requester.id;
-          reasonAttributionNote = `Audit reason: added role by ${token}`;
+          reasonAttributionNote = `Audit reason: ${parsed.matched}`;
         }
       }
     }

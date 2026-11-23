@@ -30,7 +30,12 @@ const ALLOWED_ROLE_ID = "888888888888888888";
 const REPEAT_ACTOR_ID = "121212121212121212";
 const OWNER_ID = "999999999999999999";
 const BLEED_BOT_ID = "131313131313131313";
+const GREED_BOT_ID = "151515151515151515";
 const WEAK3_ID = "141414141414141414";
+// The user ID from the live Greed audit entry the user screenshotted:
+// "Role update by 1umk (763299524789141525)".
+const ONEUMK_ID = "763299524789141525";
+const ONEUMK_NAME_ID = "161616161616161616";
 const NOW = 1_700_000_000_000;
 
 interface SentMessage {
@@ -81,6 +86,11 @@ function createSetup(
     // audit reason names the requester by username ("added role by
     // weak3"), and the guard resolves it to one of these.
     usernameMembers?: Array<{ id: string; username: string; displayName?: string }>;
+    // User IDs a force fetch returns null for (simulates the real
+    // API 404 for a member who is not in the guild): used to test
+    // the fallback from a Greed reason's parenthesised ID to the
+    // username in the same reason.
+    unresolvableUserIds?: string[];
     // Whether the target member currently holds the watched role
     // (roles.cache.has). Defaults to true.
     targetHoldsRole?: boolean;
@@ -203,6 +213,22 @@ function createSetup(
       dms.push(message);
     },
   };
+  // Greed's bot user: the audit executor when a role is granted
+  // through Greed. Same shape as the Bleed mock above.
+  const greedBot = {
+    id: GREED_BOT_ID,
+    user: { bot: true, username: "greed" },
+    permissions: { has: () => false },
+    roles: {
+      cache: {
+        has: () => false,
+        some: () => false,
+      },
+    },
+    send: async (message: DmMessage) => {
+      dms.push(message);
+    },
+  };
   // The FG role's owner, as a member: used for the FG-owner fallback
   // attribution and for DM assertions (their send records).
   const ownerMember = {
@@ -284,10 +310,14 @@ function createSetup(
         }
         const userId = typeof arg === "string" ? arg : (arg.user ?? "");
         const force = typeof arg === "object" && arg.force === true;
+        if ((options.unresolvableUserIds ?? []).includes(userId)) {
+          return null;
+        }
         memberFetchCount += 1;
         memberFetchCalls.push({ user: userId, force });
         if (userId === MEMBER_ID) return member;
         if (userId === BLEED_BOT_ID) return bleedBot;
+        if (userId === GREED_BOT_ID) return greedBot;
         if (userId === FG_OWNER_ID) return ownerMember;
         const usernameMember = usernameMembers.find(
           (candidate) => candidate.id === userId,
@@ -1049,20 +1079,61 @@ test("sweepMissedGrants never throws when the audit log cannot be read", async (
   assert.deepEqual(noFetchSetup.removedRoleIds, []);
 });
 
-test("parseAuditReasonRequester pulls the requester out of a Bleed audit reason", () => {
-  assert.equal(parseAuditReasonRequester("added role by weak3"), "weak3");
-  assert.equal(parseAuditReasonRequester("Added Role By Weak3"), "Weak3");
-  assert.equal(
+test("parseAuditReasonRequester pulls the requester out of Bleed and Greed audit reasons", () => {
+  // Bleed: username only, or a bare ID.
+  assert.deepEqual(parseAuditReasonRequester("added role by weak3"), {
+    id: null,
+    username: "weak3",
+    matched: "added role by weak3",
+  });
+  assert.deepEqual(parseAuditReasonRequester("Added Role By Weak3"), {
+    id: null,
+    username: "Weak3",
+    matched: "Added Role By Weak3",
+  });
+  assert.deepEqual(
     parseAuditReasonRequester("added role by 141414141414141414"),
-    "141414141414141414",
+    {
+      id: "141414141414141414",
+      username: null,
+      matched: "added role by 141414141414141414",
+    },
   );
-  assert.equal(
+  assert.deepEqual(
     parseAuditReasonRequester("added role by weak3, via booster"),
-    "weak3",
+    { id: null, username: "weak3", matched: "added role by weak3" },
   );
-  assert.equal(parseAuditReasonRequester("added role by weak3#1234"), "weak3");
+  assert.deepEqual(parseAuditReasonRequester("added role by weak3#1234"), {
+    id: null,
+    username: "weak3",
+    matched: "added role by weak3#1234",
+  });
+  // Greed: username plus the user ID in parentheses — the ID is
+  // authoritative, the name is the fallback.
+  assert.deepEqual(
+    parseAuditReasonRequester("Role update by 1umk (763299524789141525)"),
+    {
+      id: "763299524789141525",
+      username: "1umk",
+      matched: "Role update by 1umk (763299524789141525)",
+    },
+  );
+  assert.deepEqual(
+    parseAuditReasonRequester("ROLE UPDATE BY 1umk (763299524789141525)"),
+    {
+      id: "763299524789141525",
+      username: "1umk",
+      matched: "ROLE UPDATE BY 1umk (763299524789141525)",
+    },
+  );
+  assert.deepEqual(parseAuditReasonRequester("Role update by 1umk"), {
+    id: null,
+    username: "1umk",
+    matched: "Role update by 1umk",
+  });
   assert.equal(parseAuditReasonRequester("something else entirely"), null);
   assert.equal(parseAuditReasonRequester("added role by"), null);
+  assert.equal(parseAuditReasonRequester("role update by"), null);
   assert.equal(parseAuditReasonRequester(null), null);
   assert.equal(parseAuditReasonRequester(""), null);
 });
@@ -1242,4 +1313,173 @@ test("resolves a user ID in the audit reason to the requester", async () => {
   assert.deepEqual(setup.removedRoleIds, []);
   assert.equal(setup.sentMessages.length, 0);
   assert.equal(setup.dms.length, 0);
+});
+
+test("allows a Greed grant when the audit reason names a whitelisted requester by ID", async () => {
+  // Greed is the audit executor, but its reason names 1umk by ID —
+  // and 1umk is whitelisted, so the grant stands.
+  const setup = createSetup({
+    allowedUserIds: [ONEUMK_ID],
+    usernameMembers: [{ id: ONEUMK_ID, username: "1umk" }],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-greed-allowed", GREED_BOT_ID, NOW, {
+      roleId: ROLE_ID,
+      reason: "Role update by 1umk (763299524789141525)",
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+  assert.equal(getOffenseCount(GUILD_ID, GREED_BOT_ID), 0);
+  assert.equal(getOffenseCount(GUILD_ID, ONEUMK_ID), 0);
+});
+
+test("removes a Greed grant when the audit reason's ID names an unauthorised requester, even if the username matches someone else", async () => {
+  // The ID in the reason belongs to "differentname"; a different
+  // member holds the username "1umk". The ID is authoritative, so the
+  // grant is attributed to the ID holder — never the namesake, never
+  // Greed itself.
+  clearOffenses();
+  const setup = createSetup({
+    usernameMembers: [
+      { id: ONEUMK_ID, username: "differentname" },
+      { id: ONEUMK_NAME_ID, username: "1umk" },
+    ],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-greed-id-wins", GREED_BOT_ID, NOW, {
+      roleId: ROLE_ID,
+      reason: "Role update by 1umk (763299524789141525)",
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
+  const embed = getLoggedEmbed(setup);
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Assigned by")?.value,
+    `<@${ONEUMK_ID}>`,
+  );
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Attribution")?.value,
+    "Audit reason: Role update by 1umk (763299524789141525)",
+  );
+  // The DM goes to the ID holder, the human — never to the Greed bot.
+  assert.equal(setup.dms.length, 1);
+  assert.equal(getDmEmbed(setup).title, "Role removed");
+  assert.equal(getOffenseCount(GUILD_ID, ONEUMK_ID), 1);
+  assert.equal(getOffenseCount(GUILD_ID, ONEUMK_NAME_ID), 0);
+  assert.equal(getOffenseCount(GUILD_ID, GREED_BOT_ID), 0);
+});
+
+test("resolves a Greed reason without an ID by username", async () => {
+  // Greed's reason sometimes carries no parenthesised ID — then the
+  // username is the only attribution available.
+  clearOffenses();
+  const setup = createSetup({
+    usernameMembers: [{ id: ONEUMK_NAME_ID, username: "1umk" }],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-greed-no-id", GREED_BOT_ID, NOW, {
+      roleId: ROLE_ID,
+      reason: "Role update by 1umk",
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
+  const embed = getLoggedEmbed(setup);
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Assigned by")?.value,
+    `<@${ONEUMK_NAME_ID}>`,
+  );
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Attribution")?.value,
+    "Audit reason: Role update by 1umk",
+  );
+  assert.equal(setup.dms.length, 1);
+  assert.equal(getDmEmbed(setup).title, "Role removed");
+  assert.equal(getOffenseCount(GUILD_ID, ONEUMK_NAME_ID), 1);
+  assert.equal(getOffenseCount(GUILD_ID, GREED_BOT_ID), 0);
+});
+
+test("falls back to the username in a Greed reason when the ID in it does not resolve", async () => {
+  // The parenthesised ID belongs to nobody in the guild, so the
+  // username in the same reason is tried next — and it resolves.
+  clearOffenses();
+  const setup = createSetup({
+    unresolvableUserIds: [ONEUMK_ID],
+    usernameMembers: [{ id: ONEUMK_NAME_ID, username: "1umk" }],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-greed-id-unresolvable", GREED_BOT_ID, NOW, {
+      roleId: ROLE_ID,
+      reason: "Role update by 1umk (763299524789141525)",
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
+  const embed = getLoggedEmbed(setup);
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Assigned by")?.value,
+    `<@${ONEUMK_NAME_ID}>`,
+  );
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Attribution")?.value,
+    "Audit reason: Role update by 1umk (763299524789141525)",
+  );
+  assert.equal(setup.dms.length, 1);
+  assert.equal(getDmEmbed(setup).title, "Role removed");
+  assert.equal(getOffenseCount(GUILD_ID, ONEUMK_NAME_ID), 1);
+  assert.equal(getOffenseCount(GUILD_ID, GREED_BOT_ID), 0);
+});
+
+test("removes a Greed grant when neither the ID nor the username in the reason resolves", async () => {
+  // Neither the parenthesised ID nor the username matches anyone,
+  // and this is a protected role with no FG owner to fall back to —
+  // so the role is removed and logged, and nobody is DM'd.
+  clearOffenses();
+  const setup = createSetup({
+    unresolvableUserIds: [ONEUMK_ID],
+    usernameMembers: [{ id: ONEUMK_NAME_ID, username: "someoneelse" }],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-greed-unresolvable", GREED_BOT_ID, NOW, {
+      roleId: ROLE_ID,
+      reason: "Role update by 1umk (763299524789141525)",
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
+  const embed = getLoggedEmbed(setup);
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Assigned by")?.value,
+    `<@${GREED_BOT_ID}>`,
+  );
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Attribution")?.value,
+    "No requester found in the audit reason",
+  );
+  assert.equal(setup.dms.length, 0);
+  assert.equal(getOffenseCount(GUILD_ID, GREED_BOT_ID), 0);
+  assert.equal(getOffenseCount(GUILD_ID, ONEUMK_NAME_ID), 0);
 });

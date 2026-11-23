@@ -235,17 +235,21 @@ or `,blacklist`. No full Greed command index was checked, so before
 relying on those four, type them in a test channel with both bots
 present and confirm Wild answers and Greed stays silent.
 
-## Works side by side with Bleed
+## Works side by side with Bleed and Greed
 
-Wild guards roles granted through Bleed the same way as any other
-grant. When Bleed adds a role, Discord's audit log shows Bleed as the
-executor — but Bleed passes a reason ("added role by <user>") naming
-the human who asked for it, so Wild reads that reason, checks that
-person against the whitelist, and if they aren't authorised the role
-is removed, they are DM'd, and it is logged — for FG and protected
-roles alike. If the reason is missing, Wild falls back to attributing
-the grant to the FG role's owner; if there is no one to attribute it
-to, the role is still removed and logged, with no DM.
+Wild guards roles granted through Bleed and Greed the same way as any
+other grant. When either bot adds a role, Discord's audit log shows
+that bot as the executor — but the bot passes a reason naming the
+human who asked for it, so Wild reads that reason, checks that person
+against the whitelist, and if they aren't authorised the role is
+removed, they are DM'd, and it is logged — for FG and protected roles
+alike. The two reason formats: Bleed writes "added role by <user>";
+Greed writes "Role update by <name> (<user id>)". Wild uses the ID
+when one is present — it is authoritative, since usernames can change
+or be reused — and falls back to the name. If the reason is missing,
+Wild falls back to attributing the grant to the FG role's owner; if
+there is no one to attribute it to, the role is still removed and
+logged, with no DM.
 
 ## FG roles — Bleed booster-role style
 

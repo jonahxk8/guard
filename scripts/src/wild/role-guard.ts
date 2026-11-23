@@ -378,8 +378,120 @@ function createBlockedAssignmentEmbed(
   );
 }
 
-async function notifyActor(
+/**
+ * Log entry for a grant that was ALLOWED: a whitelisted user gave a
+ * watched role and it stayed. Mirrors the blocked embed's fields so
+ * the two are easy to tell apart at a glance — same channel, same
+ * shape, different title, and a reason that says why it stood. No DM
+ * and no offence ever go with this entry.
+ */
+function createAuthorizedAssignmentEmbed(
+  memberId: string,
+  roleIds: string[],
+  actorId: string,
+  // The bot the grant came through (Bleed/Greed), when the executor
+  // was another bot and a human was attributed from its audit reason.
+  viaBotName: string | null,
+): EmbedBuilder {
+  const roleMentions = roleIds.map((roleId) => `<@&${roleId}>`).join(", ");
+  const fields: { name: string; value: string; inline?: boolean }[] = [
+    { name: "Role(s)", value: roleMentions },
+    { name: "Assigned by", value: `<@${actorId}>`, inline: true },
+    {
+      name: "Reason",
+      value: "The assigner is on the whitelist.",
+      inline: true,
+    },
+  ];
+  if (viaBotName) {
+    fields.push({ name: "Via", value: `via ${viaBotName}` });
+  }
+  return wildFieldEmbed(
+    "Authorized role assignment",
+    fields,
+    `Bot kept watched role(s) for <@${memberId}>.`,
+  );
+}
+
+/**
+ * Log authorised grants by WHITELISTED users — user ID or whitelisted
+ * role — to the same alerts channel as the unauthorised logs. The
+ * roles stay; this is logging only, never a removal, a DM, or an
+ * offence. Scope is exactly the whitelist:
+ *
+ * - The server owner, Administrators, and Wild itself stay silent.
+ * - An FG role's owner sharing their own role, and an authorised
+ *   sharer sharing a role they are authed for, stay silent — even if
+ *   they also happen to be whitelisted, the owner/sharer rule wins
+ *   for that role. (FG staff who are not on the whitelist are silent
+ *   too: they are authorised by a different list, not the whitelist.)
+ * - A grant with no human to attribute it to is never logged here.
+ *
+ * One log entry per whitelisted actor, covering that actor's kept
+ * roles. If no alerts channel is configured, sendLog skips silently —
+ * the same behaviour as the unauthorised logs.
+ */
+async function logAuthorizedGrants(
   guild: Guild,
+  settings: GuildSettings,
+  targetId: string,
+  roleIds: string[],
+  effectiveActorByRole: Map<string, string | null>,
+  executorIsOtherBot: boolean,
+  viaBotName: string | null,
+): Promise<void> {
+  const groups = new Map<string, string[]>();
+  for (const roleId of roleIds) {
+    const actorId = effectiveActorByRole.get(roleId) ?? null;
+    if (!actorId) continue;
+    const list = groups.get(actorId) ?? [];
+    list.push(roleId);
+    groups.set(actorId, list);
+  }
+  for (const [actorId, groupRoleIds] of groups) {
+    // The server owner and Wild itself never log.
+    if (actorId === guild.ownerId) continue;
+    if (actorId === guild.client?.user?.id) continue;
+    // One fresh fetch per actor: the Administrator check and the
+    // whitelisted-role check both need current roles/permissions —
+    // the bot has no GuildMembers intent, so the cache is stale by
+    // design. A bot executor attributed to nobody, or a member who
+    // cannot be fetched, is skipped (fail silent, never fail loud).
+    const actor = await fetchMemberFresh(guild, actorId);
+    if (!actor) continue;
+    if (actor.user?.bot) continue;
+    if (isBotAdmin(actor, guild.ownerId)) continue;
+    // Roles this actor holds by FG ownership or authorised sharing
+    // stay silent — only roles granted purely on the whitelist log.
+    const loggable = groupRoleIds.filter((roleId) => {
+      const fgAccess = settings.fgRoles[roleId];
+      if (!fgAccess) return true;
+      if (settings.fgRoleOwners[roleId] === actorId) return false;
+      if ((settings.fgRoleSharers[roleId] ?? []).includes(actorId)) return false;
+      if (fgAccess.assignUserIds.includes(actorId)) return false;
+      return true;
+    });
+    if (loggable.length === 0) continue;
+    // Strictly the whitelist: allowedUserIds, or a whitelisted role.
+    // FG staff is a different list and does not count here.
+    const whitelisted =
+      settings.allowedUserIds.includes(actorId) ||
+      memberMatchesWhitelist(actor, [], settings.allowedRoleIds);
+    if (!whitelisted) continue;
+    await sendLog(
+      guild,
+      settings,
+      createAuthorizedAssignmentEmbed(
+        targetId,
+        loggable,
+        actorId,
+        executorIsOtherBot ? viaBotName : null,
+      ),
+    );
+  }
+}
+
+async function notifyActor(  guild: Guild,
   actorId: string,
   memberId: string,
   roleIds: string[],
@@ -547,12 +659,14 @@ export async function guardAuditLogEntry(
   // intent), so this costs one force-fetch for non-id-authorised
   // executors.
   let executorIsOtherBot = false;
+  let executorBotName: string | null = null;
   let reasonActorId: string | null = null;
   let reasonAttributionNote: string | null = null;
   if (!executorAllowedById && actorId && actorId !== guild.client?.user?.id) {
     const executorMember = await fetchMemberFresh(guild, actorId);
     executorIsOtherBot = Boolean(executorMember?.user?.bot);
     if (executorIsOtherBot) {
+      executorBotName = executorMember?.user?.username ?? null;
       const parsed = parseAuditReasonRequester(entry.reason);
       if (parsed) {
         const requester = await resolveReasonRequester(guild, parsed);
@@ -665,7 +779,24 @@ export async function guardAuditLogEntry(
       watchedRoleIds.push(roleId);
     }
   }
-  if (watchedRoleIds.length === 0 && blacklistedRoleIds.length === 0) return;
+  if (watchedRoleIds.length === 0 && blacklistedRoleIds.length === 0) {
+    // Nothing was removed: every watched role was allowed and kept.
+    // Log grants by whitelisted users (and only those — owner,
+    // Administrators, FG owners and authorised sharers stay silent),
+    // then return. A grant that was removed anywhere above never
+    // reaches this branch, so an entry never produces both an
+    // authorised and an unauthorised log.
+    await logAuthorizedGrants(
+      guild,
+      settings,
+      targetId,
+      addedRoleIds,
+      effectiveActorByRole,
+      executorIsOtherBot,
+      executorBotName,
+    );
+    return;
+  }
 
   // Fetch the target fresh: the still-holds check below needs current
   // roles, and a cached member could claim roles it no longer has.

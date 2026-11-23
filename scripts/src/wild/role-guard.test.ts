@@ -386,6 +386,38 @@ function getLoggedEmbed(setup: GuardSetup): ReturnType<EmbedBuilder["toJSON"]> {
   return setup.sentMessages[0].embeds[0].toJSON();
 }
 
+/** Assert the single sent log is the authorised-grant entry, with no DM. */
+function assertAuthorizedLog(
+  setup: GuardSetup,
+  roleId: string,
+  actorId: string,
+  via?: string,
+): void {
+  const embed = getLoggedEmbed(setup);
+  assert.equal(embed.title, "Authorized role assignment");
+  assert.equal(
+    embed.description,
+    `Bot kept watched role(s) for <@${MEMBER_ID}>.`,
+  );
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Role(s)")?.value,
+    `<@&${roleId}>`,
+  );
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Assigned by")?.value,
+    `<@${actorId}>`,
+  );
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Reason")?.value,
+    "The assigner is on the whitelist.",
+  );
+  assert.equal(
+    embed.fields?.find((field) => field.name === "Via")?.value ?? null,
+    via ?? null,
+  );
+  assert.equal(setup.dms.length, 0);
+}
+
 function getDmEmbed(setup: GuardSetup): ReturnType<EmbedBuilder["toJSON"]> {
   assert.equal(setup.dms.length, 1, "expected one DM");
   const embed = setup.dms[0].embeds?.[0];
@@ -401,7 +433,7 @@ function dmText(setup: GuardSetup): string {
   ].join("\n");
 }
 
-test("keeps watched roles assigned by a whitelisted actor", async () => {
+test("logs watched roles assigned by a whitelisted actor", async () => {
   const setup = createSetup({ allowedUserIds: [ALLOWED_ACTOR_ID] });
 
   await guardAuditLogEntry(
@@ -411,11 +443,16 @@ test("keeps watched roles assigned by a whitelisted actor", async () => {
   );
 
   assert.deepEqual(setup.removedRoleIds, []);
-  assert.equal(setup.memberFetchCount, 0);
-  assert.equal(setup.sentMessages.length, 0);
+  // The guard decision itself still costs no fetch (id-authorised), but
+  // the authorised log needs one fresh fetch of the actor to rule out
+  // Administrator — the log must never claim a whitelisted admin's
+  // grant was a plain whitelist grant.
+  assert.equal(setup.memberFetchCount, 1);
+  assertAuthorizedLog(setup, ROLE_ID, ALLOWED_ACTOR_ID);
+  assert.equal(getOffenseCount(GUILD_ID, ALLOWED_ACTOR_ID), 0);
 });
 
-test("keeps watched roles assigned by a member of a whitelisted role", async () => {
+test("logs watched roles assigned by a member of a whitelisted role", async () => {
   const setup = createSetup({
     allowedRoleIds: [ALLOWED_ROLE_ID],
     actorRoleIds: [ALLOWED_ROLE_ID],
@@ -428,7 +465,7 @@ test("keeps watched roles assigned by a member of a whitelisted role", async () 
   );
 
   assert.deepEqual(setup.removedRoleIds, []);
-  assert.equal(setup.sentMessages.length, 0);
+  assertAuthorizedLog(setup, ROLE_ID, UNAPPROVED_ACTOR_ID);
 });
 
 test("removes watched roles assigned by an unapproved actor", async () => {
@@ -625,7 +662,7 @@ test("keeps a grant when the audit log corroborates a whitelisted executor", asy
   );
 
   assert.deepEqual(setup.removedRoleIds, []);
-  assert.equal(setup.sentMessages.length, 0);
+  assertAuthorizedLog(setup, ROLE_ID, ALLOWED_ACTOR_ID);
 });
 
 test("still removes a grant when audit-log corroboration returns nothing", async () => {
@@ -714,7 +751,7 @@ test("does not remove a blacklisted grant given by the server owner", async () =
   assert.equal(setup.dms.length, 0);
 });
 
-test("a grant to a non-blacklisted user by a whitelisted giver is unaffected", async () => {
+test("a grant to a non-blacklisted user by a whitelisted giver is logged, not removed", async () => {
   const setup = createSetup({
     allowedUserIds: [ALLOWED_ACTOR_ID],
     blacklist: { ["121212121212121213"]: [ROLE_ID] },
@@ -727,7 +764,7 @@ test("a grant to a non-blacklisted user by a whitelisted giver is unaffected", a
   );
 
   assert.deepEqual(setup.removedRoleIds, []);
-  assert.equal(setup.sentMessages.length, 0);
+  assertAuthorizedLog(setup, ROLE_ID, ALLOWED_ACTOR_ID);
   assert.equal(setup.dms.length, 0);
 });
 
@@ -868,7 +905,7 @@ test("keeps an FG role its owner gives to themselves", async () => {
   assert.equal(setup.dms.length, 0);
 });
 
-test("keeps an FG role a whitelisted member gives to someone else", async () => {
+test("logs an FG role a whitelisted member gives to someone else", async () => {
   const setup = createSetup({
     protectedRoleIds: [],
     fgRoleId: FG_ROLE_ID,
@@ -885,8 +922,8 @@ test("keeps an FG role a whitelisted member gives to someone else", async () => 
   );
 
   assert.deepEqual(setup.removedRoleIds, []);
-  assert.equal(setup.sentMessages.length, 0);
-  assert.equal(setup.dms.length, 0);
+  assertAuthorizedLog(setup, FG_ROLE_ID, ALLOWED_ACTOR_ID);
+  assert.equal(getOffenseCount(GUILD_ID, ALLOWED_ACTOR_ID), 0);
 });
 
 test("keeps an FG role an Administrator gives to someone else", async () => {
@@ -1160,8 +1197,9 @@ test("allows a Bleed grant when the audit reason names a whitelisted requester",
   );
 
   assert.deepEqual(setup.removedRoleIds, []);
-  assert.equal(setup.sentMessages.length, 0);
-  assert.equal(setup.dms.length, 0);
+  // The grant stands, and because weak3 is whitelisted it is logged as
+  // an authorised assignment — naming weak3, noting it came via Bleed.
+  assertAuthorizedLog(setup, FG_ROLE_ID, WEAK3_ID, "via bleed");
   assert.equal(getOffenseCount(GUILD_ID, BLEED_BOT_ID), 0);
   assert.equal(getOffenseCount(GUILD_ID, WEAK3_ID), 0);
 });
@@ -1311,8 +1349,7 @@ test("resolves a user ID in the audit reason to the requester", async () => {
   );
 
   assert.deepEqual(setup.removedRoleIds, []);
-  assert.equal(setup.sentMessages.length, 0);
-  assert.equal(setup.dms.length, 0);
+  assertAuthorizedLog(setup, FG_ROLE_ID, WEAK3_ID, "via bleed");
 });
 
 test("allows a Greed grant when the audit reason names a whitelisted requester by ID", async () => {
@@ -1333,8 +1370,9 @@ test("allows a Greed grant when the audit reason names a whitelisted requester b
   );
 
   assert.deepEqual(setup.removedRoleIds, []);
-  assert.equal(setup.sentMessages.length, 0);
-  assert.equal(setup.dms.length, 0);
+  // The grant stands, and because 1umk is whitelisted it is logged as
+  // an authorised assignment — naming 1umk, noting it came via Greed.
+  assertAuthorizedLog(setup, ROLE_ID, ONEUMK_ID, "via greed");
   assert.equal(getOffenseCount(GUILD_ID, GREED_BOT_ID), 0);
   assert.equal(getOffenseCount(GUILD_ID, ONEUMK_ID), 0);
 });
@@ -1482,4 +1520,112 @@ test("removes a Greed grant when neither the ID nor the username in the reason r
   assert.equal(setup.dms.length, 0);
   assert.equal(getOffenseCount(GUILD_ID, GREED_BOT_ID), 0);
   assert.equal(getOffenseCount(GUILD_ID, ONEUMK_NAME_ID), 0);
+});
+
+test("a whitelisted grant with no log channel set is allowed and sends nothing", async () => {
+  // Same skip-silently behaviour as the unauthorised logs: sendLog
+  // returns early when logChannelId is not set, and the grant stands.
+  const setup = createSetup({
+    allowedUserIds: [ALLOWED_ACTOR_ID],
+    logChannelId: null,
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-allowed-no-log", ALLOWED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+  assert.equal(getOffenseCount(GUILD_ID, ALLOWED_ACTOR_ID), 0);
+});
+
+test("stays silent when a whitelisted FG owner shares their own FG role", async () => {
+  // The FG-owner rule wins over the whitelist for that role: an owner
+  // sharing their own role is a normal FG share, not a whitelist
+  // grant to log — even when the owner is also whitelisted.
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: ALLOWED_ACTOR_ID,
+    allowedUserIds: [ALLOWED_ACTOR_ID],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-fg-owner-whitelisted", ALLOWED_ACTOR_ID, NOW, {
+      roleId: FG_ROLE_ID,
+      targetId: ALLOWED_ACTOR_ID,
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("stays silent when a whitelisted Administrator grants a protected role", async () => {
+  // The Administrator rule wins over the whitelist: admin grants stay
+  // silent even when the admin is also whitelisted by user ID.
+  const setup = createSetup({
+    allowedUserIds: [UNAPPROVED_ACTOR_ID],
+    actorIsAdmin: true,
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-admin-whitelisted", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("stays silent when a whitelisted authorised sharer shares an FG role", async () => {
+  // The sharer rule wins over the whitelist for that role: a sharer
+  // sharing a role they are authed for is a normal share, not a
+  // whitelist grant to log — even when the sharer is also whitelisted.
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+    fgRoleSharers: [ALLOWED_ACTOR_ID],
+    allowedUserIds: [ALLOWED_ACTOR_ID],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-fg-sharer-whitelisted", ALLOWED_ACTOR_ID, NOW, {
+      roleId: FG_ROLE_ID,
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("an unauthorised grant produces exactly one unauthorised log and no authorised one", async () => {
+  // No double logging: a removed grant gets the unauthorised entry
+  // only — never an authorised entry as well.
+  clearOffenses();
+  const setup = createSetup();
+
+  await guardAuditLogEntry(
+    createEntry("audit-no-double-log", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
+  const embed = getLoggedEmbed(setup);
+  assert.equal(embed.title, "Unauthorized role assignment");
+  assert.equal(setup.dms.length, 1);
 });

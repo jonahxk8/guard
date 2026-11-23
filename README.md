@@ -9,7 +9,11 @@ unverified assignment.
 
 The server owner and anyone with the Discord Administrator permission
 bypass the guard — their grants are never reverted. Repeat offenders
-(3+ unauthorised assignments) are flagged in the log.
+(3+ unauthorised assignments) are flagged in the log. Grants by
+whitelisted users are logged too ("Authorized role assignment", same
+alert channel, role stays, no DM) — so the log shows who handed out
+watched roles, not just who tried and failed. Owner, Administrator,
+FG-owner and authorised-sharer grants stay silent.
 
 Wild is simple on purpose: seven slash commands, each with a "," prefix
 version that works the same way. Every reply is an embed — confirmations

@@ -537,7 +537,15 @@ export async function handlePrefixMessage(
     } else {
       await handleGuardCommand(interaction, store);
     }
-  } catch {
+  } catch (error) {
+    // Log the real error: without this, a throw anywhere in a prefix
+    // handler was swallowed silently and the only evidence was the
+    // generic reply in the channel — which is how the ,fg share
+    // failures stayed undiagnosed. Railway logs now name the cause.
+    console.error(
+      "[wild] prefix command failed:",
+      error instanceof Error ? (error.stack ?? error.message) : String(error),
+    );
     await replyPrefixError(
       message,
       "The bot couldn't complete that command. Check its permissions and try again.",

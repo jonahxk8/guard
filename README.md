@@ -447,11 +447,15 @@ Deploy as a long-running worker service from the repository root:
   the bot actually knows it: `/fg list` shows the FG roles it knows.
   An FG role made by another bot is not an FG role to Wild until you
   protect it with `/protect @role`.
-- If a prefix command answers "The bot couldn't complete that command"
-  right after a push, first check Railway is actually running the new
-  build — nothing on the live bot changes until you redeploy, and a
-  failed or not-yet-deployed build is the usual cause. The full
-  `,fg share` flow (offer, Yes accept, role added, owner DM) is covered
-  by an end-to-end test; no code defect was found in it.
+- If a prefix command answers "The bot couldn't complete that command",
+  check the Railway logs for `[wild] prefix command failed:` — the log
+  line names the real error, with its stack. A stale deploy is not the
+  cause for `,fg share`: the share handler is identical across the last
+  several builds (verified by diffing them), and the failures seen were
+  Discord API failures on sending the offer. The share path now names
+  the failed step in its own reply instead ("Couldn't send the FG role
+  offer...") and logs `[wild] fg share: ...`. Nothing on the live bot
+  changes until you redeploy, so do still redeploy after a push to get
+  the new build — but redeploying alone does not fix a share failure.
 
 Full setup and troubleshooting: see `scripts/WILD_BOT.md`.

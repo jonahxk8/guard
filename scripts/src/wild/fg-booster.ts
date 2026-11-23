@@ -10,6 +10,8 @@ import {
   EmbedBuilder,
   Guild,
   GuildMember,
+  InteractionCollector,
+  Message,
   PermissionFlagsBits,
   Role,
   SlashCommandBuilder,
@@ -1880,27 +1882,62 @@ async function handleShareCommand(
     return;
   }
 
-  await interaction.reply({
-    // The target is pinged in the message content, not just the embed:
-    // a mention in the embed alone was not notifying them. Only the
-    // target user is pinged — never the role, never @everyone.
-    content: `<@${target.id}>`,
-    embeds: [
-      buildShareEmbed(
-        "fg share",
-        `<@${requester.id}> is offering ${roleMention(role)} to <@${target.id}> — tap Yes to accept.`,
-      ),
-    ],
-    components: [buildDecisionButtons()],
-    allowedMentions: { parse: ["users"], users: [target.id] },
-    // Offer with a live collector (5 minutes): never auto-delete.
-    [WILD_KEEP_REPLY]: true,
-  } as Parameters<ChatInputCommandInteraction["reply"]>[0]);
-  const offer = await interaction.fetchReply();
-  const collector = offer.createMessageComponentCollector({
-    componentType: ComponentType.Button,
-    time: SHARE_TIMEOUT_MS,
-  });
+  // Sending the offer is the one Discord API call in this handler with
+  // no specific reply of its own: if it fails (the bot cannot send
+  // here, a rate limit, a Discord outage), the generic prefix/slash
+  // catch would answer instead — and the prefix catch used to swallow
+  // the error without logging it, which is how two ,fg share failures
+  // stayed undiagnosed. Name the step here, in the reply and in the
+  // Railway logs, so the cause is visible. Every other step in this
+  // handler already has its own reply (no FG role, already has one,
+  // bot cannot manage the role).
+  let offer: Message;
+  try {
+    await interaction.reply({
+      // The target is pinged in the message content, not just the embed:
+      // a mention in the embed alone was not notifying them. Only the
+      // target user is pinged — never the role, never @everyone.
+      content: `<@${target.id}>`,
+      embeds: [
+        buildShareEmbed(
+          "fg share",
+          `<@${requester.id}> is offering ${roleMention(role)} to <@${target.id}> — tap Yes to accept.`,
+        ),
+      ],
+      components: [buildDecisionButtons()],
+      allowedMentions: { parse: ["users"], users: [target.id] },
+      // Offer with a live collector (5 minutes): never auto-delete.
+      [WILD_KEEP_REPLY]: true,
+    } as Parameters<ChatInputCommandInteraction["reply"]>[0]);
+    offer = await interaction.fetchReply();
+  } catch (error) {
+    console.error(
+      "[wild] fg share: could not send the offer:",
+      error instanceof Error ? (error.stack ?? error.message) : String(error),
+    );
+    await replyText(
+      interaction,
+      "Couldn't send the FG role offer. Check the bot can send messages in this channel and try again.",
+    ).catch(() => undefined);
+    return;
+  }
+  let collector: InteractionCollector<ButtonInteraction>;
+  try {
+    collector = offer.createMessageComponentCollector({
+      componentType: ComponentType.Button,
+      time: SHARE_TIMEOUT_MS,
+    });
+  } catch (error) {
+    console.error(
+      "[wild] fg share: could not set up the offer buttons:",
+      error instanceof Error ? (error.stack ?? error.message) : String(error),
+    );
+    await replyText(
+      interaction,
+      "The offer went out but its buttons couldn't be set up. Try again.",
+    ).catch(() => undefined);
+    return;
+  }
 
   let finishing = false;
   collector.on("collect", async (button) => {

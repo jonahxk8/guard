@@ -8,6 +8,7 @@ import {
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
 import { handleFgCommand, parseFgColor } from "./fg-booster.js";
+import { ADMIN_ROLE_IDS } from "./authorization.js";
 
 const GUILD_ID = "111111111111111111";
 const OWNER_ID = "999999999999999999";
@@ -265,7 +266,7 @@ function createGuild(options: {
     premiumTier: options.premiumTier ?? 0,
     members: {
       me: botMember,
-      // No argument fetches every member (used by /fg holders); a
+      // No argument fetches every member (used by /fg members); a
       // string or { user } fetches one member.
       fetch: async (arg?: string | { user?: string }) => {
         if (arg === undefined) return new Map(members);
@@ -1047,6 +1048,7 @@ test("/fg add for yourself works when whitelisted", async () => {
   const { interaction, replies } = createInteraction({
     action: "add",
     roleId: EXISTING_ROLE_ID,
+    memberId: MEMBER_ID,
   });
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
@@ -1988,13 +1990,13 @@ test("/fg assign no longer exists", async () => {
   assert.match(replyTextOf(replies[0]), /Use \/help fg to see FG commands/i);
 });
 
-/** Administrator counts as owner: verified in the guard, the FG gates, and help. */
+/** A staff admin counts as owner: verified in the guard, the FG gates, and help. */
 
-test("/fg create by an Administrator works without being whitelisted", async () => {
+test("/fg create by a staff admin works without being whitelisted", async () => {
   const config = createStore(makeSettings({ fgBaseRoleId: BASE_ROLE_ID }));
   const { guild, createdRoles } = createGuild({
     roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
-    adminMemberIds: [MEMBER_ID],
+    memberRoleIds: { [MEMBER_ID]: [ADMIN_ROLE_IDS[0]] },
   });
   const { interaction, replies } = createInteraction({
     action: "create",
@@ -2013,7 +2015,7 @@ test("/fg create by an Administrator works without being whitelisted", async () 
   assert.match(replyTextOf(replies[0]), /Admin FG is your FG role now/i);
 });
 
-test("/fg auth add by an Administrator works without being whitelisted", async () => {
+test("/fg auth add by a staff admin works without being whitelisted", async () => {
   const config = createStore(
     makeSettings({
       fgRoleOwners: { [FG_ROLE_ID]: OWNER_ID },
@@ -2029,7 +2031,7 @@ test("/fg auth add by an Administrator works without being whitelisted", async (
   );
   const { guild } = createGuild({
     roles: [makeRole(FG_ROLE_ID, "My FG", 9)],
-    adminMemberIds: [MEMBER_ID],
+    memberRoleIds: { [MEMBER_ID]: [ADMIN_ROLE_IDS[0]] },
   });
   const { interaction, replies } = createInteraction({
     group: "auth",
@@ -2043,7 +2045,27 @@ test("/fg auth add by an Administrator works without being whitelisted", async (
   assert.match(replyTextOf(replies[0]), /can now share/i);
 });
 
-test("/fg base by an Administrator works via the Manage Server gate", async () => {
+test("/fg base by a staff admin works via the Manage Server gate", async () => {
+  const config = createStore();
+  const { guild } = createGuild({
+    roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
+    memberRoleIds: { [MEMBER_ID]: [ADMIN_ROLE_IDS[0]] },
+  });
+  const { interaction, replies } = createInteraction({
+    action: "base",
+    roleId: BASE_ROLE_ID,
+    canManageServer: false,
+  });
+
+  await handleFgCommand(withGuild(guild, interaction), config.store);
+
+  assert.equal(config.getSettings().fgBaseRoleId, BASE_ROLE_ID);
+  assert.match(replyTextOf(replies[0]), /base role/i);
+});
+
+test("/fg base by a Discord Administrator without an admin role is refused", async () => {
+  // The Discord Administrator permission alone grants nothing: without
+  // an admin role and without Manage Server, the gate refuses them.
   const config = createStore();
   const { guild } = createGuild({
     roles: [makeRole(BASE_ROLE_ID, "FG Base", 10)],
@@ -2057,8 +2079,8 @@ test("/fg base by an Administrator works via the Manage Server gate", async () =
 
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
-  assert.equal(config.getSettings().fgBaseRoleId, BASE_ROLE_ID);
-  assert.match(replyTextOf(replies[0]), /base role/i);
+  assert.equal(config.getSettings().fgBaseRoleId, null);
+  assert.match(replyTextOf(replies[0]), /need Manage Server/i);
 });
 
 const SECOND_FG_ROLE_ID = "777777777777777777";
@@ -2266,7 +2288,7 @@ test("/fg drop by the FG owner points at /fg remove", async () => {
   );
 });
 
-test("/fg holders lists holders with the owner first, plain names, no mentions", async () => {
+test("/fg members lists members with the owner first, plain names, no mentions", async () => {
   const config = createStore(
     makeSettings({
       fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
@@ -2290,21 +2312,21 @@ test("/fg holders lists holders with the owner first, plain names, no mentions",
     },
   });
   for (const id of [MEMBER_ID, OTHER_ID, thirdId]) getMember(id);
-  const { interaction, replies } = createInteraction({ action: "holders" });
+  const { interaction, replies } = createInteraction({ action: "members" });
   await handleFgCommand(withGuild(guild, interaction), config.store);
 
   const embed = replies[0].embeds?.[0]?.toJSON() as {
     title?: string;
     description?: string;
   };
-  assert.equal(embed.title, "Holders of My FG");
+  assert.equal(embed.title, "Members of My FG");
   const lines = (embed.description ?? "").split("\n");
   assert.equal(lines[0], "Alex — Owner");
   assert.ok(lines.includes("Sam"));
   assert.doesNotMatch(embed.description ?? "", /<@/);
 });
 
-test("/fg holders with only the owner says so in one line", async () => {
+test("/fg members with only the owner says so in one line", async () => {
   const config = createStore(
     makeSettings({
       fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
@@ -2323,13 +2345,13 @@ test("/fg holders with only the owner says so in one line", async () => {
     memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID] },
   });
   getMember(MEMBER_ID);
-  const { interaction, replies } = createInteraction({ action: "holders" });
+  const { interaction, replies } = createInteraction({ action: "members" });
   await handleFgCommand(withGuild(guild, interaction), config.store);
   const embed = replies[0].embeds?.[0]?.toJSON() as { description?: string };
   assert.equal(embed.description, "Only Alex holds My FG.");
 });
 
-test("/fg holders caps at 25 names with a +N more line", async () => {
+test("/fg members caps at 25 names with a +N more line", async () => {
   const holderIds = Array.from(
     { length: 26 },
     (_, i) => String(4000000000000000 + i + 1),
@@ -2357,7 +2379,7 @@ test("/fg holders caps at 25 names with a +N more line", async () => {
   });
   getMember(MEMBER_ID);
   for (const id of holderIds) getMember(id);
-  const { interaction, replies } = createInteraction({ action: "holders" });
+  const { interaction, replies } = createInteraction({ action: "members" });
   await handleFgCommand(withGuild(guild, interaction), config.store);
   const embed = replies[0].embeds?.[0]?.toJSON() as { description?: string };
   const lines = (embed.description ?? "").split("\n");
@@ -2366,7 +2388,7 @@ test("/fg holders caps at 25 names with a +N more line", async () => {
   assert.equal(lines[25], "+2 more");
 });
 
-test("/fg holders works for an authorised sharer who does not own the role", async () => {
+test("/fg members works for an authorised sharer who does not own the role", async () => {
   const config = createStore(
     makeSettings({
       fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
@@ -2387,15 +2409,15 @@ test("/fg holders works for an authorised sharer who does not own the role", asy
   });
   getMember(MEMBER_ID);
   const { interaction, replies } = createInteraction({
-    action: "holders",
+    action: "members",
     userId: OTHER_ID,
   });
   await handleFgCommand(withGuild(guild, interaction), config.store);
   const embed = replies[0].embeds?.[0]?.toJSON() as { title?: string };
-  assert.equal(embed.title, "Holders of My FG");
+  assert.equal(embed.title, "Members of My FG");
 });
 
-test("/fg holders errors for a caller with no FG role to report on", async () => {
+test("/fg members errors for a caller with no FG role to report on", async () => {
   const config = createStore(
     makeSettings({
       fgRoleOwners: { [FG_ROLE_ID]: MEMBER_ID },
@@ -2414,7 +2436,7 @@ test("/fg holders errors for a caller with no FG role to report on", async () =>
     memberRoleIds: { [MEMBER_ID]: [FG_ROLE_ID] },
   });
   const { interaction, replies } = createInteraction({
-    action: "holders",
+    action: "members",
     userId: OTHER_ID,
   });
   await handleFgCommand(withGuild(guild, interaction), config.store);

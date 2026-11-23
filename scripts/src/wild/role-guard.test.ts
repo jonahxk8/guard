@@ -17,6 +17,7 @@ import {
   sweepMissedGrants,
   verifyExecutor,
 } from "./role-guard.js";
+import { ADMIN_ROLE_IDS } from "./authorization.js";
 import { clearOffenses } from "./offenders.js";
 
 const GUILD_ID = "111111111111111111";
@@ -79,9 +80,12 @@ function createSetup(
     fgStaffRoleIds?: string[];
     // Simulates the discord.js cache: when set, a fetch WITHOUT
     // force returns a stale member whose Administrator bit is
-    // actorCachedIsAdmin, while a force fetch returns the fresh member
-    // (Administrator = actorIsAdmin). This is the reported live bug.
+    // actorCachedIsAdmin and whose roles are actorCachedRoleIds, while
+    // a force fetch returns the fresh member (Administrator =
+    // actorIsAdmin, roles = actorRoleIds). This is the reported live
+    // bug: admin access went stale in the cache.
     actorCachedIsAdmin?: boolean;
+    actorCachedRoleIds?: string[];
     // Members resolvable by username (REST member search): Bleed's
     // audit reason names the requester by username ("added role by
     // weak3"), and the guard resolves it to one of these.
@@ -180,7 +184,8 @@ function createSetup(
   // Administrator bit as it was when the member was first cached.
   // Only used when the test sets actorCachedIsAdmin.
   const staleActor =
-    options.actorCachedIsAdmin === undefined
+    options.actorCachedIsAdmin === undefined &&
+    options.actorCachedRoleIds === undefined
       ? null
       : {
           ...actor,
@@ -193,6 +198,16 @@ function createSetup(
                 return options.actorHasManageRoles ?? true;
               }
               return false;
+            },
+          },
+          roles: {
+            ...actor.roles,
+            cache: {
+              ...actor.roles.cache,
+              some: (predicate: (role: { id: string }) => boolean) =>
+                (options.actorCachedRoleIds ?? []).some((roleId) =>
+                  predicate({ id: roleId }),
+                ),
             },
           },
         };
@@ -788,8 +803,8 @@ test("still removes a blacklisted grant when the assigner cannot be verified", a
   );
 });
 
-test("keeps watched roles assigned by an Administrator (not whitelisted)", async () => {
-  const setup = createSetup({ actorIsAdmin: true });
+test("keeps watched roles assigned by a staff admin (not whitelisted)", async () => {
+  const setup = createSetup({ actorRoleIds: [ADMIN_ROLE_IDS[0]] });
 
   await guardAuditLogEntry(
     createEntry("audit-admin", UNAPPROVED_ACTOR_ID),
@@ -802,9 +817,27 @@ test("keeps watched roles assigned by an Administrator (not whitelisted)", async
   assert.equal(setup.dms.length, 0);
 });
 
-test("does not remove a blacklisted grant given by an Administrator", async () => {
+test("reverts watched roles assigned by a Discord Administrator (no admin role, not whitelisted)", async () => {
+  // The Discord Administrator permission alone grants nothing now: a
+  // member with Administrator but no staff admin role is an ordinary
+  // member, so their unauthorised grant is reverted like anyone else's.
+  clearOffenses();
+  const setup = createSetup({ actorIsAdmin: true });
+
+  await guardAuditLogEntry(
+    createEntry("audit-discord-admin", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+  assert.equal(setup.dms.length, 1);
+  assert.equal(setup.sentMessages.length, 1);
+});
+
+test("does not remove a blacklisted grant given by a staff admin", async () => {
   const setup = createSetup({
-    actorIsAdmin: true,
+    actorRoleIds: [ADMIN_ROLE_IDS[0]],
     blacklist: { [MEMBER_ID]: [ROLE_ID] },
   });
 
@@ -819,11 +852,30 @@ test("does not remove a blacklisted grant given by an Administrator", async () =
   assert.equal(setup.dms.length, 0);
 });
 
+test("removes a blacklisted grant given by a Discord Administrator (no admin role)", async () => {
+  // Same as above for the blacklist exemption: only the owner and
+  // staff admins are exempt. A Discord Administrator's grant to a
+  // blacklisted member is removed.
+  clearOffenses();
+  const setup = createSetup({
+    actorIsAdmin: true,
+    blacklist: { [MEMBER_ID]: [ROLE_ID] },
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-blacklist-discord-admin", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+});
+
 test("an unverified actor is still removed even if they would be an admin", async () => {
-  // Fail closed: only a VERIFIED Administrator giver is trusted. Here the
+  // Fail closed: only a VERIFIED admin giver is trusted. Here the
   // audit log verifies nobody (executor null), so the grant is removed
-  // even though the actor fake carries Administrator.
-  const setup = createSetup({ actorIsAdmin: true });
+  // even though the actor fake holds a staff admin role.
+  const setup = createSetup({ actorRoleIds: [ADMIN_ROLE_IDS[0]] });
 
   await guardAuditLogEntry(
     createEntry("audit-admin-unverified", null),
@@ -926,12 +978,12 @@ test("logs an FG role a whitelisted member gives to someone else", async () => {
   assert.equal(getOffenseCount(GUILD_ID, ALLOWED_ACTOR_ID), 0);
 });
 
-test("keeps an FG role an Administrator gives to someone else", async () => {
+test("keeps an FG role a staff admin gives to someone else", async () => {
   const setup = createSetup({
     protectedRoleIds: [],
     fgRoleId: FG_ROLE_ID,
     fgRoleOwnerId: FG_OWNER_ID,
-    actorIsAdmin: true,
+    actorRoleIds: [ADMIN_ROLE_IDS[0]],
   });
 
   await guardAuditLogEntry(
@@ -1021,18 +1073,17 @@ test("tells the giver when the bot could not remove a watched role", async () =>
   );
 });
 
-test("reverts an FG role self-grant when the cached member still shows Administrator but a fresh fetch does not", async () => {
+test("reverts an FG role self-grant when the cached member still holds an admin role but a fresh fetch does not", async () => {
   clearOffenses();
-  // The reported live bug: the account had Administrator when the bot
-  // cached it, then lost Administrator. A plain fetch returns the stale
-  // cached member, so the old guard let the grant stand. The guard must
-  // fetch fresh and revert.
+  // The reported live bug: the account held a staff admin role when the
+  // bot cached it, then lost it. A plain fetch returns the stale cached
+  // member, so the old guard let the grant stand. The guard must fetch
+  // fresh and revert.
   const setup = createSetup({
     protectedRoleIds: [],
     fgRoleId: FG_ROLE_ID,
     fgRoleOwnerId: FG_OWNER_ID,
-    actorCachedIsAdmin: true,
-    actorIsAdmin: false,
+    actorCachedRoleIds: [ADMIN_ROLE_IDS[0]],
     actorHasManageRoles: true,
   });
 
@@ -1049,7 +1100,7 @@ test("reverts an FG role self-grant when the cached member still shows Administr
   assert.equal(setup.dms.length, 1);
   assert.equal(setup.sentMessages.length, 1);
   // The authorisation fetch went to the API (force), it did not trust
-  // the cache — that is what makes the stale Administrator invisible.
+  // the cache — that is what makes the stale admin role invisible.
   assert.ok(
     setup.memberFetchCalls.some(
       (call) => call.user === UNAPPROVED_ACTOR_ID && call.force,
@@ -1567,9 +1618,10 @@ test("stays silent when a whitelisted FG owner shares their own FG role", async 
   assert.equal(setup.dms.length, 0);
 });
 
-test("stays silent when a whitelisted Administrator grants a protected role", async () => {
-  // The Administrator rule wins over the whitelist: admin grants stay
-  // silent even when the admin is also whitelisted by user ID.
+test("logs a whitelisted Discord Administrator's grant (Administrator alone is not silent)", async () => {
+  // A whitelisted member with the Discord Administrator permission but
+  // no staff admin role is an ordinary whitelisted member: their grant
+  // is kept and logged as authorised, not silent.
   const setup = createSetup({
     allowedUserIds: [UNAPPROVED_ACTOR_ID],
     actorIsAdmin: true,
@@ -1577,6 +1629,26 @@ test("stays silent when a whitelisted Administrator grants a protected role", as
 
   await guardAuditLogEntry(
     createEntry("audit-admin-whitelisted", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 1);
+  assert.equal(setup.dms.length, 0);
+  assertAuthorizedLog(setup, ROLE_ID, UNAPPROVED_ACTOR_ID);
+});
+
+test("stays silent when a whitelisted staff admin grants a protected role", async () => {
+  // The staff-admin rule wins over the whitelist: admin grants stay
+  // silent even when the admin is also whitelisted by user ID.
+  const setup = createSetup({
+    allowedUserIds: [UNAPPROVED_ACTOR_ID],
+    actorRoleIds: [ADMIN_ROLE_IDS[0]],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-staff-admin-whitelisted", UNAPPROVED_ACTOR_ID),
     setup.guild,
     createStore(setup.settings),
   );

@@ -268,8 +268,8 @@ function isAllowedById(
 ): boolean {
   if (!actorId) return false;
   if (actorId === guild.client?.user?.id) return true;
-  // The server owner — and anyone with Administrator — bypasses the
-  // guard: their grants are never reverted. Only a VERIFIED giver is
+  // The server owner — and holders of a staff admin role — bypass
+  // the guard: their grants are never reverted. Only a VERIFIED giver is
   // trusted; an unverified actor never reaches this check (fail closed).
   if (actorId === guild.ownerId) return true;
 
@@ -299,10 +299,10 @@ async function isAllowedForRole(
   if (!actorId) return false;
 
   // Only now fetch the member — FRESH from the API, never the cache:
-  // a plain fetch returns the cached member, whose Administrator bit
-  // and roles are frozen from when the member was first cached (the bot
+  // a plain fetch returns the cached member, whose roles and
+  // permissions are frozen from when the member was first cached (the bot
   // has no GuildMembers intent, so nothing ever refreshes the cache).
-  // A giver who lost Administrator must not keep passing this check.
+  // A giver who lost an admin role must not keep passing this check.
   const actor = await fetchMemberFresh(guild, actorId);
   if (actor && isBotAdmin(actor, guild.ownerId)) return true;
 
@@ -419,7 +419,7 @@ function createAuthorizedAssignmentEmbed(
  * roles stay; this is logging only, never a removal, a DM, or an
  * offence. Scope is exactly the whitelist:
  *
- * - The server owner, Administrators, and Wild itself stay silent.
+ * - The server owner, staff admins, and Wild itself stay silent.
  * - An FG role's owner sharing their own role, and an authorised
  *   sharer sharing a role they are authed for, stay silent — even if
  *   they also happen to be whitelisted, the owner/sharer rule wins
@@ -452,7 +452,7 @@ async function logAuthorizedGrants(
     // The server owner and Wild itself never log.
     if (actorId === guild.ownerId) continue;
     if (actorId === guild.client?.user?.id) continue;
-    // One fresh fetch per actor: the Administrator check and the
+    // One fresh fetch per actor: the admin-role check and the
     // whitelisted-role check both need current roles/permissions —
     // the bot has no GuildMembers intent, so the cache is stale by
     // design. A bot executor attributed to nobody, or a member who
@@ -744,7 +744,7 @@ export async function guardAuditLogEntry(
   // removed even when the giver was authorised — the blacklist blocks the
   // target, not the giver. The exemption is per role: the effective
   // actor (the executor, or the human attributed to a bot executor's
-  // grant) being the server owner or an Administrator bypasses it. The
+  // grant) being the server owner or a staff admin bypasses it. The
   // actor is only fetched when the target is actually blacklisted, so
   // an id-whitelisted giver costs no member fetch.
   const targetIsBlacklisted = addedRoleIds.some((roleId) =>
@@ -782,7 +782,7 @@ export async function guardAuditLogEntry(
   if (watchedRoleIds.length === 0 && blacklistedRoleIds.length === 0) {
     // Nothing was removed: every watched role was allowed and kept.
     // Log grants by whitelisted users (and only those — owner,
-    // Administrators, FG owners and authorised sharers stay silent),
+    // staff admins, FG owners and authorised sharers stay silent),
     // then return. A grant that was removed anywhere above never
     // reaches this branch, so an entry never produces both an
     // authorised and an unauthorised log.
@@ -861,7 +861,7 @@ export async function guardAuditLogEntry(
       : undefined;
 
   // Record the offence first, once per attributed human. The owner,
-  // Administrators, and the bot never reach this path (bypassed).
+  // staff admins, and the bot never reach this path (bypassed).
   // A blacklist-only removal is not an offence by the giver — they were
   // allowed to assign roles — so no offence is recorded for it.
   // The giver is told why only AFTER the removal is attempted, so the

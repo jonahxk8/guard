@@ -4,6 +4,8 @@ import {
   ButtonInteraction,
   ChatInputCommandInteraction,
   EmbedBuilder,
+  PermissionFlagsBits,
+  PermissionsBitField,
 } from "discord.js";
 import {
   ALL_CAPS,
@@ -11,6 +13,7 @@ import {
   HELP_CATEGORIES,
   NO_FG_ROLE_NOTE,
   buildHelpComponents,
+  computeHelpCapabilities,
   deriveCaps,
   handleHelpButton,
   handleHelpCommand,
@@ -22,9 +25,10 @@ import {
   type HelpPage,
 } from "./help.js";
 import type { ConfigStore, GuildSettings } from "./config-store.js";
+import { ADMIN_ROLE_IDS } from "./authorization.js";
 
-// Personas: FULL sees everything; OWNER is the server owner; ADMIN has
-// Administrator; WHITELISTED is whitelisted staff; FG_OWNER owns an FG
+// Personas: FULL sees everything; OWNER is the server owner; ADMIN holds
+// a staff admin role; WHITELISTED is whitelisted staff; FG_OWNER owns an FG
 // role; HOLDER was assigned an FG role (and can share it); SHARER was
 // authed to share a role they do not hold; NORMAL is a plain member.
 const FULL: HelpContext = { caps: ALL_CAPS, mode: "slash" };
@@ -200,7 +204,7 @@ test("/help fg page 1 has 7 commands and a Next button", () => {
     result.page.fields[2].name,
     "`/fg create <name> [@member]`",
   );
-  assert.equal(result.page.fields[3].name, "`/fg add @role [@member]`");
+  assert.equal(result.page.fields[3].name, "`/fg add @role @member`");
   assert.equal(result.page.fields[6].name, "`/fg remove`");
   assert.deepEqual(
     result.page.buttons.map((button) => button.label),
@@ -210,14 +214,14 @@ test("/help fg page 1 has 7 commands and a Next button", () => {
   assert.doesNotMatch(fieldTextFromPage(result.page), /,fg /);
 });
 
-test("/help fg page 2 has drop, holders, list, cleanup, share, and auth, and Prev/Next buttons", () => {
+test("/help fg page 2 has drop, members, list, cleanup, share, and auth, and Prev/Next buttons", () => {
   const result = resolveHelpTarget("category:fg:2");
   assert.equal(result.kind, "embed");
   if (result.kind !== "embed") return;
   assert.equal(result.page.title, "Help - FG (2/3)");
   assert.equal(result.page.fields.length, 7);
   assert.equal(result.page.fields[0].name, "`/fg drop`");
-  assert.equal(result.page.fields[1].name, "`/fg holders`");
+  assert.equal(result.page.fields[1].name, "`/fg members`");
   assert.equal(result.page.fields[2].name, "`/fg list`");
   assert.equal(result.page.fields[3].name, "`/fg cleanup`");
   assert.equal(result.page.fields[4].name, "`/fg share @member`");
@@ -383,8 +387,8 @@ test("personas see exactly the FG commands they can use", () => {
     "`/fg base @role`",
     "`/fg color <color> [second_color]`",
     "`/fg create <name> [@member]`",
-    "`/fg add @role [@member]`",
-    "`/fg holders`",
+    "`/fg add @role @member`",
+    "`/fg members`",
     "`/fg list`",
     "`/fg cleanup`",
     "`/fg share @member`",
@@ -392,15 +396,15 @@ test("personas see exactly the FG commands they can use", () => {
     "`/fg auth remove @member`",
     "`/fg auth list [@role]`",
   ]);
-  // Administrator (not whitelisted, owns no FG role): like the owner for
+  // Staff admin (not whitelisted, owns no FG role): like the owner for
   // FG — creation, sharing, and auth included — except rename/icon/remove
   // (needs to own a role).
   assert.deepEqual(seen(ADMIN), [
     "`/fg base @role`",
     "`/fg color <color> [second_color]`",
     "`/fg create <name> [@member]`",
-    "`/fg add @role [@member]`",
-    "`/fg holders`",
+    "`/fg add @role @member`",
+    "`/fg members`",
     "`/fg list`",
     "`/fg cleanup`",
     "`/fg share @member`",
@@ -412,8 +416,8 @@ test("personas see exactly the FG commands they can use", () => {
   assert.deepEqual(seen(WHITELISTED), [
     "`/fg color <color> [second_color]`",
     "`/fg create <name> [@member]`",
-    "`/fg add @role [@member]`",
-    "`/fg holders`",
+    "`/fg add @role @member`",
+    "`/fg members`",
     "`/fg list`",
     "`/fg share @member`",
     "`/fg auth add @member`",
@@ -427,21 +431,21 @@ test("personas see exactly the FG commands they can use", () => {
     "`/fg icon <url>`",
     "`/fg remove`",
     "`/fg drop`",
-    "`/fg holders`",
+    "`/fg members`",
     "`/fg share @member`",
     "`/fg auth add @member`",
     "`/fg auth remove @member`",
     "`/fg auth list [@role]`",
   ]);
   // Assigned holder and authed sharer (no role of their own): the
-  // holder can also drop the role they hold; both can view holders,
-  // since holders is visible to anyone who can share.
+  // holder can also drop the role they hold; both can view members,
+  // since members is visible to anyone who can share.
   assert.deepEqual(seen(HOLDER), [
     "`/fg drop`",
-    "`/fg holders`",
+    "`/fg members`",
     "`/fg share @member`",
   ]);
-  assert.deepEqual(seen(SHARER), ["`/fg holders`", "`/fg share @member`"]);
+  assert.deepEqual(seen(SHARER), ["`/fg members`", "`/fg share @member`"]);
   // Plain member: nothing.
   assert.deepEqual(seen(NORMAL), []);
 });
@@ -514,22 +518,22 @@ test("normal prefix user sees FG only, with prefix syntax", () => {
   }
 });
 
-test("single-word help topics resolve for fg add, fg list, fg drop, and fg holders", () => {
+test("single-word help topics resolve for fg add, fg list, fg drop, and fg members", () => {
   // /help add and /help list used to fall through to "No help for ..."
   // because FG_SINGLE_WORDS had no entries for them.
-  for (const topic of ["add", "list", "drop", "holders"]) {
+  for (const topic of ["add", "list", "drop", "members"]) {
     const result = resolveHelpTopic(topic);
     assert.equal(result.kind, "embed", topic);
     if (result.kind !== "embed") continue;
     assert.match(result.page.title, new RegExp(`fg ${topic}`, "i"));
   }
-  for (const topic of ["fg add", "fg list", "fg drop", "fg holders"]) {
+  for (const topic of ["fg add", "fg list", "fg drop", "fg members"]) {
     const result = resolveHelpTopic(topic);
     assert.equal(result.kind, "embed", topic);
   }
 });
 
-test("isHelpPrivileged: owner, Administrator, and whitelisted pass; normal fails", () => {
+test("isHelpPrivileged: owner, staff admin, and whitelisted pass; Discord Administrator and normal fail", () => {
   const settings = makeSettings({ allowedUserIds: ["111111111111111111"] });
   const settingsByRole = makeSettings({ allowedRoleIds: ["444444444444444444"] });
   const empty = makeSettings();
@@ -541,12 +545,30 @@ test("isHelpPrivileged: owner, Administrator, and whitelisted pass; normal fails
   );
   assert.equal(
     isHelpPrivileged(
-      { id: "222222222222222222", permissions: { has: () => true }, roles: { cache: { some: () => false } } },
+      {
+        id: "222222222222222222",
+        permissions: { has: () => false },
+        roles: {
+          cache: {
+            some: (predicate: (role: { id: string }) => boolean) =>
+              predicate({ id: ADMIN_ROLE_IDS[0] }),
+          },
+        },
+      },
       "999999999999999999",
       empty,
     ),
     true,
-    "Administrator",
+    "staff admin",
+  );
+  assert.equal(
+    isHelpPrivileged(
+      { id: "222222222222222222", permissions: { has: () => true }, roles: { cache: { some: () => false } } },
+      "999999999999999999",
+      empty,
+    ),
+    false,
+    "Discord Administrator alone",
   );
   assert.equal(isHelpPrivileged(normalMember(), "999999999999999999", settings), true, "whitelisted user");
   assert.equal(
@@ -731,4 +753,68 @@ test("no help page, category, or entry contains an emoji or a usage wall", () =>
       assertNoEmoji(fieldTextFromPage(normalFg.page));
     }
   }
+});
+
+// Admin help is the server owner or a holder of one of the six staff
+// admin roles. The Discord Administrator permission alone grants
+// nothing — including through the Manage Server bit, which discord.js
+// would otherwise imply from Administrator.
+
+function helpMember(roleIds: string[]): unknown {
+  return {
+    id: "222222222222222222",
+    roles: {
+      cache: {
+        has: (roleId: string) => roleIds.includes(roleId),
+        some: (predicate: (role: { id: string }) => boolean) =>
+          roleIds.some((roleId) => predicate({ id: roleId })),
+      },
+    },
+  };
+}
+
+test("computeHelpCapabilities: each of the six staff admin roles grants admin help", () => {
+  for (const roleId of ADMIN_ROLE_IDS) {
+    const caps = computeHelpCapabilities(
+      helpMember([roleId]),
+      new PermissionsBitField(),
+      "999999999999999999",
+      null,
+    );
+    assert.equal(caps.admin, true, `role ${roleId} should grant admin`);
+    assert.equal(caps.privileged, true);
+  }
+});
+
+test("computeHelpCapabilities: the Discord Administrator permission alone grants no admin help", () => {
+  const caps = computeHelpCapabilities(
+    helpMember([]),
+    new PermissionsBitField(PermissionFlagsBits.Administrator),
+    "999999999999999999",
+    null,
+  );
+  assert.equal(caps.admin, false);
+  assert.equal(caps.privileged, false);
+  // And the Administrator bit must not leak into Manage Server either.
+  assert.equal(caps.manageServer, false);
+});
+
+test("computeHelpCapabilities: the server owner is an admin, and real Manage Server still counts", () => {
+  const ownerCaps = computeHelpCapabilities(
+    { id: "999999999999999999", roles: { cache: { has: () => false, some: () => false } } },
+    new PermissionsBitField(),
+    "999999999999999999",
+    null,
+  );
+  assert.equal(ownerCaps.admin, true);
+  assert.equal(ownerCaps.privileged, true);
+
+  const managerCaps = computeHelpCapabilities(
+    helpMember([]),
+    new PermissionsBitField(PermissionFlagsBits.ManageGuild),
+    "999999999999999999",
+    null,
+  );
+  assert.equal(managerCaps.admin, false);
+  assert.equal(managerCaps.manageServer, true);
 });

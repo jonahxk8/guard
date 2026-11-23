@@ -24,12 +24,11 @@ import {
   canAuthFgRole,
   fetchMemberFresh,
   isBotAdmin,
-  isBotAdminPermissions,
   isFgSharer,
   isWhitelisted,
 } from "./authorization.js";
 import { memberDisplayName, roleDisplayName, roleMention } from "./names.js";
-import { WILD_ERROR_REPLY } from "./reply.js";
+import { WILD_ERROR_REPLY, WILD_KEEP_REPLY } from "./reply.js";
 
 /**
  * FG roles, Bleed booster-role style.
@@ -44,7 +43,7 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  *
  * Sharing, Wild-only share + auth model (the award role system was
  * removed — it confused people — and so was /fg assign, which did the
- * same thing as /fg create): the server owner, Administrators, or
+ * same thing as /fg create): the server owner, staff admins, or
  * whitelisted staff create FG roles for people with /fg create. An FG
  * role is given to the person it was made for right away; if giving it
  * fails, the just-created role is deleted again so no orphan FG role
@@ -54,9 +53,9 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  * the owner shares the role and the target accepts, the owner gets a
  * one-line DM about it. A holder can give a shared role back with
  * /fg drop, and the owner (or an authorised sharer) can see who holds
- * the role with /fg holders. The FG role's owner can authorise other people to share their role with /fg auth add — auth
+ * the role with /fg members. The FG role's owner can authorise other people to share their role with /fg auth add — auth
  * is permission to share only, they do not get the role itself. Only
- * the server owner, Administrators, whitelisted staff, the FG role
+ * the server owner, staff admins, whitelisted staff, the FG role
  * owner, and people authed for that role may share it.
  *
  * One FG role per member (Wild rule): a member may hold at most one FG
@@ -285,7 +284,7 @@ export const fgCommand = new SlashCommandBuilder()
         option.setName("role").setDescription("Existing role to make an FG role").setRequired(true),
       )
       .addUserOption((option) =>
-        option.setName("member").setDescription("Member the FG role is for (default: you)"),
+        option.setName("member").setDescription("Member the FG role is for").setRequired(true),
       ),
   )
   .addSubcommand((command) =>
@@ -322,8 +321,8 @@ export const fgCommand = new SlashCommandBuilder()
   )
   .addSubcommand((command) =>
     command
-      .setName("holders")
-      .setDescription("List who holds your FG role"),
+      .setName("members")
+      .setDescription("List the members of your FG role"),
   )
   .addSubcommand((command) =>
     command.setName("list").setDescription("List all FG roles"),
@@ -392,26 +391,30 @@ async function replyText(
 }
 
 function hasManageServer(interaction: ChatInputCommandInteraction): boolean {
-  return Boolean(
-    interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild),
-  );
+  // checkAdmin = false: discord.js `PermissionsBitField.has` returns
+  // true for a member with the Administrator permission by default, and
+  // an Administrator without an admin role is an ordinary member here —
+  // they must not pass through the Manage Server bit.
+  try {
+    return Boolean(
+      interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild, false),
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function requireManageServer(
   interaction: ChatInputCommandInteraction,
 ): Promise<boolean> {
-  // Administrators and the server owner count too — do not rely on the
-  // Manage Server bit being inherited.
-  if (
-    isBotAdminPermissions(
-      interaction.memberPermissions,
-      interaction.user.id,
-      interaction.guild?.ownerId ?? null,
-    ) ||
-    hasManageServer(interaction)
-  ) {
-    return true;
-  }
+  // Bot admins are the server owner or a holder of one of the six staff
+  // admin roles — the Discord Administrator permission alone grants
+  // nothing. Fetch the member fresh: a cached member could still show
+  // a staff admin role that was already removed.
+  const guild = interaction.guild!;
+  const member = await fetchMemberFresh(guild, interaction.user.id);
+  if (member && isBotAdmin(member, guild.ownerId)) return true;
+  if (hasManageServer(interaction)) return true;
   await replyText(interaction, "You need Manage Server for that.");
   return false;
 }
@@ -725,7 +728,7 @@ async function requireFgCreator(
     return null;
   }
   // Wild rule: eligibility is being whitelisted (or the server owner
-  // or an Administrator), not boosting. Bleed gates this on boosting
+  // or a staff admin), not boosting. Bleed gates this on boosting
   // instead.
   if (!isBotAdmin(member, guild.ownerId) && !isWhitelisted(member, settings)) {
     await replyText(
@@ -873,8 +876,10 @@ async function handleAddCommand(
     await replyText(interaction, "The FG base role can't be an FG role itself.");
     return;
   }
-  const targetUser = interaction.options.getUser("member");
-  const targetId = targetUser?.id ?? interaction.user.id;
+  // The member is required: the role belongs to whoever is named,
+  // never to the caller by default.
+  const targetUser = interaction.options.getUser("member", true);
+  const targetId = targetUser.id;
   const forSelf = targetId === interaction.user.id;
   const target = await guild.members.fetch(targetId).catch(() => null);
   if (!target) {
@@ -1063,7 +1068,9 @@ async function handleRemoveCommand(
     components: [buildDecisionButtons("fg-remove")],
     ephemeral: true,
     allowedMentions: { parse: [] },
-  });
+    // Confirmation with a live collector: never auto-delete.
+    [WILD_KEEP_REPLY]: true,
+  } as Parameters<ChatInputCommandInteraction["reply"]>[0]);
   const confirm = await interaction.fetchReply();
   const collector = confirm.createMessageComponentCollector({
     componentType: ComponentType.Button,
@@ -1179,7 +1186,7 @@ async function handleListCommand(
 ): Promise<void> {
   const guild = interaction.guild!;
   const settings = store.get(guild.id);
-  // Fresh fetch: a cached member could still show an Administrator bit
+  // Fresh fetch: a cached member could still show an admin role
   // or whitelisted role that was already removed.
   const member = await fetchMemberFresh(guild, interaction.user.id);
   if (
@@ -1342,15 +1349,15 @@ async function handleDropCommand(
 }
 
 /**
- * /fg holders — who currently holds the caller's FG role, owner
- * first (marked), then the other holders, plain display names, one
+ * /fg members — who currently holds the caller's FG role, owner
+ * first (marked), then the other members, plain display names, one
  * per line. The role is worked out from the caller, exactly like
- * /fg share. Holders are read with a plain member fetch (REST, no
+ * /fg share. Members are read with a plain member fetch (REST, no
  * privileged intent needed) so the list is the real holders, not
  * just whoever happens to be in the bot's member cache. Capped at
  * 25 names with a "+N more" line; never pings anyone.
  */
-async function handleHoldersCommand(
+async function handleMembersCommand(
   interaction: ChatInputCommandInteraction,
   store: ConfigStore,
 ): Promise<void> {
@@ -1396,7 +1403,7 @@ async function handleHoldersCommand(
     description = lines.join("\n") + (extra > 0 ? `\n+${extra} more` : "");
   }
   await interaction.reply({
-    embeds: [wildEmbed(`Holders of ${roleDisplayName(role)}`, description)],
+    embeds: [wildEmbed(`Members of ${roleDisplayName(role)}`, description)],
     ephemeral: true,
     allowedMentions: { parse: [] },
   });
@@ -1455,7 +1462,7 @@ async function handleAuthCommand(
 ): Promise<void> {
   const guild = interaction.guild!;
   const settings = store.get(guild.id);
-  // Fresh fetch: a cached member could still show an Administrator bit
+  // Fresh fetch: a cached member could still show an admin role
   // or whitelisted role that was already removed.
   const member = await fetchMemberFresh(guild, interaction.user.id);
   if (!member) {
@@ -1799,7 +1806,7 @@ async function handleShareCommand(
 
   // Fresh fetch for the requester: their share access is an
   // authorisation decision, so a cached member could still show an
-  // Administrator bit or whitelisted role that was already removed.
+  // admin role or whitelisted role that was already removed.
   const requester = await fetchMemberFresh(guild, interaction.user.id);
   const target = await guild.members.fetch(memberUser.id).catch(() => null);
   if (!requester || !target) {
@@ -1845,7 +1852,9 @@ async function handleShareCommand(
     ],
     components: [buildDecisionButtons()],
     allowedMentions: { parse: ["users"], users: [target.id] },
-  });
+    // Offer with a live collector (5 minutes): never auto-delete.
+    [WILD_KEEP_REPLY]: true,
+  } as Parameters<ChatInputCommandInteraction["reply"]>[0]);
   const offer = await interaction.fetchReply();
   const collector = offer.createMessageComponentCollector({
     componentType: ComponentType.Button,
@@ -1954,8 +1963,8 @@ export async function handleFgCommand(
     case "drop":
       await handleDropCommand(interaction, store);
       return;
-    case "holders":
-      await handleHoldersCommand(interaction, store);
+    case "members":
+      await handleMembersCommand(interaction, store);
       return;
     case "list":
       await handleListCommand(interaction, store);

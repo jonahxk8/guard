@@ -12,14 +12,14 @@ import {
 } from "discord.js";
 import { ConfigStore, GuildSettings, blacklistCount, blacklistEntries, isBlacklisted } from "./config-store.js";
 import { wildFieldEmbed, wildMessageEmbed } from "./embeds.js";
-import { fetchMemberFresh, isBotAdmin, isBotAdminPermissions, isWhitelisted } from "./authorization.js";
+import { fetchMemberFresh, isBotAdmin, isWhitelisted } from "./authorization.js";
 import {
   channelDisplayName,
   memberDisplayName,
   roleDisplayName,
   roleMention,
 } from "./names.js";
-import { WILD_ERROR_REPLY } from "./reply.js";
+import { WILD_ERROR_REPLY, WILD_KEEP_REPLY } from "./reply.js";
 import {
   getUnmanageableRoleIds,
   isDangerousRole,
@@ -93,24 +93,30 @@ export const blacklistCommand = new SlashCommandBuilder()
 const ADMIN_PERMISSION = PermissionFlagsBits.ManageGuild;
 
 function hasManageServer(interaction: ChatInputCommandInteraction): boolean {
-  return Boolean(interaction.memberPermissions?.has(ADMIN_PERMISSION));
+  // checkAdmin = false: discord.js `PermissionsBitField.has` returns
+  // true for a member with the Administrator permission by default, and
+  // an Administrator without an admin role is an ordinary member here —
+  // they must not pass through the Manage Server bit.
+  try {
+    return Boolean(
+      interaction.memberPermissions?.has(ADMIN_PERMISSION, false),
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function requireManageServer(
   interaction: ChatInputCommandInteraction,
 ): Promise<boolean> {
-  // Administrators and the server owner count too — do not rely on the
-  // Manage Server bit being inherited.
-  if (
-    isBotAdminPermissions(
-      interaction.memberPermissions,
-      interaction.user.id,
-      interaction.guild?.ownerId ?? null,
-    ) ||
-    hasManageServer(interaction)
-  ) {
-    return true;
-  }
+  // Bot admins are the server owner or a holder of one of the six staff
+  // admin roles — the Discord Administrator permission alone grants
+  // nothing. Fetch the member fresh: a cached member could still show
+  // a staff admin role that was already removed.
+  const guild = interaction.guild!;
+  const member = await fetchMemberFresh(guild, interaction.user.id);
+  if (member && isBotAdmin(member, guild.ownerId)) return true;
+  if (hasManageServer(interaction)) return true;
   await interaction.reply({
     embeds: [wildMessageEmbed("You need Manage Server for that.")],
     ephemeral: true,
@@ -432,9 +438,9 @@ async function handleBlacklistList(
 ): Promise<void> {
   const guild = interaction.guild!;
   const settings = store.get(guild.id);
-  // Manage Server or whitelisted (the server owner and Administrators
-  // bypass too). Fresh fetch: a cached member could still show an
-  // Administrator bit or whitelisted role that was already removed.
+  // Manage Server or whitelisted (the server owner and staff admin
+  // roles bypass too). Fresh fetch: a cached member could still show an
+  // admin role or whitelisted role that was already removed.
   const member = await fetchMemberFresh(guild, interaction.user.id);
   if (
     !isBotAdmin(member, guild.ownerId) &&
@@ -476,7 +482,9 @@ async function handleBlacklistList(
     components: buildBlacklistListComponents(firstPage.page, firstPage.totalPages, ownerId),
     ephemeral: true,
     allowedMentions: { parse: [] },
-  });
+    // Paged list with a live collector: never auto-delete.
+    [WILD_KEEP_REPLY]: true,
+  } as Parameters<ChatInputCommandInteraction["reply"]>[0]);
 
   // Paged navigation: buttons live for 5 minutes, then disable.
   // Best-effort only — test doubles and channels without a fetchable
@@ -715,8 +723,8 @@ export async function handleGuardCommand(
 
   // Every guard command requires Manage Server, except /blacklist list,
   // which Manage Server members or whitelisted members can use (the list
-  // handler itself enforces that — the owner and Administrators bypass
-  // too).
+  // handler itself enforces that — the owner and staff admin roles
+  // bypass too).
   const isBlacklistList =
     interaction.commandName === "blacklist" &&
     interaction.options.getSubcommand() === "list";

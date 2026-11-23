@@ -1,4 +1,4 @@
-import { Guild, GuildMember, PermissionFlagsBits } from "discord.js";
+import { Guild, GuildMember } from "discord.js";
 import { FgRoleAccess, GuildSettings } from "./config-store.js";
 
 /**
@@ -10,8 +10,8 @@ import { FgRoleAccess, GuildSettings } from "./config-store.js";
  * does NOT subscribe to the GuildMembers intent, so it never receives
  * `GuildMemberUpdate` events — a cached member's roles and permissions
  * are frozen from the moment the member was first cached until the bot
- * restarts. A member who HAD Administrator when cached still looks like
- * an Administrator after it is removed, and the guard would let their
+ * restarts. A member who HAD a staff admin role when cached still looks
+ * like an admin after it is removed, and the guard would let their
  * grants stand. Every authorisation decision must use this helper, never
  * a plain fetch and never a cached member. Returns null when the member
  * cannot be fetched: callers treat that as "not authorised" (fail closed).
@@ -66,10 +66,28 @@ export function isFgStaff(member: GuildMember, settings: GuildSettings): boolean
 }
 
 /**
- * Server owner OR anyone with the Discord Administrator permission.
- * Administrators can use the bot fully, exactly like the server owner.
- * Tolerant of partial/mock members: no permissions object means "not
- * an admin" unless the id is the owner's.
+ * The six staff admin roles, by role ID. These are the user's staff
+ * roles, baked into the bot: a member holding any one of them is a bot
+ * admin in every server where the role exists. In a server without
+ * these roles, only the server owner is a bot admin. The Discord
+ * Administrator permission alone grants NOTHING — a member with
+ * Administrator but no admin role (and not the owner) is an ordinary
+ * member. There is no command to change this list (a future option).
+ */
+export const ADMIN_ROLE_IDS: readonly string[] = [
+  "1569765098883391510",
+  "1572935769931255808",
+  "1528406720588546128",
+  "1528406720588546125",
+  "1528406720588546124",
+  "1572646478944407603",
+];
+
+/**
+ * Server owner OR a holder of one of the six staff admin roles.
+ * Admin-role holders can use the bot fully, exactly like the server
+ * owner. Tolerant of partial/mock members: a member whose roles cannot
+ * be read is not an admin unless their id is the owner's.
  */
 export function isBotAdmin(
   member: GuildMember | null | undefined,
@@ -77,29 +95,27 @@ export function isBotAdmin(
 ): boolean {
   if (!member) return false;
   if (ownerId && member.id === ownerId) return true;
+  const cache = (
+    member as unknown as {
+      roles?: { cache?: { some?: unknown; has?: unknown } };
+    }
+  ).roles?.cache;
+  if (!cache) return false;
   try {
-    return Boolean(member.permissions?.has(PermissionFlagsBits.Administrator));
+    if (typeof cache.some === "function") {
+      return (cache.some as (predicate: (role: { id: string }) => boolean) => boolean)(
+        (role) => ADMIN_ROLE_IDS.includes(role.id),
+      );
+    }
+    if (typeof cache.has === "function") {
+      return ADMIN_ROLE_IDS.some((id) =>
+        (cache.has as (roleId: string) => boolean)(id),
+      );
+    }
   } catch {
     return false;
   }
-}
-
-/**
- * Same rule, for interaction handlers that only have the caller's
- * member permissions (no fetched member): server owner, or the
- * Administrator permission bit.
- */
-export function isBotAdminPermissions(
-  permissions: { has: (permission: bigint) => boolean } | null | undefined,
-  userId: string,
-  ownerId: string | null | undefined,
-): boolean {
-  if (ownerId && userId === ownerId) return true;
-  try {
-    return Boolean(permissions?.has(PermissionFlagsBits.Administrator));
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 /** Whitelisted directly, or via a whitelisted role, or legacy FG staff. */

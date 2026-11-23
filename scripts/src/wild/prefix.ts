@@ -9,7 +9,11 @@ import { handleGuardCommand } from "./commands.js";
 import { handleFgCommand, parseFgColorTokens, splitColorTokens } from "./fg-booster.js";
 import { handleHelpCommand } from "./help.js";
 import { wildMessageEmbed } from "./embeds.js";
-import { WILD_ERROR_REPLY } from "./reply.js";
+import {
+  AUTO_DELETE_DELAY_MS,
+  WILD_ERROR_REPLY,
+  WILD_KEEP_REPLY,
+} from "./reply.js";
 
 /**
  * Prefix (",") commands. Every slash command also works with ","
@@ -48,8 +52,10 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  * in the channel — Discord has no invisible message replies. Mitigation:
  * the user's prefix command message is deleted after handling
  * (best-effort), and error replies auto-delete after 10 seconds
- * (best-effort). Success replies stay. Anyone who needs invisible
- * errors should use the slash versions.
+ * (best-effort). Other public replies auto-delete after 90 seconds,
+ * unless they are interactive (share offers, confirmations, paged
+ * help and blacklist lists). Anyone who needs invisible errors
+ * should use the slash versions.
  */
 
 export const PREFIX = ",";
@@ -257,15 +263,17 @@ function parseFgPrefix(
       return { command: "fg", args };
     }
     case "add": {
-      // ,fg add @role [@member] — the role is required; the member
-      // defaults to the caller.
+      // ,fg add @role @member — both are required; the role belongs to
+      // whoever is named, never to the caller by default.
       const roleId = parseRoleToken(tail[0]);
-      if (!roleId) return usage("Usage: ,fg add @role [@member]");
+      if (!roleId) return usage("Usage: ,fg add @role @member");
       const memberId = tail[1] ? parseUserToken(tail[1]) : null;
-      if (tail[1] && !memberId) return usage("Usage: ,fg add @role [@member]");
+      if (!memberId) {
+        return usage("Say who the role belongs to: ,fg add @role @member");
+      }
       args.subcommand = "add";
       args.roles.role = roleId;
-      if (memberId) args.users.member = memberId;
+      args.users.member = memberId;
       return { command: "fg", args };
     }
     case "create": {
@@ -301,7 +309,7 @@ function parseFgPrefix(
     }
     case "remove":
     case "drop":
-    case "holders":
+    case "members":
     case "list":
     case "cleanup":
       args.subcommand = action;
@@ -366,7 +374,9 @@ function parseFgPrefix(
  * the slash handlers run unchanged. The fake reply sends a plain message
  * to the channel (prefix replies cannot be ephemeral); error replies —
  * flagged by the handlers with WILD_ERROR_REPLY — auto-delete after 10
- * seconds, best-effort. Success replies stay.
+ * seconds, best-effort, and other public replies after 90 seconds
+ * unless flagged WILD_KEEP_REPLY (interactive messages with a live
+ * collector).
  */
 function buildFakeInteraction(
   message: Message,
@@ -388,10 +398,22 @@ function buildFakeInteraction(
       allowedMentions: options.allowedMentions as never,
     });
     lastSent = sent;
-    if (options[WILD_ERROR_REPLY]) {
+    // Error replies auto-delete after 10 seconds so the channel does
+    // not fill with usage spam. Other public replies auto-delete after
+    // 90 seconds, unless the handler marked the reply as one to keep
+    // (interactive messages with a live collector: share offers, the
+    // /fg remove confirmation, paged help and blacklist lists). A
+    // delete that fails because the message is already gone is
+    // swallowed — it must never throw.
+    const deleteMs = options[WILD_ERROR_REPLY]
+      ? ERROR_DELETE_DELAY_MS
+      : options[WILD_KEEP_REPLY]
+        ? null
+        : AUTO_DELETE_DELAY_MS;
+    if (deleteMs !== null) {
       const timer = setTimeout(() => {
         sent.delete().catch(() => undefined);
-      }, ERROR_DELETE_DELAY_MS);
+      }, deleteMs);
       timer.unref?.();
     }
     return sent;
@@ -411,10 +433,10 @@ function buildFakeInteraction(
   };
 
   // The fake interaction's member drives every permission gate the
-  // shared handlers run (owner/Administrator/whitelist). It is passed in
+  // shared handlers run (owner/admin-role/whitelist). It is passed in
   // already fetched fresh from the API by handlePrefixMessage:
   // `message.member` is cached and can be stale — a member who lost
-  // Administrator still looks like one.
+  // an admin role still looks like one.
   const fake = {
     commandName,
     guild: message.guild,
@@ -495,7 +517,7 @@ export async function handlePrefixMessage(
   // /setup slash commands — map them back so the shared handler routes.
   const slashCommand = SLASH_COMMAND_NAME[command] ?? command;
   // Fetch the author fresh from the API: `message.member` is cached and
-  // can be stale (a member who lost Administrator still looks like one),
+  // can be stale (a member who lost an admin role still looks like one),
   // and the fake interaction's member drives every permission gate.
   // Fall back to the cached member only when the fetch fails.
   const freshMember = message.guild

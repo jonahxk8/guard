@@ -11,9 +11,9 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { ConfigStore, GuildSettings } from "./config-store.js";
-import { isWhitelisted } from "./authorization.js";
+import { ADMIN_ROLE_IDS, isWhitelisted } from "./authorization.js";
 import { WildField, wildFieldEmbed, wildMessageEmbed } from "./embeds.js";
-import { WILD_ERROR_REPLY } from "./reply.js";
+import { WILD_ERROR_REPLY, WILD_KEEP_REPLY } from "./reply.js";
 
 /**
  * Help pages, Greed-style: paged embeds, one field per command, buttons
@@ -24,8 +24,8 @@ import { WILD_ERROR_REPLY } from "./reply.js";
  * Personalised help: there are no "Who:" lines anywhere. Instead, every
  * listing shows only the commands THAT user can actually use right now,
  * evaluated live from the member, their roles, fgRoleOwners,
- * fgRoleSharers, the whitelist, Administrator, Manage Server, and the
- * server owner. A normal member sees FG only; an FG owner also sees
+ * fgRoleSharers, the whitelist, the staff admin roles, Manage Server,
+ * and the server owner. A normal member sees FG only; an FG owner also sees
  * rename/icon/remove/share/auth; whitelisted staff see Guard, Blacklist,
  * and more. A plain member with no FG role sees the FG category
  * with a short note and no commands they can't touch. Capability is
@@ -71,18 +71,18 @@ export type HelpMode = "slash" | "prefix";
 /**
  * What one user can actually do, evaluated live from their member
  * object, their roles, fgRoleOwners, fgRoleSharers, the whitelist,
- * Administrator, Manage Server, and the server owner. Every help
+ * the staff admin roles, Manage Server, and the server owner. Every help
  * listing is filtered through these flags — there are no "Who:" lines
  * anymore, because a command you can't use never appears at all.
  */
 export interface HelpCapabilities {
   /** Server owner. */
   owner: boolean;
-  /** Has the Discord Administrator permission. */
+  /** Server owner, or holding one of the six staff admin roles. */
   admin: boolean;
   /** Whitelisted user, or holding a whitelisted role. */
   whitelisted: boolean;
-  /** Has Manage Server (owners and Administrators count). */
+  /** Has Manage Server (owners and staff admins count). */
   manageServer: boolean;
   /** Currently owns an FG role. */
   ownsFgRole: boolean;
@@ -94,7 +94,7 @@ export interface HelpCapabilities {
   canShareAny: boolean;
   /** May auth others for at least one FG role (owner/whitelisted/FG owner). */
   canAuthAny: boolean;
-  /** Owner, Administrator, or whitelisted. */
+  /** Owner, staff admin, or whitelisted. */
   privileged: boolean;
 }
 
@@ -146,7 +146,10 @@ export const DEFAULT_HELP_CONTEXT: HelpContext = {
   mode: "slash",
 };
 
-type PermissionsLike = { has: (permission: bigint) => boolean } | null | undefined;
+type PermissionsLike =
+  | { has: (permission: bigint, checkAdmin?: boolean) => boolean }
+  | null
+  | undefined;
 
 function permissionHas(
   permissions: PermissionsLike,
@@ -154,7 +157,10 @@ function permissionHas(
 ): boolean {
   if (!permissions || typeof permissions.has !== "function") return false;
   try {
-    return permissions.has(permission);
+    // checkAdmin = false: discord.js `has` returns true for a member
+    // with the Administrator permission by default, and an
+    // Administrator without an admin role is an ordinary member here.
+    return permissions.has(permission, false);
   } catch {
     return false;
   }
@@ -203,8 +209,11 @@ export function computeHelpCapabilities(
       : null;
   if (!userId) return ALL_CAPS;
   const owner = Boolean(guildOwnerId) && userId === guildOwnerId;
+  // Admin is the server owner or a holder of one of the six staff
+  // admin roles — the Discord Administrator permission alone grants
+  // nothing here.
   const admin =
-    owner || permissionHas(permissions, PermissionFlagsBits.Administrator);
+    owner || ADMIN_ROLE_IDS.some((roleId) => memberHasRole(member, roleId));
   let whitelisted = false;
   if (settings) {
     try {
@@ -240,8 +249,8 @@ export function computeHelpCapabilities(
 }
 
 /**
- * Privileged for help: the server owner, a member with the Discord
- * Administrator permission, a whitelisted user, or a member holding a
+ * Privileged for help: the server owner, a holder of one of the six
+ * staff admin roles, a whitelisted user, or a member holding a
  * whitelisted role. When there is no member to check (DMs, test
  * doubles), treat the user as privileged — there is no server to
  * gate against.
@@ -284,7 +293,7 @@ export function canSeeEntry(
     case "manageOrWhitelisted":
       return caps.manageServer || caps.whitelisted;
     case "ownerOrWhitelisted":
-      // Administrators count as owner here, exactly like the command
+      // Staff admins count as owner here, exactly like the command
       // handlers: an admin can create and auth FG roles.
       return caps.owner || caps.admin || caps.whitelisted;
     case "fgOwner":
@@ -394,8 +403,8 @@ const FG_ENTRIES: HelpEntry[] = [
   },
   {
     key: "fg add",
-    slash: "/fg add @role [@member]",
-    prefix: ",fg add @role [@member]",
+    slash: "/fg add @role @member",
+    prefix: ",fg add @role @member",
     purpose: "Add an existing role as an FG role",
     example: "/fg add @My Role @Alex",
     examplePrefix: ",fg add @My Role @Alex",
@@ -438,12 +447,12 @@ const FG_ENTRIES: HelpEntry[] = [
     gate: "holdsFgRole",
   },
   {
-    key: "fg holders",
-    slash: "/fg holders",
-    prefix: ",fg holders",
-    purpose: "List who holds your FG role",
-    example: "/fg holders",
-    examplePrefix: ",fg holders",
+    key: "fg members",
+    slash: "/fg members",
+    prefix: ",fg members",
+    purpose: "List the members of your FG role",
+    example: "/fg members",
+    examplePrefix: ",fg members",
     gate: "canShare",
   },
   {
@@ -567,7 +576,7 @@ const FG_SINGLE_WORDS: Record<string, string> = {
   icon: "fg icon",
   remove: "fg remove",
   drop: "fg drop",
-  holders: "fg holders",
+  members: "fg members",
   list: "fg list",
   cleanup: "fg cleanup",
   share: "fg share",
@@ -984,7 +993,9 @@ export async function handleHelpCommand(
     components: buildHelpComponents(page, ownerId),
     ephemeral: true,
     allowedMentions: { parse: [] },
-  });
+    // Paged help with a live collector: never auto-delete.
+    [WILD_KEEP_REPLY]: true,
+  } as Parameters<ChatInputCommandInteraction["reply"]>[0]);
 
   // Greed-style navigation: buttons live for 5 minutes, then disable.
   // Best-effort only — test doubles and channels without a fetchable

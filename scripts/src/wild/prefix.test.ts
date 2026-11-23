@@ -59,6 +59,38 @@ function sentTextOf(sent: SentMessage): string {
   return embed?.description ?? sent.content ?? "";
 }
 
+function makeButton(customId: string, userId: string) {
+  const button = {
+    customId,
+    user: { id: userId },
+    replied: false,
+    deferred: false,
+    replies: [] as Array<Record<string, unknown>>,
+    updates: [] as Array<Record<string, unknown>>,
+    reply: async (options: Record<string, unknown>) => {
+      button.replied = true;
+      button.replies.push(options);
+    },
+    update: async (options: Record<string, unknown>) => {
+      button.replied = true;
+      button.updates.push(options);
+    },
+    deferUpdate: async () => {
+      button.deferred = true;
+    },
+  };
+  return button;
+}
+
+/** Text of a button interaction's update (or reply): embed description. */
+function buttonTextOf(button: ReturnType<typeof makeButton>): string {
+  const update = button.updates[0];
+  const embed = update?.embeds as
+    | Array<{ toJSON: () => { description?: string } }>
+    | undefined;
+  return embed?.[0]?.toJSON().description ?? "";
+}
+
 function createMessage(options: {
   content: string;
   settings?: GuildSettings;
@@ -71,6 +103,13 @@ function createMessage(options: {
   memberRoleIds?: Record<string, string[]>;
 }) {
   const sent: SentMessage[] = [];
+  const dms: Array<{ to: string; options: Record<string, unknown> }> = [];
+  const collectors: Array<{
+    on: (event: string, fn: (...args: unknown[]) => unknown) => void;
+    stop: (reason?: string) => void;
+    fireCollect: (button: unknown) => Promise<void>;
+    fireEnd: (reason: string) => Promise<void>;
+  }> = [];
   let commandDeleted = false;
   const rolesCache = new Map(
     (options.roles ?? [{ id: ROLE_ID }]).map((role) => {
@@ -142,6 +181,9 @@ function createMessage(options: {
             held.delete(role.id);
           },
         },
+        send: async (sendOptions: Record<string, unknown>) => {
+          dms.push({ to: memberId, options: sendOptions });
+        },
       });
     }
     return members.get(memberId)!;
@@ -151,17 +193,35 @@ function createMessage(options: {
     type: ChannelType.GuildText,
     permissionsFor: () => ({ has: () => true }),
     send: async (messageOptions: Record<string, unknown>) => {
+      const handlers: Record<string, Array<(...args: unknown[]) => unknown>> = {};
+      const collector = {
+        on: (event: string, fn: (...args: unknown[]) => unknown) => {
+          (handlers[event] ??= []).push(fn);
+        },
+        stop: (_reason?: string) => {},
+        fireCollect: async (button: unknown) => {
+          for (const fn of handlers.collect ?? []) await fn(button);
+        },
+        fireEnd: async (reason: string) => {
+          for (const fn of handlers.end ?? []) await fn(undefined, reason);
+        },
+      };
+      collectors.push(collector);
       const sentMessage: SentMessage = {
         content: messageOptions.content as string | undefined,
         embeds: messageOptions.embeds as SentMessage["embeds"],
         deleted: false,
       };
-      (sentMessage as unknown as Record<string, unknown>).delete = async () => {
+      const record = sentMessage as unknown as Record<string, unknown>;
+      record.edits = [] as Array<Record<string, unknown>>;
+      record.delete = async () => {
         sentMessage.deleted = true;
       };
-      (
-        sentMessage as unknown as Record<string, unknown>
-      ).createMessageComponentCollector = () => ({ on: () => {} });
+      record.edit = async (editOptions: Record<string, unknown>) => {
+        (record.edits as Array<Record<string, unknown>>).push(editOptions);
+        return sentMessage;
+      };
+      record.createMessageComponentCollector = () => collector;
       sent.push(sentMessage);
       return sentMessage;
     },
@@ -174,7 +234,7 @@ function createMessage(options: {
           premiumTier: 0,
           members: {
             me: botMember,
-            // No argument fetches every member (used by /fg holders).
+            // No argument fetches every member (used by /fg members).
             fetch: async (arg?: string | { user?: string }) => {
               if (arg === undefined) return new Map(members);
               return getMember(typeof arg === "string" ? arg : (arg.user ?? ""));
@@ -228,6 +288,8 @@ function createMessage(options: {
   return {
     message,
     sent,
+    dms,
+    collectors,
     get commandDeleted() {
       return commandDeleted;
     },
@@ -531,6 +593,114 @@ test(",fg rename and ,fg share route to the shared FG handler", async () => {
   assert.match(embed.description ?? "", new RegExp(`<@&${FG_ROLE_ID}>`));
 });
 
+test(",fg share end-to-end: offer, Yes accept, role added, owner DM only for non-owner sharers", async () => {
+  // The caller owns the FG role; the target accepts the offer.
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [USER_ID],
+      fgRoleOwners: { [FG_ROLE_ID]: USER_ID },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const share = createMessage({
+    content: ",fg share <@333333333333333333>",
+    roles: [{ id: FG_ROLE_ID }],
+    memberRoleIds: { [USER_ID]: [FG_ROLE_ID] },
+  });
+  assert.equal(await handlePrefixMessage(share.message, config.store), true);
+
+  // The offer went out: content pings the target, embed names the role.
+  assert.equal(share.sent.length, 1);
+  assert.equal(share.sent[0].content, `<@${OTHER_ID}>`);
+  const offerEmbed = share.sent[0].embeds?.[0]?.toJSON() as {
+    title?: string;
+    description?: string;
+  };
+  assert.equal(offerEmbed.title, "fg share");
+  assert.match(offerEmbed.description ?? "", /is offering/);
+
+  // The target taps Yes: the role is added, the offer edits to accepted.
+  assert.equal(share.collectors.length, 1);
+  const yes = makeButton("fg-share:yes", OTHER_ID);
+  await share.collectors[0].fireCollect(yes);
+  assert.equal(yes.updates.length, 1);
+  const acceptedEmbeds = yes.updates[0].embeds as Array<{
+    toJSON: () => { title?: string; description?: string };
+  }>;
+  const accepted = acceptedEmbeds[0]?.toJSON() as {
+    title?: string;
+    description?: string;
+  };
+  assert.equal(accepted.title, "fg share accepted");
+  assert.match(accepted.description ?? "", /accepted/);
+  // No generic error reply was sent at any point.
+  assert.equal(
+    share.sent.filter((message) => /couldn't complete that command/i.test(sentTextOf(message)))
+      .length,
+    0,
+  );
+  // The owner shared their own role, so no owner DM about their own action.
+  assert.equal(share.dms.length, 0);
+});
+
+test(",fg share by an authed non-owner DMs the FG owner on accept", async () => {
+  // OTHER_ID is authed to share USER_ID's FG role; the target accepts.
+  const TARGET_ID = "444444444444444444";
+  const config = createStore(
+    makeSettings({
+      fgRoleOwners: { [FG_ROLE_ID]: USER_ID },
+      fgRoleSharers: { [FG_ROLE_ID]: [OTHER_ID] },
+      fgRoles: {
+        [FG_ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+    }),
+  );
+  const share = createMessage({
+    content: ",fg share <@444444444444444444>",
+    authorId: OTHER_ID,
+    roles: [{ id: FG_ROLE_ID }],
+    memberRoleIds: { [USER_ID]: [FG_ROLE_ID] },
+  });
+  assert.equal(await handlePrefixMessage(share.message, config.store), true);
+  assert.equal(share.sent.length, 1);
+  assert.equal(share.collectors.length, 1);
+
+  const yes = makeButton("fg-share:yes", TARGET_ID);
+  await share.collectors[0].fireCollect(yes);
+  const acceptedEmbeds = yes.updates[0].embeds as Array<{
+    toJSON: () => { title?: string };
+  }>;
+  const accepted = acceptedEmbeds[0]?.toJSON() as { title?: string };
+  assert.equal(accepted.title, "fg share accepted");
+  // The FG owner hears about it: one DM, naming the sharer and the role.
+  assert.equal(share.dms.length, 1);
+  assert.equal(share.dms[0].to, USER_ID);
+  const dmText = (
+    share.dms[0].options.embeds as Array<{ toJSON: () => { description?: string } }>
+  )[0]
+    .toJSON()
+    .description;
+  assert.match(dmText ?? "", /shared your FG role/);
+});
+
+test(",fg holders no longer exists", async () => {
+  const parsed = parsePrefixMessage(",fg holders");
+  assert.ok(parsed && "error" in parsed);
+  assert.equal(parsed.error, "Use ,help fg to see FG commands.");
+});
+
 test(",fg assign no longer exists", async () => {
   const parsed = parsePrefixMessage(",fg assign <@333333333333333333> <@&666666666666666666>");
   assert.ok(parsed && "error" in parsed);
@@ -560,7 +730,7 @@ test(",fg drop gives back a shared FG role", async () => {
   assert.match(sentTextOf(sent[0]), /Dropped <@&/);
 });
 
-test(",fg holders lists who holds the caller's FG role", async () => {
+test(",fg members lists the members of the caller's FG role", async () => {
   const config = createStore(
     makeSettings({
       fgRoleOwners: { [FG_ROLE_ID]: USER_ID },
@@ -575,7 +745,7 @@ test(",fg holders lists who holds the caller's FG role", async () => {
     }),
   );
   const { message, sent } = createMessage({
-    content: ",fg holders",
+    content: ",fg members",
     roles: [{ id: FG_ROLE_ID }],
     memberRoleIds: { [USER_ID]: [FG_ROLE_ID] },
   });
@@ -584,7 +754,7 @@ test(",fg holders lists who holds the caller's FG role", async () => {
     title?: string;
     description?: string;
   };
-  assert.match(embed.title ?? "", /Holders of/);
+  assert.match(embed.title ?? "", /Members of/);
   // Only the owner holds it here, so the one-line form is used.
   assert.match(embed.description ?? "", /Only Alex holds Role\./);
 });
@@ -652,6 +822,25 @@ test(",fg add registers an existing role through the shared handler", async () =
     }
   ).members.fetch(OTHER_ID);
   assert.equal(target.roles.cache.has(FG_ROLE_ID), true);
+});
+
+test(",fg add with only a role errors and never defaults the owner to the caller", async () => {
+  const config = createStore(
+    makeSettings({
+      allowedUserIds: [USER_ID],
+      fgBaseRoleId: ROLE_ID,
+    }),
+  );
+  const { message, sent } = createMessage({
+    content: ",fg add <@&666666666666666666>",
+    roles: [{ id: ROLE_ID }, { id: FG_ROLE_ID }],
+  });
+
+  assert.equal(await handlePrefixMessage(message, config.store), true);
+
+  assert.match(sentTextOf(sent[0]), /Say who the role belongs to: ,fg add @role @member/);
+  assert.equal(config.getSettings().fgRoleOwners[FG_ROLE_ID], undefined);
+  assert.equal(config.getSettings().fgRoles[FG_ROLE_ID], undefined);
 });
 
 test(",fg auth add and ,fg auth list route to the shared FG handler", async () => {
@@ -935,6 +1124,92 @@ test("an error reply auto-deletes after 10 seconds", async (t) => {
     assert.equal(sent[0].deleted, false);
     t.mock.timers.tick(10_000);
     assert.equal(sent[0].deleted, true);
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("a public success reply auto-deletes after 90 seconds", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const config = createStore(
+      makeSettings({
+        fgRoleOwners: { [FG_ROLE_ID]: "333333333333333333" },
+        fgRoles: {
+          [FG_ROLE_ID]: {
+            assignUserIds: [],
+            assignRoleIds: [],
+            shareUserIds: [],
+            shareRoleIds: [],
+          },
+        },
+      }),
+    );
+    const { message, sent } = createMessage({
+      content: ",fg drop",
+      roles: [{ id: FG_ROLE_ID }],
+      memberRoleIds: { [USER_ID]: [FG_ROLE_ID] },
+    });
+
+    await handlePrefixMessage(message, config.store);
+
+    assert.equal(sent.length, 1);
+    assert.match(sentTextOf(sent[0]), /Dropped/);
+    assert.equal(sent[0].deleted, false);
+    t.mock.timers.tick(89_999);
+    assert.equal(sent[0].deleted, false);
+    t.mock.timers.tick(1);
+    assert.equal(sent[0].deleted, true);
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("a share offer does not auto-delete", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const config = createStore(
+      makeSettings({
+        allowedUserIds: [USER_ID],
+        fgRoleOwners: { [FG_ROLE_ID]: USER_ID },
+        fgRoles: {
+          [FG_ROLE_ID]: {
+            assignUserIds: [],
+            assignRoleIds: [],
+            shareUserIds: [],
+            shareRoleIds: [],
+          },
+        },
+      }),
+    );
+    const share = createMessage({
+      content: ",fg share <@333333333333333333>",
+      roles: [{ id: FG_ROLE_ID }],
+      memberRoleIds: { [USER_ID]: [FG_ROLE_ID] },
+    });
+
+    assert.equal(await handlePrefixMessage(share.message, config.store), true);
+    assert.equal(share.sent.length, 1);
+    assert.equal(share.sent[0].deleted, false);
+    // Past the 90-second window and past the offer's 5-minute life.
+    t.mock.timers.tick(300_000);
+    assert.equal(share.sent[0].deleted, false);
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("a help pager does not auto-delete", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const config = createStore(makeSettings({ allowedUserIds: [USER_ID] }));
+    const help = createMessage({ content: ",help fg" });
+
+    assert.equal(await handlePrefixMessage(help.message, config.store), true);
+    assert.equal(help.sent.length, 1);
+    assert.equal(help.sent[0].deleted, false);
+    t.mock.timers.tick(300_000);
+    assert.equal(help.sent[0].deleted, false);
   } finally {
     t.mock.timers.reset();
   }

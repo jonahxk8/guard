@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Guild, GuildMember, PermissionFlagsBits } from "discord.js";
+import { Guild, GuildMember } from "discord.js";
 import {
+  ADMIN_ROLE_IDS,
   canAssignFgRole,
   canAuthFgRole,
   canShareFgRole,
   fetchMemberFresh,
   isBotAdmin,
-  isBotAdminPermissions,
   isFgSharer,
   isFgStaff,
 } from "./authorization.js";
@@ -126,62 +126,50 @@ test("canAuthFgRole: FG owner and whitelisted pass; holder and random member fai
   assert.equal(canAuthFgRole(makeMember("999999999999999999"), FG_ROLE_ID, settings), false);
 });
 
-/** Administrator counts as owner: the server owner, or anyone with the
- * Discord Administrator permission, can use the bot fully. */
+/** Bot admin is the server owner, or a holder of one of the six staff
+ * admin roles. The Discord Administrator permission alone grants
+ * nothing. */
 
-test("isBotAdmin: owner, Administrator, and neither", () => {
+test("isBotAdmin: owner, each of the six staff admin roles, and neither", () => {
   const ownerId = "999999999999999999";
-  const adminMember = {
-    id: "222222222222222222",
-    permissions: {
-      has: (permission: bigint) =>
-        permission === PermissionFlagsBits.Administrator,
-    },
-    roles: { cache: { some: () => false } },
-  } as unknown as GuildMember;
-  const plainMember = {
-    id: "222222222222222222",
-    permissions: { has: () => false },
-    roles: { cache: { some: () => false } },
-  } as unknown as GuildMember;
-  const ownerMember = {
-    id: ownerId,
-    permissions: { has: () => false },
-    roles: { cache: { some: () => false } },
-  } as unknown as GuildMember;
-
+  const ownerMember = makeMember(ownerId);
+  // Every one of the six staff admin roles grants admin on its own.
+  for (const roleId of ADMIN_ROLE_IDS) {
+    assert.equal(
+      isBotAdmin(makeMember("222222222222222222", [roleId]), ownerId),
+      true,
+      `expected admin role ${roleId} to grant admin`,
+    );
+  }
+  // A member holding two admin roles is still an admin.
+  assert.equal(
+    isBotAdmin(
+      makeMember("222222222222222222", [ADMIN_ROLE_IDS[0], ADMIN_ROLE_IDS[1]]),
+      ownerId,
+    ),
+    true,
+  );
   assert.equal(isBotAdmin(ownerMember, ownerId), true);
-  assert.equal(isBotAdmin(adminMember, ownerId), true);
-  assert.equal(isBotAdmin(plainMember, ownerId), false);
+  assert.equal(isBotAdmin(makeMember("222222222222222222"), ownerId), false);
   assert.equal(isBotAdmin(null, ownerId), false);
   assert.equal(isBotAdmin(undefined, ownerId), false);
-  // A member with no permissions object is not an admin (unless owner).
+  // A member with no roles object is not an admin (unless owner).
   assert.equal(
     isBotAdmin({ id: "222222222222222222" } as unknown as GuildMember, ownerId),
     false,
   );
 });
 
-test("isBotAdminPermissions: owner or Administrator bit", () => {
+test("isBotAdmin: the Discord Administrator permission alone grants nothing", () => {
+  // A member whose permissions carry Administrator but who holds no
+  // staff admin role is an ordinary member.
   const ownerId = "999999999999999999";
-  const adminPermissions = {
-    has: (permission: bigint) =>
-      permission === PermissionFlagsBits.Administrator,
-  };
-  const plainPermissions = { has: () => false };
-  assert.equal(
-    isBotAdminPermissions(adminPermissions, "222222222222222222", ownerId),
-    true,
-  );
-  assert.equal(
-    isBotAdminPermissions(plainPermissions, "222222222222222222", ownerId),
-    false,
-  );
-  assert.equal(isBotAdminPermissions(plainPermissions, ownerId, ownerId), true);
-  assert.equal(
-    isBotAdminPermissions(null, "222222222222222222", ownerId),
-    false,
-  );
+  const discordAdmin = {
+    id: "222222222222222222",
+    permissions: { has: () => true },
+    roles: { cache: { some: () => false } },
+  } as unknown as GuildMember;
+  assert.equal(isBotAdmin(discordAdmin, ownerId), false);
 });
 
 test("fetchMemberFresh bypasses the cache with force: true", async () => {

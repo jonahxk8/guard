@@ -261,7 +261,16 @@ Wild adaptations (these are Wild rules, not Bleed behaviour):
   because the friend needs to see it.
 
 FG roles are created with no permissions, are automatically protected,
-and the audit-log guard applies to them like any other protected role.
+and the audit-log guard applies to them like any other protected role —
+even when an FG role is not listed under `/protect` (for example it was
+made before auto-protect existed, or unprotected with `/protect`): any
+grant by someone who is not the server owner, an Administrator,
+whitelisted, the FG role's owner, or an authorised sharer is removed
+instantly, including self-grants. Having Manage Roles alone never
+authorises a grant. `/protect` cannot unprotect an FG role — FG roles
+are always protected. If the bot cannot remove a role (its own role sits
+below it, or it lost Manage Roles), the giver is DM'd that the removal
+failed instead of being told the role was removed.
 Role icons only show on Boost Level 2+ servers.
 
 ## Run it

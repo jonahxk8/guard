@@ -183,6 +183,16 @@ async function handleProtectCommand(
     );
     return;
   }
+  // FG roles are always protected — /protect can neither add nor remove
+  // that protection. Without this, toggling /protect on an FG role would
+  // silently drop it from protectedRoleIds while it stayed an FG role.
+  if (settings.fgRoles[role.id]) {
+    await replyText(
+      interaction,
+      `${roleDisplayName(role)} is an FG role — it's always protected.`,
+    );
+    return;
+  }
 
   const botMember =
     guild.members.me ?? (await guild.members.fetchMe().catch(() => null));

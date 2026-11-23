@@ -184,6 +184,54 @@ test("/protect removes a role that is already protected", async () => {
   assert.match(replyTextOf(interaction.replies[0]), /no longer protected/i);
 });
 
+test("/protect refuses to unprotect an FG role", async () => {
+  const config = createStore(
+    makeSettings({
+      protectedRoleIds: [ROLE_ID],
+      fgRoles: {
+        [ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+      fgRoleOwners: { [ROLE_ID]: USER_ID },
+    }),
+  );
+  const interaction = createInteraction({ commandName: "protect", roleId: ROLE_ID });
+
+  await handleGuardCommand(interaction.interaction, config.store);
+
+  assert.equal(config.getSaveCount(), 0);
+  assert.deepEqual(config.getSettings().protectedRoleIds, [ROLE_ID]);
+  assert.match(replyTextOf(interaction.replies[0]), /always protected/i);
+});
+
+test("/protect refuses an FG role that drifted out of the protected list", async () => {
+  const config = createStore(
+    makeSettings({
+      protectedRoleIds: [],
+      fgRoles: {
+        [ROLE_ID]: {
+          assignUserIds: [],
+          assignRoleIds: [],
+          shareUserIds: [],
+          shareRoleIds: [],
+        },
+      },
+      fgRoleOwners: { [ROLE_ID]: USER_ID },
+    }),
+  );
+  const interaction = createInteraction({ commandName: "protect", roleId: ROLE_ID });
+
+  await handleGuardCommand(interaction.interaction, config.store);
+
+  assert.equal(config.getSaveCount(), 0);
+  assert.deepEqual(config.getSettings().protectedRoleIds, []);
+  assert.match(replyTextOf(interaction.replies[0]), /always protected/i);
+});
+
 test("/protect rejects an Administrator role", async () => {
   const config = createStore();
   const interaction = createInteraction({

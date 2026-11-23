@@ -14,7 +14,7 @@ import {
   roleDisplayName,
 } from "./names.js";
 import { wildFieldEmbed } from "./embeds.js";
-import { canAssignFgRole, isBotAdmin, memberMatchesWhitelist } from "./authorization.js";
+import { canAssignFgRole, isBotAdmin, isFgSharer, memberMatchesWhitelist } from "./authorization.js";
 import {
   REPEAT_OFFENDER_THRESHOLD,
   getOffenseCount,
@@ -170,9 +170,15 @@ async function isAllowedForRole(
 
   const fgAccess = settings.fgRoles[roleId];
   if (fgAccess) {
+    // FG roles: whitelisted staff, the FG role's owner, and authorised
+    // sharers may all grant the role — by id, before any member fetch.
+    // Manage Roles alone authorises nothing: it is never checked here.
     if (
       settings.fgStaffUserIds.includes(actorId) ||
-      fgAccess.assignUserIds.includes(actorId)
+      fgAccess.assignUserIds.includes(actorId) ||
+      settings.allowedUserIds.includes(actorId) ||
+      settings.fgRoleOwners[roleId] === actorId ||
+      (settings.fgRoleSharers[roleId] ?? []).includes(actorId)
     ) {
       return true;
     }
@@ -185,15 +191,15 @@ async function isAllowedForRole(
   const actor = await guild.members.fetch(actorId).catch(() => null);
   if (actor && isBotAdmin(actor, guild.ownerId)) return true;
 
-  const relevantRoleIds = fgAccess
-    ? [...settings.fgStaffRoleIds, ...fgAccess.assignRoleIds]
-    : settings.allowedRoleIds;
-  if (relevantRoleIds.length === 0) return false;
   if (!actor) return false;
-
-  return fgAccess
-    ? canAssignFgRole(actor, roleId, settings)
-    : memberMatchesWhitelist(actor, [], settings.allowedRoleIds);
+  if (fgAccess) {
+    // Role-based whitelist, FG staff, assign lists, owner, sharers.
+    return (
+      isFgSharer(actor, roleId, settings) ||
+      canAssignFgRole(actor, roleId, settings)
+    );
+  }
+  return memberMatchesWhitelist(actor, [], settings.allowedRoleIds);
 }
 
 function createBlockedAssignmentEmbed(
@@ -281,6 +287,44 @@ async function notifyActor(
 }
 
 /**
+ * Tell a giver the bot could NOT remove the role(s) — e.g. its own role
+ * sits below the watched role, or it lost Manage Roles. Sent instead of
+ * the "Role removed" DM, never as well as it, so the giver is never
+ * told a removal happened when it did not.
+ */
+async function notifyRemovalFailed(
+  guild: Guild,
+  actorId: string,
+  memberId: string,
+  roleIds: string[],
+  actionNeeded: string,
+): Promise<void> {
+  const actor = await guild.members.fetch(actorId).catch(() => null);
+  if (!actor || typeof actor.send !== "function") return;
+  const target = await guild.members.fetch(memberId).catch(() => null);
+  const roleNames = roleIds
+    .map((roleId) =>
+      roleDisplayName(
+        guild.roles.cache.get(roleId) as { id: string; name?: string | null } | undefined,
+      ),
+    )
+    .join(", ");
+  const embed = wildFieldEmbed("Role could not be removed", [
+    { name: "Role", value: roleNames },
+    { name: "Member", value: memberDisplayName(target, null) },
+    { name: "Server", value: guild.name },
+    {
+      name: "Reason",
+      value: "The bot couldn't remove the role.",
+    },
+    { name: "Action needed", value: actionNeeded },
+  ]);
+  await actor
+    .send({ embeds: [embed], allowedMentions: { parse: [] } })
+    .catch(() => undefined);
+}
+
+/**
  * Tell an authorised giver that the grant was removed anyway because the
  * target is blacklisted from that role. The blacklist blocks the target,
  * not the giver — so this fires even for whitelisted / FG staff givers.
@@ -329,7 +373,16 @@ export async function guardAuditLogEntry(
   }
 
   const settings = store.get(guild.id);
-  if (settings.protectedRoleIds.length === 0) return;
+  // Watched roles are protected roles AND every FG role. FG roles are
+  // guarded even when they are not in protectedRoleIds — an FG role can
+  // sit outside that list when it was made before auto-protect existed,
+  // restored from an old config, or unprotected with /protect (which
+  // toggles). The guard must never silently ignore an FG role.
+  const watchedIds = new Set([
+    ...settings.protectedRoleIds,
+    ...Object.keys(settings.fgRoles),
+  ]);
+  if (watchedIds.size === 0) return;
 
   // Captured here: narrowing on entry.targetId does not survive awaits.
   const targetId = entry.targetId;
@@ -338,8 +391,7 @@ export async function guardAuditLogEntry(
   // no pause command anymore, so the guard always enforces. A legacy paused
   // config must not silently turn the guard off with no way to turn it on.
 
-  const protectedIds = new Set(settings.protectedRoleIds);
-  const addedRoleIds = getAddedRoleIds(entry).filter((id) => protectedIds.has(id));
+  const addedRoleIds = getAddedRoleIds(entry).filter((id) => watchedIds.has(id));
   if (addedRoleIds.length === 0) return;
 
   handledAuditEntryIds.add(entry.id);
@@ -387,29 +439,22 @@ export async function guardAuditLogEntry(
         : "only"
       : undefined;
 
-  // Record the offence and tell the assigner why, even when no log channel
-  // is configured. The owner, Administrators, and the bot never reach this
-  // path (bypassed).
+  // Record the offence first. The owner, Administrators, and the bot
+  // never reach this path (bypassed).
   // A blacklist-only removal is not an offence by the giver — they were
-  // allowed to assign roles — so no offence is recorded for it, and the
-  // DM explains the blacklist instead of the whitelist.
+  // allowed to assign roles — so no offence is recorded for it.
+  // The giver is told why only AFTER the removal is attempted, so the
+  // DM never claims a removal that did not happen: success gets the
+  // "Role removed" DM, failure gets a "could not be removed" DM.
   let offenseCount = 0;
-  if (actorId) {
-    if (watchedRoleIds.length > 0) {
-      offenseCount = recordOffense(guild.id, actorId);
-      await notifyActor(guild, actorId, targetId, watchedRoleIds);
-    } else {
-      await notifyBlacklistedActor(
-        guild,
-        actorId,
-        targetId,
-        blacklistedRoleIds,
-      );
-    }
+  if (actorId && watchedRoleIds.length > 0) {
+    offenseCount = recordOffense(guild.id, actorId);
   }
 
   const member = await guild.members.fetch(targetId).catch(() => null);
   if (!member) {
+    const actionNeeded =
+      "Bot could not fetch the member to remove the role. Check its server permissions.";
     await sendLog(
       guild,
       settings,
@@ -417,11 +462,20 @@ export async function guardAuditLogEntry(
         targetId,
         removalRoleIds,
         actorId,
-        "Bot could not fetch the member to remove the role. Check its server permissions.",
+        actionNeeded,
         offenseCount,
         blacklistNote,
       ),
     );
+    if (actorId) {
+      await notifyRemovalFailed(
+        guild,
+        actorId,
+        targetId,
+        removalRoleIds,
+        actionNeeded,
+      );
+    }
     return;
   }
 
@@ -452,6 +506,27 @@ export async function guardAuditLogEntry(
   if (removableRoleIds.length !== removalRoleIds.length) {
     actionNeeded ??=
       "Bot cannot manage one or more watched roles. Check Manage Roles and role order.";
+  }
+
+  if (actorId) {
+    if (actionNeeded) {
+      await notifyRemovalFailed(
+        guild,
+        actorId,
+        targetId,
+        removalRoleIds,
+        actionNeeded,
+      );
+    } else if (watchedRoleIds.length > 0) {
+      await notifyActor(guild, actorId, targetId, watchedRoleIds);
+    } else {
+      await notifyBlacklistedActor(
+        guild,
+        actorId,
+        targetId,
+        blacklistedRoleIds,
+      );
+    }
   }
 
   await sendLog(

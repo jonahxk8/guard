@@ -19,6 +19,8 @@ import { clearOffenses } from "./offenders.js";
 const GUILD_ID = "111111111111111111";
 const MEMBER_ID = "222222222222222222";
 const ROLE_ID = "333333333333333333";
+const FG_ROLE_ID = "343434343434343434";
+const FG_OWNER_ID = "565656565656565656";
 const ALLOWED_ACTOR_ID = "444444444444444444";
 const UNAPPROVED_ACTOR_ID = "555555555555555555";
 const ALLOWED_ROLE_ID = "888888888888888888";
@@ -54,21 +56,43 @@ function createSetup(
     enforcementEnabled?: boolean;
     ownerId?: string;
     actorIsAdmin?: boolean;
+    actorHasManageRoles?: boolean;
     blacklist?: Record<string, string[]>;
     logChannelId?: string | null;
     fetchAuditLogs?: (options: unknown) => Promise<unknown>;
+    protectedRoleIds?: string[];
+    fgRoleId?: string;
+    fgRoleOwnerId?: string | null;
+    fgRoleSharers?: string[];
+    fgStaffUserIds?: string[];
+    fgStaffRoleIds?: string[];
   } = {},
 ): GuardSetup {
+  const fgRoleId = options.fgRoleId;
   const settings: GuildSettings = {
-    protectedRoleIds: [ROLE_ID],
+    protectedRoleIds: options.protectedRoleIds ?? [ROLE_ID],
     allowedUserIds: options.allowedUserIds ?? [],
     allowedRoleIds: options.allowedRoleIds ?? [],
-    fgStaffUserIds: [],
-    fgStaffRoleIds: [],
-    fgRoles: {},
+    fgStaffUserIds: options.fgStaffUserIds ?? [],
+    fgStaffRoleIds: options.fgStaffRoleIds ?? [],
+    fgRoles: fgRoleId
+      ? {
+          [fgRoleId]: {
+            assignUserIds: [],
+            assignRoleIds: [],
+            shareUserIds: [],
+            shareRoleIds: [],
+          },
+        }
+      : {},
     fgBaseRoleId: null,
-    fgRoleSharers: {},
-    fgRoleOwners: {},
+    fgRoleSharers: fgRoleId
+      ? { [fgRoleId]: options.fgRoleSharers ?? [] }
+      : {},
+    fgRoleOwners:
+      fgRoleId && options.fgRoleOwnerId
+        ? { [fgRoleId]: options.fgRoleOwnerId }
+        : {},
     blacklist: options.blacklist ?? {},
     logChannelId: options.logChannelId === undefined ? "666666666666666666" : options.logChannelId,
     enforcementEnabled: options.enforcementEnabled ?? true,
@@ -89,14 +113,26 @@ function createSetup(
   const actor = {
     id: UNAPPROVED_ACTOR_ID,
     permissions: {
-      has: (permission: bigint) =>
-        permission === PermissionFlagsBits.Administrator &&
-        (options.actorIsAdmin ?? false),
+      has: (permission: bigint) => {
+        if (permission === PermissionFlagsBits.Administrator) {
+          return options.actorIsAdmin ?? false;
+        }
+        if (permission === PermissionFlagsBits.ManageRoles) {
+          return options.actorHasManageRoles ?? true;
+        }
+        return false;
+      },
     },
     roles: {
       cache: {
+        has: (_roleId: string) => false,
         some: (predicate: (role: { id: string }) => boolean) =>
           (options.actorRoleIds ?? []).some((roleId) => predicate({ id: roleId })),
+      },
+      // A self-grant target resolves to this same mock, so it must be
+      // able to have roles removed like the member mock.
+      remove: async (roleIds: string[]) => {
+        removedRoleIds.push(roleIds);
       },
     },
     send: async (message: DmMessage) => {
@@ -138,7 +174,10 @@ function createSetup(
       fetchMe: async () => botMember,
     },
     roles: {
-      cache: new Map([[ROLE_ID, { id: ROLE_ID }]]),
+      cache: new Map([
+        [ROLE_ID, { id: ROLE_ID }],
+        [FG_ROLE_ID, { id: FG_ROLE_ID, name: "leen" }],
+      ]),
     },
   } as unknown as Guild;
 
@@ -168,17 +207,18 @@ function createEntry(
   id: string,
   executorId: string | null,
   createdTimestamp: number = NOW,
+  entryOptions: { roleId?: string; targetId?: string } = {},
 ): GuildAuditLogsEntry {
   return {
     id,
     action: AuditLogEvent.MemberRoleUpdate,
-    targetId: MEMBER_ID,
+    targetId: entryOptions.targetId ?? MEMBER_ID,
     executorId,
     createdTimestamp,
     changes: [
       {
         key: "$add",
-        new: [{ id: ROLE_ID }, { id: "777777777777777777" }],
+        new: [{ id: entryOptions.roleId ?? ROLE_ID }, { id: "777777777777777777" }],
       },
     ],
   } as unknown as GuildAuditLogsEntry;
@@ -598,4 +638,191 @@ test("an unverified actor is still removed even if they would be an admin", asyn
   );
 
   assert.deepEqual(setup.removedRoleIds, [[ROLE_ID]]);
+});
+
+test("removes an FG role a non-whitelisted member with Manage Roles gives to themselves", async () => {
+  // The reported case: the giver has Manage Roles but is not whitelisted,
+  // not an admin, and not the FG role's owner — and the FG role is not
+  // in protectedRoleIds (old config / unprotected with /protect). The
+  // self-grant must still be reverted instantly, like a protected role.
+  clearOffenses();
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+    actorHasManageRoles: true,
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-fg-self-grant", UNAPPROVED_ACTOR_ID, NOW, {
+      roleId: FG_ROLE_ID,
+      targetId: UNAPPROVED_ACTOR_ID,
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[FG_ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
+  assert.equal(getLoggedEmbed(setup).title, "Unauthorized role assignment");
+  assert.equal(setup.dms.length, 1);
+  assert.equal(getDmEmbed(setup).title, "Role removed");
+});
+
+test("removes an FG role an unauthorised member gives to someone else", async () => {
+  clearOffenses();
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-fg-other", UNAPPROVED_ACTOR_ID, NOW, {
+      roleId: FG_ROLE_ID,
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, [[FG_ROLE_ID]]);
+  assert.equal(setup.sentMessages.length, 1);
+  assert.equal(setup.dms.length, 1);
+});
+
+test("keeps an FG role its owner gives to themselves", async () => {
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: UNAPPROVED_ACTOR_ID,
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-fg-owner-self", UNAPPROVED_ACTOR_ID, NOW, {
+      roleId: FG_ROLE_ID,
+      targetId: UNAPPROVED_ACTOR_ID,
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("keeps an FG role a whitelisted member gives to someone else", async () => {
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+    allowedUserIds: [ALLOWED_ACTOR_ID],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-fg-whitelisted", ALLOWED_ACTOR_ID, NOW, {
+      roleId: FG_ROLE_ID,
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("keeps an FG role an Administrator gives to someone else", async () => {
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+    actorIsAdmin: true,
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-fg-admin", UNAPPROVED_ACTOR_ID, NOW, {
+      roleId: FG_ROLE_ID,
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("keeps an FG role an authorised sharer gives to someone else", async () => {
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+    fgRoleSharers: [ALLOWED_ACTOR_ID],
+  });
+
+  await guardAuditLogEntry(
+    createEntry("audit-fg-sharer", ALLOWED_ACTOR_ID, NOW, {
+      roleId: FG_ROLE_ID,
+    }),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  assert.equal(setup.sentMessages.length, 0);
+  assert.equal(setup.dms.length, 0);
+});
+
+test("flags a repeat offender on the third unauthorised FG self-grant", async () => {
+  clearOffenses();
+  const setup = createSetup({
+    protectedRoleIds: [],
+    fgRoleId: FG_ROLE_ID,
+    fgRoleOwnerId: FG_OWNER_ID,
+  });
+
+  for (let i = 1; i <= 3; i += 1) {
+    await guardAuditLogEntry(
+      createEntry(`audit-fg-repeat-${i}`, REPEAT_ACTOR_ID, NOW, {
+        roleId: FG_ROLE_ID,
+        targetId: REPEAT_ACTOR_ID,
+      }),
+      setup.guild,
+      createStore(setup.settings),
+    );
+  }
+
+  assert.equal(setup.removedRoleIds.length, 3);
+  const thirdEmbed = setup.sentMessages[2].embeds[0].toJSON();
+  assert.equal(
+    thirdEmbed.fields?.find((field) => field.name === "Repeat offender")?.value,
+    "3+ unauthorised assignments",
+  );
+});
+
+test("tells the giver when the bot could not remove a watched role", async () => {
+  clearOffenses();
+  const setup = createSetup({ botAboveRole: false });
+
+  await guardAuditLogEntry(
+    createEntry("audit-remove-failed", UNAPPROVED_ACTOR_ID),
+    setup.guild,
+    createStore(setup.settings),
+  );
+
+  assert.deepEqual(setup.removedRoleIds, []);
+  const embed = getLoggedEmbed(setup);
+  assert.match(
+    embed.fields?.find((field) => field.name === "Action needed")?.value ?? "",
+    /cannot manage one or more watched roles/i,
+  );
+  // Exactly one DM, and it says the removal failed — never "Role removed".
+  assert.equal(setup.dms.length, 1);
+  const dm = getDmEmbed(setup);
+  assert.equal(dm.title, "Role could not be removed");
+  assert.match(
+    dm.fields?.find((field) => field.name === "Action needed")?.value ?? "",
+    /cannot manage one or more watched roles/i,
+  );
 });
